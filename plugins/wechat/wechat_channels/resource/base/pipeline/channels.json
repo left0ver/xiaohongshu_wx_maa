@@ -1,0 +1,964 @@
+{
+  "$comment": "shortcut: Chinese portrait layouts and sampled icon scales only; extend captures for changed WeChat layouts. Numeric ROIs restrict searches, never click targets. Shared operations use explicit task next overrides; recognitions remain guarded and each like action executes at most once. Template-first labels retain thresholded OCR fallback; MtaOcrFallback calls the original OCR tree only after template failure, avoiding eager batch OCR. Requires the bundled host callback.",
+  "StartWeChat": {
+    "action": "StartApp",
+    "package": "com.tencent.mm",
+    "next": [
+      "OpenDiscover",
+      "DetectOtherStartPages"
+    ]
+  },
+  "OpenDiscover": {
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "OpenChannels"
+    ],
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/discover-tab",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              -480,
+              0,
+              480
+            ],
+            "sub_name": "fastDiscoverTab"
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/contacts-tab",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": "fastDiscoverTab",
+            "roi_offset": [
+              -270,
+              -16,
+              220,
+              32
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "Custom",
+        "custom_recognition": "MtaOcrFallback",
+        "custom_recognition_param": {
+          "type": "And",
+          "param": {
+            "all_of": [
+              {
+                "recognition": "OCR",
+                "expected": "^发现$",
+                "roi": [
+                  0,
+                  -480,
+                  0,
+                  480
+                ],
+                "sub_name": "mainDiscoverTab"
+              },
+              {
+                "recognition": "OCR",
+                "expected": "^通讯录$",
+                "roi": "mainDiscoverTab",
+                "roi_offset": [
+                  -270,
+                  -16,
+                  220,
+                  32
+                ],
+                "sub_name": "mainContactsTab"
+              }
+            ],
+            "box_index": 0
+          }
+        }
+      }
+    ]
+  },
+  "OpenChannels": {
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "OpenAuthor",
+      "LikeCurrentVideo"
+    ],
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/channels-label",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              120,
+              480,
+              600
+            ],
+            "sub_name": "fastChannelsLabel"
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/discover-title",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              0,
+              720,
+              240
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "Custom",
+        "custom_recognition": "MtaOcrFallback",
+        "custom_recognition_param": {
+          "type": "And",
+          "param": {
+            "all_of": [
+              {
+                "recognition": "OCR",
+                "expected": "^视频号$",
+                "roi": [
+                  0,
+                  120,
+                  480,
+                  600
+                ],
+                "sub_name": "discoverChannelsLabel"
+              },
+              {
+                "recognition": "OCR",
+                "expected": "^发现$",
+                "roi": [
+                  0,
+                  0,
+                  0,
+                  360
+                ],
+                "sub_name": "discoverPageTitle"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "LeavePersonal": {
+    "recognition": "And",
+    "all_of": [
+      "PersonalPage"
+    ],
+    "action": "ClickKey",
+    "key": 4,
+    "max_hit": 1,
+    "next": [
+      "OpenAuthor",
+      "LikeCurrentVideo"
+    ]
+  },
+  "FeedReady": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          "FeedHeader"
+        ],
+        "sub_name": "feedHeader"
+      },
+      "PersonalIcon"
+    ],
+    "next": [
+      "OpenAuthor",
+      "LikeCurrentVideo"
+    ]
+  },
+  "LikeCurrentVideo": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          "FeedHeader"
+        ],
+        "sub_name": "feedHeader"
+      },
+      "PersonalIcon",
+      "WhiteThumb"
+    ],
+    "action": "Click",
+    "max_hit": 1,
+    "post_delay": 600,
+    "next": [
+      "OpenAuthorAfterLike"
+    ],
+    "box_index": 2
+  },
+  "OpenAuthor": {
+    "recognition": "And",
+    "all_of": [
+      "FeedHeader",
+      {
+        "recognition": "And",
+        "all_of": [
+          "RedThumb"
+        ],
+        "sub_name": "likedThumb"
+      },
+      "FeedAuthorName"
+    ],
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "ReturnToFeed"
+    ],
+    "box_index": 2
+  },
+  "ReturnToFeed": {
+    "action": "ClickKey",
+    "key": 4,
+    "max_hit": 1,
+    "next": [
+      "OpenPersonal"
+    ],
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/author-follow",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              300,
+              400,
+              850
+            ],
+            "sub_name": "fastAuthorFollow"
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/author-contact",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": "fastAuthorFollow",
+            "roi_offset": [
+              100,
+              -30,
+              400,
+              60
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "Custom",
+        "custom_recognition": "MtaOcrFallback",
+        "custom_recognition_param": {
+          "type": "And",
+          "param": {
+            "all_of": [
+              {
+                "recognition": "OCR",
+                "expected": "^(√|✓)?(已关注|关注)$",
+                "roi": [
+                  0,
+                  300,
+                  400,
+                  850
+                ],
+                "sub_name": "authorFollowButton"
+              },
+              {
+                "recognition": "OCR",
+                "expected": "^(私信|客服)$",
+                "roi": "authorFollowButton",
+                "roi_offset": [
+                  100,
+                  -30,
+                  400,
+                  60
+                ],
+                "sub_name": "authorContactButton"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "OpenPersonal": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          "FeedHeader"
+        ],
+        "sub_name": "feedHeader"
+      },
+      "RedThumb",
+      "PersonalIcon"
+    ],
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "PersonalReady"
+    ],
+    "box_index": 2
+  },
+  "PersonalReady": {
+    "recognition": "And",
+    "all_of": [
+      "PersonalPage"
+    ],
+    "next": [],
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "FeedHeader": {
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/recommended",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              120,
+              0,
+              480,
+              300
+            ],
+            "sub_name": "fastRecommended"
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/following",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": "fastRecommended",
+            "roi_offset": [
+              -300,
+              -14,
+              260,
+              28
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "Custom",
+        "custom_recognition": "MtaOcrFallback",
+        "custom_recognition_param": {
+          "type": "And",
+          "param": {
+            "all_of": [
+              {
+                "recognition": "OCR",
+                "expected": "^推荐$",
+                "roi": [
+                  0,
+                  0,
+                  0,
+                  360
+                ],
+                "sub_name": "feedRecommendedLabel"
+              },
+              {
+                "recognition": "OCR",
+                "expected": "^关注(朋友.*)?$",
+                "roi": [
+                  0,
+                  0,
+                  0,
+                  360
+                ],
+                "sub_name": "feedFollowingLabel"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "WhiteThumb": {
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-white",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score",
+        "roi": [
+          240,
+          -250,
+          320,
+          220
+        ]
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-white",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score",
+        "roi": [
+          240,
+          -650,
+          320,
+          650
+        ]
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-white",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score"
+      }
+    ]
+  },
+  "RedThumb": {
+    "$comment": "Color only proposes candidate regions; the unchanged shape/color template must still pass before a liked state is accepted.",
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "ColorMatch",
+        "method": 4,
+        "lower": [
+          180,
+          20,
+          20
+        ],
+        "upper": [
+          255,
+          150,
+          150
+        ],
+        "count": 200,
+        "connected": true,
+        "sub_name": "redThumbCandidates"
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-red",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score",
+        "roi": "redThumbCandidates",
+        "roi_offset": [
+          -16,
+          -16,
+          32,
+          32
+        ]
+      }
+    ],
+    "box_index": 1
+  },
+  "PersonalBrowsing": {
+    "recognition": "OCR",
+    "expected": "赞.*收藏.*最近看过",
+    "roi": [
+      0,
+      140,
+      540,
+      400
+    ]
+  },
+  "PersonalChannels": {
+    "recognition": "OCR",
+    "expected": "^我的视频号$",
+    "roi": [
+      0,
+      400,
+      440,
+      500
+    ]
+  },
+  "PersonalIcon": {
+    "recognition": "TemplateMatch",
+    "template": "personal",
+    "threshold": 0.75,
+    "method": 5,
+    "order_by": "Score",
+    "roi": "feedHeader",
+    "roi_offset": [
+      -40,
+      -30,
+      340,
+      60
+    ],
+    "green_mask": true
+  },
+  "DetectOtherStartPages": {
+    "$comment": "Keep this DirectHit fallback last: only the navigation OCR is eligible for the first batch. Other starting pages are checked on a fresh frame after navigation is absent.",
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": [
+      "FeedReady",
+      "OpenChannels",
+      "OpenDiscover",
+      "LeavePersonal"
+    ]
+  },
+  "PersonalPage": {
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/personal-browsing",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              140,
+              540,
+              400
+            ]
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/personal-channels",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              400,
+              440,
+              500
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/personal-settings",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": [
+              0,
+              120,
+              360,
+              300
+            ],
+            "sub_name": "fastPersonalSettings"
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/personal-recent",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": "fastPersonalSettings",
+            "sub_name": "fastPersonalRecent",
+            "roi_offset": [
+              -20,
+              35,
+              160,
+              120
+            ]
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "labels/personal-likes",
+            "method": 5,
+            "threshold": 0.88,
+            "order_by": "Score",
+            "roi": "fastPersonalRecent",
+            "roi_offset": [
+              -20,
+              35,
+              100,
+              120
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "Custom",
+        "custom_recognition": "MtaOcrFallback",
+        "custom_recognition_param": {
+          "type": "Or",
+          "param": {
+            "any_of": [
+              {
+                "recognition": "And",
+                "all_of": [
+                  {
+                    "recognition": "OCR",
+                    "expected": "赞.*收藏.*最近看过",
+                    "roi": [
+                      0,
+                      140,
+                      540,
+                      400
+                    ],
+                    "sub_name": "PersonalBrowsing"
+                  },
+                  {
+                    "recognition": "OCR",
+                    "expected": "^我的视频号$",
+                    "roi": [
+                      0,
+                      400,
+                      440,
+                      500
+                    ],
+                    "sub_name": "PersonalChannels"
+                  }
+                ]
+              },
+              {
+                "recognition": "And",
+                "all_of": [
+                  {
+                    "recognition": "OCR",
+                    "expected": "^浏览设置$",
+                    "roi": [
+                      0,
+                      120,
+                      360,
+                      300
+                    ],
+                    "sub_name": "personalSettingsTitle"
+                  },
+                  {
+                    "recognition": "OCR",
+                    "expected": "^最近看过$",
+                    "roi": "personalSettingsTitle",
+                    "roi_offset": [
+                      -20,
+                      35,
+                      160,
+                      120
+                    ],
+                    "sub_name": "personalRecentViews"
+                  },
+                  {
+                    "recognition": "OCR",
+                    "expected": "^赞和收藏$",
+                    "roi": "personalRecentViews",
+                    "roi_offset": [
+                      -20,
+                      35,
+                      100,
+                      120
+                    ],
+                    "sub_name": "personalLikes"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "FeedAuthorName": {
+    "recognition": "OCR",
+    "roi": "likedThumb",
+    "roi_offset": [
+      -260,
+      -8,
+      100,
+      8
+    ],
+    "expected": "^(?!.*(关注|私信|客服|朋友|推荐|粉丝)).{2,}$",
+    "order_by": "Horizontal",
+    "index": -1,
+    "threshold": 0.7
+  },
+  "OpenAuthorAfterLike": {
+    "recognition": "And",
+    "all_of": [
+      "FeedHeader",
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-red",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score",
+        "roi": "LikeCurrentVideo",
+        "roi_offset": [
+          -80,
+          -80,
+          160,
+          160
+        ],
+        "sub_name": "likedThumb"
+      },
+      "FeedAuthorName"
+    ],
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "ReturnToFeed"
+    ],
+    "box_index": 2,
+    "$comment": "After a like, verify red near the actual clicked recognition box; a miss only retries recognition, never the like action."
+  },
+  "DiscoverReady": {
+    "recognition": "And",
+    "all_of": [
+      "OpenChannels"
+    ],
+    "box_index": 0,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "AuthorReady": {
+    "recognition": "And",
+    "all_of": [
+      "ReturnToFeed"
+    ],
+    "box_index": 0,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "AnyThumb": {
+    "recognition": "Or",
+    "any_of": [
+      "RedThumb",
+      "WhiteThumb"
+    ]
+  },
+  "VideoScreen": {
+    "recognition": "Or",
+    "any_of": [
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "TemplateMatch",
+            "template": "video-top",
+            "method": 5,
+            "threshold": 0.85,
+            "roi": [
+              0,
+              0,
+              250,
+              300
+            ]
+          },
+          {
+            "recognition": "TemplateMatch",
+            "template": "video-share",
+            "method": 5,
+            "threshold": 0.88,
+            "roi": [
+              400,
+              -650,
+              240,
+              650
+            ]
+          }
+        ],
+        "box_index": 0
+      },
+      {
+        "recognition": "And",
+        "all_of": [
+          {
+            "recognition": "And",
+            "all_of": [
+              "FeedHeader"
+            ],
+            "sub_name": "feedHeader"
+          },
+          "PersonalIcon"
+        ],
+        "box_index": 0
+      }
+    ]
+  },
+  "VideoReady": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      "AnyThumb"
+    ],
+    "box_index": 0,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "LikeVideo": {
+    "recognition": "DirectHit",
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": [
+      "VideoAlreadyLiked",
+      "LikeVisibleVideo"
+    ]
+  },
+  "VideoAlreadyLiked": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      "RedThumb"
+    ],
+    "box_index": 1,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "LikeVisibleVideo": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      "WhiteThumb"
+    ],
+    "box_index": 1,
+    "action": "Click",
+    "max_hit": 1,
+    "post_delay": 600,
+    "next": [
+      "LikedVideoReady"
+    ]
+  },
+  "LikedVideoReady": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      {
+        "recognition": "TemplateMatch",
+        "template": "thumb-red",
+        "threshold": 0.88,
+        "method": 10001,
+        "order_by": "Score",
+        "roi": "LikeVisibleVideo",
+        "roi_offset": [
+          -80,
+          -80,
+          160,
+          160
+        ]
+      }
+    ],
+    "box_index": 1,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "OpenVisibleAuthor": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      {
+        "recognition": "Or",
+        "any_of": [
+          "RedThumb",
+          "WhiteThumb"
+        ],
+        "sub_name": "likedThumb"
+      },
+      "VisibleAuthorName"
+    ],
+    "box_index": 2,
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "AuthorReady"
+    ]
+  },
+  "OpenAuthorVideo": {
+    "recognition": "And",
+    "all_of": [
+      "AuthorReady",
+      {
+        "recognition": "TemplateMatch",
+        "template": "video-card",
+        "method": 5,
+        "threshold": 0.9,
+        "roi": "AuthorReady",
+        "roi_offset": [
+          -120,
+          80,
+          700,
+          900
+        ],
+        "order_by": "Vertical"
+      }
+    ],
+    "box_index": 1,
+    "action": "Click",
+    "max_hit": 1,
+    "next": [
+      "VideoReady"
+    ]
+  },
+  "ReturnToAuthor": {
+    "recognition": "And",
+    "all_of": [
+      "VideoScreen",
+      "AnyThumb"
+    ],
+    "box_index": 0,
+    "action": "ClickKey",
+    "key": 4,
+    "max_hit": 1,
+    "next": [
+      "AuthorReady"
+    ]
+  },
+  "VisibleAuthorName": {
+    "recognition": "OCR",
+    "roi": "likedThumb",
+    "roi_offset": [
+      -260,
+      -8,
+      110,
+      12
+    ],
+    "expected": "^(?!.*(关注|私信|客服|朋友|推荐|粉丝)).{2,}$",
+    "order_by": "Horizontal",
+    "index": -1,
+    "threshold": 0.7
+  }
+}

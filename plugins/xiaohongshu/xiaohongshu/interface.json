@@ -1,0 +1,73 @@
+{
+  "interface_version": 2,
+  "name": "xiaohongshu",
+  "label": "$project_name",
+  "version": "0.1.0-dev",
+  "description": "$project_description",
+  "languages": {
+    "zh_cn": "locale/zh_cn.json",
+    "en_us": "locale/en_us.json"
+  },
+  "controller": [
+    {
+      "name": "Android",
+      "type": "Adb",
+      "display_short_side": 720
+    }
+  ],
+  "resource": [
+    {
+      "name": "base",
+      "label": "$resource_name",
+      "path": [
+        "resource/base"
+      ]
+    }
+  ],
+  "task": [
+    {
+      "name": "open_xiaohongshu",
+      "label": "$open_app",
+      "entry": "XhsOpenApp",
+      "default_check": false
+    },
+    {
+      "name": "collect_visible_note",
+      "label": "$collect_image",
+      "description": "$collect_image_description",
+      "entry": "XhsCollectVisibleNote",
+      "default_check": false
+    },
+    {
+      "name": "collect_one",
+      "label": "$collect_one",
+      "entry": "XhsStartCollection",
+      "default_check": false
+    },
+    {
+      "name": "open_discover",
+      "label": "$discover",
+      "entry": "XhsDiscoverOnly",
+      "default_check": false
+    },
+    {
+      "name": "collect_video_one",
+      "label": "$collect_video_one",
+      "entry": "XhsStartVideoCollection",
+      "default_check": false
+    },
+    {
+      "name": "inspect_comments",
+      "label": "$inspect_comments",
+      "description": "$inspect_comments_description",
+      "entry": "XhsInspectComments",
+      "default_check": false
+    }
+  ],
+  "agent": {
+    "child_exec": "python3",
+    "child_args": [
+      "agent/main.py"
+    ]
+  }
+}

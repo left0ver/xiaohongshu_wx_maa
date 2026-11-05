@@ -1,0 +1,233 @@
+{
+  "interface_version": 2,
+  "name": "wechat_channels",
+  "label": "$project_name",
+  "version": "0.3.0",
+  "description": "$project_description",
+  "languages": {
+    "zh_cn": "locale/zh_cn.json",
+    "en_us": "locale/en_us.json"
+  },
+  "controller": [
+    {
+      "name": "Android",
+      "type": "Adb",
+      "display_short_side": 720
+    }
+  ],
+  "resource": [
+    {
+      "name": "base",
+      "label": "$resource_name",
+      "path": [
+        "resource/base"
+      ]
+    }
+  ],
+  "task": [
+    {
+      "name": "like_and_visit",
+      "label": "$task_name",
+      "description": "$task_description",
+      "entry": "StartWeChat",
+      "default_check": true
+    },
+    {
+      "name": "open_wechat",
+      "label": "$open_wechat_label",
+      "description": "$open_wechat_description",
+      "entry": "StartWeChat",
+      "default_check": false,
+      "pipeline_override": {
+        "StartWeChat": {
+          "next": []
+        }
+      }
+    },
+    {
+      "name": "open_discover",
+      "label": "$open_discover_label",
+      "description": "$open_discover_description",
+      "entry": "OpenDiscover",
+      "default_check": false,
+      "pipeline_override": {
+        "OpenDiscover": {
+          "next": [
+            "DiscoverReady"
+          ]
+        }
+      }
+    },
+    {
+      "name": "open_channels",
+      "label": "$open_channels_label",
+      "description": "$open_channels_description",
+      "entry": "OpenChannels",
+      "default_check": false,
+      "pipeline_override": {
+        "OpenChannels": {
+          "next": [
+            "FeedReady"
+          ]
+        },
+        "FeedReady": {
+          "next": []
+        }
+      }
+    },
+    {
+      "name": "open_author",
+      "label": "$open_author_label",
+      "description": "$open_author_description",
+      "entry": "OpenVisibleAuthor",
+      "default_check": false,
+      "pipeline_override": {}
+    },
+    {
+      "name": "open_author_video",
+      "label": "$open_author_video_label",
+      "description": "$open_author_video_description",
+      "entry": "OpenAuthorVideo",
+      "default_check": false,
+      "pipeline_override": {}
+    },
+    {
+      "name": "like_video",
+      "label": "$like_video_label",
+      "description": "$like_video_description",
+      "entry": "LikeVideo",
+      "default_check": false,
+      "pipeline_override": {}
+    },
+    {
+      "name": "return_to_author",
+      "label": "$return_to_author_label",
+      "description": "$return_to_author_description",
+      "entry": "ReturnToAuthor",
+      "default_check": false,
+      "pipeline_override": {}
+    },
+    {
+      "name": "return_to_feed",
+      "label": "$return_to_feed_label",
+      "description": "$return_to_feed_description",
+      "entry": "ReturnToFeed",
+      "default_check": false,
+      "pipeline_override": {
+        "ReturnToFeed": {
+          "next": [
+            "FeedReady"
+          ]
+        },
+        "FeedReady": {
+          "next": []
+        }
+      }
+    },
+    {
+      "name": "open_personal",
+      "label": "$open_personal_label",
+      "description": "$open_personal_description",
+      "entry": "OpenPersonal",
+      "default_check": false,
+      "pipeline_override": {
+        "OpenPersonal": {
+          "all_of": [
+            {
+              "recognition": "And",
+              "all_of": [
+                "FeedHeader"
+              ],
+              "sub_name": "feedHeader"
+            },
+            "PersonalIcon"
+          ],
+          "box_index": 1
+        }
+      }
+    },
+    {
+      "name": "profile_video_like",
+      "label": "$profile_video_like_label",
+      "description": "$profile_video_like_description",
+      "entry": "OpenVisibleAuthor",
+      "default_check": false,
+      "pipeline_override": {
+        "OpenVisibleAuthor": {
+          "next": [
+            "OpenAuthorVideo"
+          ]
+        },
+        "OpenAuthorVideo": {
+          "next": [
+            "LikeVideo"
+          ]
+        }
+      }
+    }
+  ],
+  "preset": [
+    {
+      "name": "single_run",
+      "label": "$preset_single",
+      "task": [
+        {
+          "name": "like_and_visit"
+        }
+      ]
+    },
+    {
+      "name": "compose_visit",
+      "label": "$preset_compose_visit",
+      "description": "$preset_compose_description",
+      "task": [
+        {
+          "name": "open_wechat"
+        },
+        {
+          "name": "open_discover"
+        },
+        {
+          "name": "open_channels"
+        },
+        {
+          "name": "like_video"
+        },
+        {
+          "name": "open_author"
+        },
+        {
+          "name": "return_to_feed"
+        },
+        {
+          "name": "open_personal"
+        }
+      ]
+    },
+    {
+      "name": "compose_profile_like",
+      "label": "$preset_compose_profile",
+      "description": "$preset_compose_description",
+      "task": [
+        {
+          "name": "open_wechat"
+        },
+        {
+          "name": "open_discover"
+        },
+        {
+          "name": "open_channels"
+        },
+        {
+          "name": "open_author"
+        },
+        {
+          "name": "open_author_video"
+        },
+        {
+          "name": "like_video"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "Default": {
+    "timeout": 60000,
+    "rate_limit": 150,
+    "pre_delay": 0,
+    "post_delay": 350
+  }
+}

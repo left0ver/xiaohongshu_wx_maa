@@ -1,0 +1,51 @@
+{
+  "XhsOpenApp": {
+    "recognition": "DirectHit",
+    "action": "StartApp",
+    "package": "com.xingin.xhs",
+    "next": []
+  },
+  "XhsCollectVisibleNote": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsCollectVisibleNote",
+    "next": []
+  },
+  "XhsStartCollection": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsOpenDiscover",
+    "next": [
+      "XhsCollectVisibleNote"
+    ]
+  },
+  "XhsDiscoverOnly": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsOpenDiscover",
+    "next": []
+  },
+  "XhsCollectVisibleVideo": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsCollectVisibleNote",
+    "next": [],
+    "custom_action_param": {
+      "noteType": "VIDEO"
+    }
+  },
+  "XhsStartVideoCollection": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsOpenDiscover",
+    "next": [
+      "XhsCollectVisibleVideo"
+    ]
+  },
+  "XhsInspectComments": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsInspectComments",
+    "next": []
+  }
+}

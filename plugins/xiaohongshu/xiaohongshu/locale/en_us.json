@@ -1,0 +1,13 @@
+{
+  "project_name": "Xiaohongshu Assistant",
+  "project_description": "Collect a visible image or video note, verify its author, copy its link and restore the feed. Development preview; no server upload.",
+  "resource_name": "Xiaohongshu base resources",
+  "open_app": "Open Xiaohongshu",
+  "collect_image": "Collect one visible note locally",
+  "collect_image_description": "Collect a visible image or video note, verify its author, copy its link and restore the feed. Development preview; no server upload.",
+  "collect_one": "Open Xiaohongshu and collect one note locally",
+  "discover": "Open Discover",
+  "collect_video_one": "Open Xiaohongshu → collect one video (up to six screens, local)",
+  "inspect_comments": "Read comments → visit commenter → return",
+  "inspect_comments_description": "Open an image note first. Read visible text comments, verify one commenter profile and read its ID and follower count, then return to the same comment position. Local verification only; no interactions."
+}

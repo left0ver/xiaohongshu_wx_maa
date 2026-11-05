@@ -1,0 +1,20 @@
+pi_assets = "xiaohongshu"
+resource_id = "xiaohongshu"
+app_name = "小红书助手"
+virtual_display_orientation = "portrait"
+
+[agent]
+timeout_ms = 20000
+
+[[agent.runtimes]]
+bundle = "dist/xiaohongshu-agent-runtime-arm64-v8a.zip"
+exec = "bin/python3"
+executables = ["bin/python3"]
+args = ["-u", "{pi}/agent/main.py", "{identifier}"]
+working_dir = "{pi}"
+
+[agent.runtimes.env]
+LD_LIBRARY_PATH = "{bundle}/prefix/lib:{bundle}/site-packages/chaquopy/lib:{bundle}/lib/{abi}:{nativeLib}"
+MAAFW_BINARY_PATH = "{bundle}/lib/{abi}"
+PYTHONHOME = "{bundle}/prefix"
+PYTHONPATH = "{bundle}/site-packages:{bundle}/site-packages/pure.zip"

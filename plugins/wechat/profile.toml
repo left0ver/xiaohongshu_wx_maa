@@ -1,0 +1,4 @@
+pi_assets = "wechat_channels"
+resource_id = "wechat_channels"
+app_name = "微信视频号助手"
+virtual_display_orientation = "portrait"

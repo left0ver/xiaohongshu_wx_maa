@@ -1,0 +1,82 @@
+{
+  "project": "MaaXiaohongshu",
+  "host": "MaaTauriAndroid",
+  "requirementsSource": "docs/xiaohongshu-checklist.md",
+  "scope": "Phone plugin only; no laike-service or MediaCrawler modifications",
+  "status": "image-and-visible-comment-profile-probes-verified",
+  "implementedUnverified": [
+    "PI v2 tasks for launch, discovery navigation and one-work local collection",
+    "Semantic accessibility selectors with fresh physical bounds and transition checks",
+    "Image/video title, body, author, author red_id, focused clipboard link extraction",
+    "Local atomic reports and processed-card ledger",
+    "SQLite outbox model, authorization/device isolation, stable IDs and sent-batch-scoped ACK handling; not yet wired to transport"
+  ],
+  "requiredBeforeUsable": [
+    "Complete image and video end-to-end device collection validation",
+    "Host plugin import/update/switch with isolated configuration and active-run protection",
+    "Transport adapter using host-keystore credentials; no server address or credentials configured",
+    "Long-form/truncated caption expansion and image scrolling",
+    "Bounded stop/recovery validation"
+  ],
+  "remainingChecklistAreas": [
+    "Full comment pagination, nested reply relationships, media comments and video comment drawers",
+    "Production COMMENT/USER event linkage, queue integration and transport",
+    "Configured interactions, replies, private messages and note publishing",
+    "Daily quotas, incoming remote tasks and notification processing",
+    "Recommendation, search, city and automatic modes",
+    "Captcha pause, bounded recovery and multi-device validation"
+  ],
+  "limitations": [
+    "Different unresolved short links cannot be merged until the same note ID is supplied",
+    "A short-link event is not automatically migrated to a later resolved-ID event",
+    "Comments lacking stable IDs use nickname, content and displayed time; changed relative time may duplicate events",
+    "Repeated known identities retain the original event; field enrichment requires a separate reconciliation path",
+    "NOTE is a proposed mobile event kind from the checklist; current laike-service does not accept it",
+    "Existing host load_project is not a complete dynamic plugin manager",
+    "Only vivo V2131A tested; other resolutions have selector unit tests only",
+    "Read-only collection only; no interaction writes executed",
+    "Earlier subprocess hangs mitigated with Bionic posix_spawn; command timeout/cancel tested on vivo, full-run cancellation still pending",
+    "One image collection passed locally; server ACK/SQL, video end-to-end and longer stability validation pending",
+    "Comment task currently verifies visible image-note text comments and one commenter; no full pagination, works count, stable comment ID, server event association or upload",
+    "Comment times and follower counts retain their displayed text; no inferred absolute date or rounded numeric conversion",
+    "Existing-task resume uses Android hidden APIs; verified on vivo Android 12 only"
+  ],
+  "tests": {
+    "python": {
+      "passed": 29,
+      "skipped": 1,
+      "androidSpawnTestsPassedOnDevice": 4
+    },
+    "rustClipboard": {
+      "passed": 1
+    },
+    "androidDebugBuild": "passed",
+    "device": "vivo V2131A / Android 12 (historical local validation)"
+  },
+  "deviceRuns": [
+    {
+      "noteType": "IMAGE_TEXT",
+      "status": "completed",
+      "collectionMs": 24563,
+      "totalMs": 36969,
+      "timingsMs": {
+        "openAndIdentify": 5413,
+        "authorAndReturn": 6454,
+        "shareLinkAndReturn": 11194,
+        "restoreFeed": 1500
+      }
+    }
+  ],
+  "commentProfileVerification": {
+    "status": "completed",
+    "visibleComments": 5,
+    "profilesVisited": 1,
+    "elapsedMs": 17026,
+    "totalMs": 22843,
+    "timingsMs": {
+      "readComments": 8122,
+      "openCommenterProfile": 7296,
+      "returnToComments": 1605
+    }
+  }
+}

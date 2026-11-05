@@ -1,0 +1,13 @@
+{
+  "project_name": "小红书助手",
+  "project_description": "从发现页采集一篇图文或视频，核对作者并复制链接后返回。开发验证功能，尚不上报服务器。",
+  "resource_name": "小红书基础资源",
+  "open_app": "打开小红书",
+  "collect_image": "采集一篇可见作品（本地）",
+  "collect_image_description": "从发现页采集一篇图文或视频，核对作者并复制链接后返回。开发验证功能，尚不上报服务器。",
+  "collect_one": "打开小红书 → 采集一篇作品（本地）",
+  "discover": "进入发现页",
+  "collect_video_one": "打开小红书 → 采集一篇视频（最多查找六屏，本地）",
+  "inspect_comments": "读取评论 → 进入评论者主页 → 返回",
+  "inspect_comments_description": "先打开一篇图文。读取当前可见文字评论，进入一位评论者主页，核对昵称并读取小红书号和粉丝数，然后返回原评论位置。仅保存本地验证结果，不执行互动。"
+}

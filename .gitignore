@@ -1,0 +1,13 @@
+**/__pycache__/
+*.pyc
+*.sqlite*
+**/.venv/
+**/captures/
+**/logs/
+**/dist/
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+local.properties

@@ -1,0 +1,626 @@
+diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt
+index a7dbafc..f4936c1 100644
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt
+@@ -140,8 +140,9 @@ object AppPreparationManager {
+             currentStage = "loadingRuntimeLibraries"
+             report(stage = currentStage)
+             MaaRuntime.load()
+-            val width = context.resources.displayMetrics.widthPixels
+-            val height = context.resources.displayMetrics.heightPixels
++            val screenSize = RuntimeBridge.physicalScreenSize()
++            val width = screenSize.x
++            val height = screenSize.y
+             RuntimeBridge.configureScreen(width, height)
+             ControlHost.configure(0, width, height)
+             StartupTrace.mark("runtime_libraries_ready")
+diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt
+index b7d79b2..d580a7c 100644
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt
+@@ -57,10 +57,8 @@ class MainActivity : TauriActivity() {
+     RuntimeBridge.registerImageFilePicker { mimeTypes ->
+       imageFilePicker.launch(mimeTypes)
+     }
+-    RuntimeBridge.configureScreen(
+-        resources.displayMetrics.widthPixels,
+-        resources.displayMetrics.heightPixels,
+-    )
++    val screenSize = RuntimeBridge.physicalScreenSize()
++    RuntimeBridge.configureScreen(screenSize.x, screenSize.y)
+     super.onCreate(savedInstanceState)
+   }
+ 
+diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt
+index b685a34..7895ebe 100644
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt
+@@ -10,6 +10,8 @@ import android.content.ActivityNotFoundException
+ import android.app.ActivityManager
+ import android.app.Activity
+ import android.content.pm.ActivityInfo
++import android.graphics.Point
++import android.hardware.display.DisplayManager
+ import android.net.Uri
+ import android.os.Build
+ import android.os.Environment
+@@ -23,6 +25,7 @@ import android.provider.MediaStore
+ import android.provider.Settings
+ import android.util.Log
+ import android.view.WindowManager
++import android.view.Display
+ import android.widget.Toast
+ import androidx.core.view.WindowInsetsCompat
+ import java.io.File
+@@ -64,10 +67,6 @@ object RuntimeBridge {
+     private var hostActivity: WeakReference<Activity>? = null
+     @Volatile
+     private var debugMode = false
+-    @Volatile
+-    private var physicalScreenWidth = 0
+-    @Volatile
+-    private var physicalScreenHeight = 0
+     private var wakeLock: PowerManager.WakeLock? = null
+ 
+     private class ConfigurationPickRequest {
+@@ -86,6 +85,35 @@ object RuntimeBridge {
+ 
+     private const val LOG_TAG = "MaaTauriAndroidControl"
+ 
++    /** Only the focused host may read a freshly copied discovery link. */
++    @JvmStatic
++    fun discoveryClipboard(): String {
++        val result = AtomicReference("{}")
++        val done = CountDownLatch(1)
++        mainHandler.post {
++            try {
++                val activity = hostActivity?.get()
++                if (activity != null && activity.hasWindowFocus()) {
++                    val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
++                    val clip = clipboard.primaryClip
++                    if (clip != null && clip.itemCount == 1) {
++                        val text = clip.getItemAt(0).text?.toString().orEmpty()
++                        if (text.length <= 10000 &&
++                            Regex("""https?://(?:xhslink\.(?:com|cn)|(?:www\.)?xiaohongshu\.com)/""").containsMatchIn(text)) {
++                            result.set(JSONObject().put("text", text)
++                                .put("timestamp", clip.description.timestamp).toString())
++                        }
++                    }
++                }
++            } catch (_: RuntimeException) {
++                result.set("{}")
++            } finally {
++                done.countDown()
++            }
++        }
++        return if (done.await(3, TimeUnit.SECONDS)) result.get() else "{}"
++    }
++
+     @JvmStatic
+     fun setDebugMode(enabled: Boolean) {
+         debugMode = enabled
+@@ -104,8 +132,15 @@ object RuntimeBridge {
+     @JvmStatic
+     fun attachContext(context: Context) {
+         agentContext = context.applicationContext
+-        physicalScreenWidth = context.resources.displayMetrics.widthPixels
+-        physicalScreenHeight = context.resources.displayMetrics.heightPixels
++    }
++
++    @Suppress("DEPRECATION")
++    fun physicalScreenSize(): Point {
++        val context = requireNotNull(agentContext) { "the runtime bridge context is missing" }
++        val manager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
++        // screencap includes system bars; resource metrics may exclude the navigation bar.
++        val display = requireNotNull(manager.getDisplay(Display.DEFAULT_DISPLAY))
++        return Point().also { display.getRealSize(it) }
+     }
+ 
+     @JvmStatic
+@@ -1129,8 +1164,9 @@ object RuntimeBridge {
+         runCatching {
+             ControlHost.stopVirtualDisplay()
+         }
+-        val width = physicalScreenWidth
+-        val height = physicalScreenHeight
++        val size = physicalScreenSize()
++        val width = size.x
++        val height = size.y
+         if (width > 0 && height > 0) {
+             ControlHost.configure(0, width, height)
+             configureScreen(width, height)
+diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/FrameTransfer.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/FrameTransfer.kt
+new file mode 100644
+index 0000000..519c4a5
+--- /dev/null
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/FrameTransfer.kt
+@@ -0,0 +1,13 @@
++package top.natsuu.mta.control
++
++import java.io.IOException
++import java.io.OutputStream
++
++internal fun writeCapturedFrame(output: OutputStream, frame: ByteArray, failed: (IOException) -> Unit) {
++    try {
++        output.use { it.write(frame) }
++    } catch (error: IOException) {
++        // A cancelled or disconnected reader must not crash the privileged service.
++        failed(error)
++    }
++}
+diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/PrivilegedControlServiceImpl.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/PrivilegedControlServiceImpl.kt
+index 77902e6..804f674 100644
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/PrivilegedControlServiceImpl.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/PrivilegedControlServiceImpl.kt
+@@ -386,8 +386,8 @@ class PrivilegedControlServiceImpl(private val context: Context?) : IMaaTauriAnd
+         val frame = capture(displayId)
+         val (readEnd, writeEnd) = ParcelFileDescriptor.createPipe()
+         thread(name = "maa_tauri_android-frame-writer") {
+-            ParcelFileDescriptor.AutoCloseOutputStream(writeEnd).use { stream ->
+-                stream.write(frame)
++            writeCapturedFrame(ParcelFileDescriptor.AutoCloseOutputStream(writeEnd), frame) { error ->
++                android.util.Log.w("MaaTauriAndroidControl", "Frame transfer failed", error)
+             }
+         }
+         return readEnd
+diff --git a/src-tauri/gen/android/app/src/test/java/top/natsuu/mta/control/FrameTransferTest.kt b/src-tauri/gen/android/app/src/test/java/top/natsuu/mta/control/FrameTransferTest.kt
+new file mode 100644
+index 0000000..e9b80ca
+--- /dev/null
++++ b/src-tauri/gen/android/app/src/test/java/top/natsuu/mta/control/FrameTransferTest.kt
+@@ -0,0 +1,35 @@
++package top.natsuu.mta.control
++
++import java.io.ByteArrayOutputStream
++import java.io.IOException
++import java.io.OutputStream
++import org.junit.Assert.*
++import org.junit.Test
++
++class FrameTransferTest {
++    @Test
++    fun writesTheCompleteFrameAndClosesThePipe() {
++        var closed = false
++        val output = object : ByteArrayOutputStream() {
++            override fun close() { closed = true; super.close() }
++        }
++        val frame = byteArrayOf(1, 2, 3, 4)
++        writeCapturedFrame(output, frame) { throw AssertionError(it) }
++        assertArrayEquals(frame, output.toByteArray())
++        assertTrue(closed)
++    }
++
++    @Test
++    fun readerDisconnectReportsFailureAndClosesWithoutEscapingTheThread() {
++        var closed = false
++        val failure = IOException("EPIPE")
++        var reported: IOException? = null
++        val output = object : OutputStream() {
++            override fun write(value: Int) { throw failure }
++            override fun close() { closed = true }
++        }
++        writeCapturedFrame(output, byteArrayOf(1)) { reported = it }
++        assertSame(failure, reported)
++        assertTrue(closed)
++    }
++}
+diff --git a/src-tauri/src/discovery_clipboard.rs b/src-tauri/src/discovery_clipboard.rs
+new file mode 100644
+index 0000000..d325bd8
+--- /dev/null
++++ b/src-tauri/src/discovery_clipboard.rs
+@@ -0,0 +1,66 @@
++use maa_framework::{custom::FnRecognition, resource::Resource, MaaResult};
++
++pub fn register(resource: &Resource) -> MaaResult<()> {
++    resource.register_custom_recognition(
++        "MtaPhysicalDisplay",
++        Box::new(FnRecognition::new(|_, _| {
++            (crate::runtime::active_display_id() == 0)
++                .then(|| (Default::default(), "{\"physicalDisplay\":true}".to_string()))
++        })),
++    )?;
++    resource.register_custom_recognition(
++        "MtaDiscoveryClipboard",
++        Box::new(FnRecognition::new(|_, _| {
++            #[cfg(target_os = "android")]
++            {
++                let text = match crate::diagnostics::bridge_string("discoveryClipboard") {
++                    Ok(text) => text,
++                    Err(error) => {
++                        log::warn!("Discovery clipboard bridge failed: {error}");
++                        return None;
++                    }
++                };
++                let value: serde_json::Value = serde_json::from_str(&text).ok()?;
++                if !valid_clip(&value) {
++                    return None;
++                }
++                Some((Default::default(), text))
++            }
++            #[cfg(not(target_os = "android"))]
++            None
++        })),
++    )
++}
++
++#[cfg(any(target_os = "android", test))]
++fn valid_clip(value: &serde_json::Value) -> bool {
++    value
++        .get("text")
++        .and_then(|v| v.as_str())
++        .is_some_and(|s| !s.is_empty() && s.len() <= 40000)
++        && value
++            .get("timestamp")
++            .and_then(|v| v.as_u64())
++            .is_some_and(|n| n > 0)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    #[test]
++    fn requires_text_and_clip_timestamp() {
++        assert!(valid_clip(
++            &json!({"text": "https://xhslink.com/a/abc", "timestamp": 1})
++        ));
++        for value in [
++            json!({}),
++            json!({"text": ""}),
++            json!({"text": "x", "timestamp": 0}),
++            json!({"text": "x", "timestamp": "1"}),
++        ] {
++            assert!(!valid_clip(&value));
++        }
++    }
++}
+diff --git a/src-tauri/src/domain/types.rs b/src-tauri/src/domain/types.rs
+index d8dbd12..8535e08 100644
+--- a/src-tauri/src/domain/types.rs
++++ b/src-tauri/src/domain/types.rs
+@@ -354,6 +354,8 @@ pub struct UserConfiguration {
+     pub force_stop_target_app: bool,
+     #[serde(default = "default_true")]
+     pub close_target_app_after_run: bool,
++    #[serde(default)]
++    pub stop_on_task_failure: bool,
+     /// Stops a run once it has been going for this many seconds. `0` disables
+     /// the limit.
+     #[serde(default)]
+@@ -429,6 +431,7 @@ impl Default for UserConfiguration {
+             initialized: false,
+             force_stop_target_app: false,
+             close_target_app_after_run: true,
++            stop_on_task_failure: false,
+             max_run_duration_seconds: 0,
+             foreground_mode: false,
+             foreground_overlay: false,
+@@ -459,6 +462,28 @@ impl Default for UserConfiguration {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn stop_on_task_failure_defaults_round_trips_and_rejects_invalid_values() {
++        let mut value = serde_json::to_value(UserConfiguration::default()).unwrap();
++        value.as_object_mut().unwrap().remove("stopOnTaskFailure");
++        assert!(
++            !serde_json::from_value::<UserConfiguration>(value.clone())
++                .unwrap()
++                .stop_on_task_failure
++        );
++        for enabled in [false, true] {
++            value["stopOnTaskFailure"] = serde_json::json!(enabled);
++            let config: UserConfiguration = serde_json::from_value(value.clone()).unwrap();
++            assert_eq!(config.stop_on_task_failure, enabled);
++            assert_eq!(
++                serde_json::to_value(config).unwrap()["stopOnTaskFailure"],
++                enabled
++            );
++        }
++        value["stopOnTaskFailure"] = serde_json::json!("true");
++        assert!(serde_json::from_value::<UserConfiguration>(value).is_err());
++    }
++
+     #[test]
+     fn legacy_configuration_defaults_force_stop_to_false() {
+         let current = UserConfiguration::default();
+diff --git a/src-tauri/src/lazy_recognition.rs b/src-tauri/src/lazy_recognition.rs
+new file mode 100644
+index 0000000..d091eb9
+--- /dev/null
++++ b/src-tauri/src/lazy_recognition.rs
+@@ -0,0 +1,93 @@
++use maa_framework::{custom::FnRecognition, resource::Resource, MaaResult};
++use serde::Deserialize;
++use serde_json::Value;
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Recognition {
++    #[serde(rename = "type")]
++    kind: String,
++    param: Value,
++}
++
++// Only inline OCR trees are accepted: named/custom recognitions could recurse into this callback.
++fn valid_tree(kind: &str, param: &Value, depth: usize) -> bool {
++    if depth > 8 || !param.is_object() {
++        return false;
++    }
++    let children = match kind {
++        "OCR" => return true,
++        "And" => "all_of",
++        "Or" => "any_of",
++        _ => return false,
++    };
++    let Some(children) = param.get(children).and_then(Value::as_array) else {
++        return false;
++    };
++    !children.is_empty()
++        && children.len() <= 16
++        && children.iter().all(|child| {
++            child
++                .get("recognition")
++                .and_then(Value::as_str)
++                .is_some_and(|kind| valid_tree(kind, child, depth + 1))
++        })
++}
++
++pub fn register(resource: &Resource) -> MaaResult<()> {
++    resource.register_custom_recognition(
++        "MtaOcrFallback",
++        Box::new(FnRecognition::new(|context, args| {
++            let recognition: Recognition = serde_json::from_str(args.param).ok()?;
++            if !valid_tree(&recognition.kind, &recognition.param, 0) {
++                return None;
++            }
++            // Maa eagerly batches ordinary OCR candidates, even behind a successful template branch.
++            let result = context
++                .run_recognition_direct(
++                    &recognition.kind,
++                    &recognition.param.to_string(),
++                    args.image,
++                )
++                .ok()??;
++            result
++                .hit
++                .then(|| (result.box_rect, result.detail.to_string()))
++        })),
++    )
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    #[test]
++    fn accepts_ocr_and_relative_inline_checks() {
++        let param = json!({"all_of": [
++            {"recognition": "OCR", "expected": "发现", "sub_name": "tab"},
++            {"recognition": "OCR", "expected": "通讯录", "roi": "tab"}
++        ]});
++        assert!(valid_tree("And", &param, 0));
++        assert!(valid_tree("OCR", &json!({"expected": "推荐"}), 0));
++    }
++
++    #[test]
++    fn rejects_named_custom_malformed_and_overdeep_trees() {
++        for param in [
++            json!({"all_of": ["RecursiveNode"]}),
++            json!({"all_of": [{"recognition": "Custom"}]}),
++            json!({"all_of": []}),
++            json!({}),
++            json!(null),
++        ] {
++            assert!(!valid_tree("And", &param, 0));
++        }
++        assert!(!valid_tree("Custom", &json!({}), 0));
++        assert!(!valid_tree("OCR", &json!({}), 9));
++        assert!(
++            serde_json::from_str::<Recognition>(r#"{"type":"OCR","param":{},"extra":true}"#)
++                .is_err()
++        );
++    }
++}
+diff --git a/src-tauri/src/lib.rs b/src-tauri/src/lib.rs
+index cb79167..0d88272 100644
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -4,8 +4,10 @@ mod background_image;
+ mod configuration_backup;
+ mod diagnostics;
+ mod directory_access;
++mod discovery_clipboard;
+ mod domain;
+ mod focus;
++mod lazy_recognition;
+ mod persistence;
+ mod run_diagnosis;
+ mod run_history;
+@@ -3192,6 +3194,7 @@ async fn start_run_core(
+     }
+     let resolved_for_run = resolved.clone();
+     let base_pipeline = resolved.base_pipeline.clone();
++    let stop_on_task_failure = configuration.stop_on_task_failure;
+     let selected_instance_ids: BTreeSet<String> = tasks
+         .iter()
+         .filter_map(|task| {
+@@ -3333,6 +3336,7 @@ async fn start_run_core(
+                         &run_tasker,
+                         &tasks,
+                         &base_pipeline,
++                        stop_on_task_failure,
+                         &task_logger,
+                         &report_progress,
+                         &probe_target_app_state,
+diff --git a/src-tauri/src/runtime.rs b/src-tauri/src/runtime.rs
+index 79a790a..49dc062 100644
+--- a/src-tauri/src/runtime.rs
++++ b/src-tauri/src/runtime.rs
+@@ -1162,6 +1162,8 @@ pub fn create_session(
+     }
+ 
+     let resource = Resource::new()?;
++    crate::lazy_recognition::register(&resource)?;
++    crate::discovery_clipboard::register(&resource)?;
+ 
+     let agent_session = match agent {
+         Some(prepared) if !prepared.descriptor.runtimes.is_empty() => {
+@@ -1474,9 +1476,9 @@ impl FailureLog {
+ /// consumed before the first task (an empty-display hint) and on a task
+ /// failure (the concrete cause).
+ ///
+-/// A failing task is logged and remembered as the run's first failure. Unless
+-/// the controlled display is empty, the next task still runs; only a user stop
+-/// or an empty-display failure ends the run early. Tasks are posted one at a
++/// A failing task is logged and remembered as the run's first failure. The next
++/// task runs unless stop-on-failure is enabled, the display is empty, or the
++/// user stops the run. Tasks are posted one at a
+ /// time rather than pre-queued because the modal focus gate holds back the
+ /// *next* post until the user confirms a dialog.
+ ///
+@@ -1488,6 +1490,7 @@ pub fn run_tasks(
+     tasker: &Arc<Tasker>,
+     tasks: &[ResolvedTask],
+     base_pipeline: &Value,
++    stop_on_task_failure: bool,
+     logger: &crate::run_log::RunLogger,
+     progress: &dyn Fn(u32, u32, &ResolvedTask),
+     state_probe: &dyn Fn() -> Option<crate::run_diagnosis::TargetAppState>,
+@@ -1570,7 +1573,7 @@ pub fn run_tasks(
+                 diagnostic_code,
+                 screenshot,
+             );
+-            if failure_stops_queue(&cause) {
++            if failure_stops_queue(&cause, stop_on_task_failure) {
+                 break;
+             }
+         }
+@@ -1588,8 +1591,11 @@ fn failure_diagnostic_code(cause: &crate::run_diagnosis::FailureCause) -> Option
+     }
+ }
+ 
+-fn failure_stops_queue(cause: &crate::run_diagnosis::FailureCause) -> bool {
+-    matches!(cause, crate::run_diagnosis::FailureCause::ScreenEmpty)
++fn failure_stops_queue(
++    cause: &crate::run_diagnosis::FailureCause,
++    stop_on_task_failure: bool,
++) -> bool {
++    stop_on_task_failure || matches!(cause, crate::run_diagnosis::FailureCause::ScreenEmpty)
+ }
+ 
+ #[cfg(test)]
+@@ -1686,16 +1692,32 @@ mod tests {
+         ));
+     }
+ 
++    #[test]
++    fn dependent_task_sequences_stop_on_any_failure_when_enabled() {
++        use crate::run_diagnosis::FailureCause;
++        for cause in [
++            FailureCause::RecognitionMissed { missed: Vec::new() },
++            FailureCause::DisplayGone,
++            FailureCause::ScreenEmpty,
++        ] {
++            assert!(failure_stops_queue(&cause, true));
++        }
++        assert!(FailureLog::default().into_outcome().is_none());
++    }
++
+     #[test]
+     fn only_an_empty_screen_stops_the_remaining_task_queue() {
+         assert!(failure_stops_queue(
+-            &crate::run_diagnosis::FailureCause::ScreenEmpty
++            &crate::run_diagnosis::FailureCause::ScreenEmpty,
++            false
+         ));
+         assert!(!failure_stops_queue(
+-            &crate::run_diagnosis::FailureCause::DisplayGone
++            &crate::run_diagnosis::FailureCause::DisplayGone,
++            false
+         ));
+         assert!(!failure_stops_queue(
+-            &crate::run_diagnosis::FailureCause::RecognitionMissed { missed: Vec::new() }
++            &crate::run_diagnosis::FailureCause::RecognitionMissed { missed: Vec::new() },
++            false
+         ));
+         assert_eq!(
+             failure_diagnostic_code(&crate::run_diagnosis::FailureCause::ScreenEmpty),
+diff --git a/src-tauri/src/secrets.rs b/src-tauri/src/secrets.rs
+index 44fc9a7..c1e552f 100644
+--- a/src-tauri/src/secrets.rs
++++ b/src-tauri/src/secrets.rs
+@@ -323,6 +323,7 @@ mod tests {
+             initialized: true,
+             force_stop_target_app: false,
+             close_target_app_after_run: false,
++            stop_on_task_failure: false,
+             max_run_duration_seconds: 0,
+             foreground_mode: false,
+             foreground_overlay: false,
+diff --git a/src/lib/i18n.ts b/src/lib/i18n.ts
+index e5fc72b..79eaff4 100644
+--- a/src/lib/i18n.ts
++++ b/src/lib/i18n.ts
+@@ -313,6 +313,9 @@ const en = {
+   closeTargetAppAfterRunDescription:
+     "Off keeps the virtual display, the preview and the target app after the run. Stop the display to end the session.",
+   maxRunDuration: "Max run duration (minutes)",
++  stopOnTaskFailure: "Stop remaining tasks on failure",
++  stopOnTaskFailureDescription:
++    "Enable for dependent steps so a failed step prevents later actions from running on the wrong page.",
+   maxRunDurationDescription:
+     "Stops the run once it reaches this limit. Leave empty for no limit.",
+   maxRunDurationInvalid:
+@@ -703,6 +706,9 @@ const zh: Record<MessageKey, string> = {
+   closeTargetAppAfterRunDescription:
+     "关闭后，运行结束会保留虚拟屏、画面与目标应用，直到你手动停止画面。",
+   maxRunDuration: "单轮运行时长上限（分钟）",
++  stopOnTaskFailure: "任务失败后停止后续任务",
++  stopOnTaskFailureDescription:
++    "组合有先后依赖的操作时建议开启，避免前一步失败后继续在错误页面执行后续动作。",
+   maxRunDurationDescription: "达到该时长后自动停止本次运行；留空表示不限制。",
+   maxRunDurationInvalid: "请填写 1 到 1440 之间的整数分钟，或留空表示不限制。",
+   foregroundMode: "前台模式",
+diff --git a/src/lib/types.ts b/src/lib/types.ts
+index 8a33bca..fed8229 100644
+--- a/src/lib/types.ts
++++ b/src/lib/types.ts
+@@ -305,6 +305,7 @@ export interface UserConfiguration {
+   initialized: boolean;
+   forceStopTargetApp: boolean;
+   closeTargetAppAfterRun: boolean;
++  stopOnTaskFailure?: boolean;
+   /** Stops a run after this many seconds; `0` or absent disables the limit. */
+   maxRunDurationSeconds?: number;
+   foregroundMode?: boolean;
+diff --git a/src/pages/SettingsPage.tsx b/src/pages/SettingsPage.tsx
+index 3bff64b..36a6178 100644
+--- a/src/pages/SettingsPage.tsx
++++ b/src/pages/SettingsPage.tsx
+@@ -377,6 +377,22 @@ export function SettingsPage() {
+         <p className="text-sm text-ink-muted">
+           {t("closeTargetAppAfterRunDescription")}
+         </p>
++        <Checkbox
++          className="min-h-10 gap-2"
++          checked={snapshot?.configuration.stopOnTaskFailure ?? false}
++          disabled={restartPending || !snapshot}
++          onCheckedChange={(next) => {
++            if (!snapshot) return;
++            const nextConfiguration = structuredClone(snapshot.configuration);
++            nextConfiguration.stopOnTaskFailure = next;
++            void saveConfiguration(nextConfiguration);
++          }}
++        >
++          <span className="font-medium">{t("stopOnTaskFailure")}</span>
++        </Checkbox>
++        <p className="text-sm text-ink-muted">
++          {t("stopOnTaskFailureDescription")}
++        </p>
+         <RunDurationField
+           seconds={snapshot?.configuration.maxRunDurationSeconds}
+           disabled={restartPending || !snapshot}
