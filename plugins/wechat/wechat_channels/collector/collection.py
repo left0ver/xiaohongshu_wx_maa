@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from layout import DATE, REGION, WorkHeaderMissing, label_values, line_height, video_values, work_region
+from layout import REGION, WorkHeaderMissing, label_values, line_height, profile_name, video_values, work_region
 
 
 def normalize(text):
@@ -21,22 +21,6 @@ def normalize(text):
 def identity(*parts):
     encoded = json.dumps([normalize(part) for part in parts], ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def visible_author_matches(observed, expected):
-    # Feed names can fade beneath the follow button. This is only a navigation
-    # hint; the full profile name must also match both work-detail headers.
-    observed, expected = normalize(observed), normalize(expected)
-    return bool(observed and expected) and (observed.startswith(expected) or expected.startswith(observed))
-
-
-def work_author_matches(header, author):
-    header, author = normalize(header), normalize(author)
-    if not header.startswith(author):
-        return False
-    remainder = header[len(author):]
-    badge, marker, _ = remainder.partition("作者")
-    return bool(marker) and re.fullmatch(r"[WwVv√✓✔]*", badge) is not None
 
 
 def find(lines, pattern, predicate=lambda line: True):
@@ -55,11 +39,8 @@ def author_in_feed(lines, height):
     return candidates[0]
 
 
-def parse_video(lines, author, include_author_evidence=False):
-    result = video_values(lines, author)
-    if not include_author_evidence:
-        result.pop("_authorHeader")
-    return result
+def parse_video(lines, author):
+    return video_values(lines, author)
 
 
 def parse_author(lines, author):
@@ -67,11 +48,7 @@ def parse_author(lines, author):
     follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
     if not contact or not follow or abs(contact["box"][1] - follow["box"][1]) > line_height(lines) * 2:
         raise ValueError("Author profile controls are missing")
-    names = [line for line in lines if normalize(line["text"]).startswith(normalize(author))
-             and line["box"][1] < follow["box"][1]]
-    if len(names) != 1:
-        raise ValueError("Author profile name does not match")
-    name = names[0]
+    name = profile_name(lines, author)
     area = sorted((line for line in lines
                    if name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1]),
                   key=lambda line: (line["box"][1], line["box"][0]))
@@ -101,8 +78,9 @@ def profile_bio_expand(lines, author):
     follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
     if not follow:
         return None
-    name = find(lines, "^" + re.escape(author), lambda line: line["box"][1] < follow["box"][1])
-    if not name:
+    try:
+        name = profile_name(lines, author)
+    except ValueError:
         return None
     return find(lines, r"(?:[.…⋯]+\s*(?:展开|全文)|^(?:展开|全文))$",
                 lambda line: name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1])
@@ -219,7 +197,7 @@ def navigation_roi(label, height):
         return [0, height - quarter, 720, quarter]
     if label == "navigation-top":
         return [0, 0, 720, quarter]
-    if label in ("feed", "before-author", "returned-feed"):
+    if label in ("feed", "before-author"):
         return [0, height - 250, 720, 250]
     return [0, 0, 0, 0]
 
@@ -280,19 +258,19 @@ def video_details(ui, lines, author):
     ui.click(comment)
     details = ui.snapshot("video-details", author=author)
     try:
-        work_region(details, author)
+        work_region(details)
     except WorkHeaderMissing:
         # A single drawer-only recovery; never swipe an unclassified feed.
         ui.restore_work_header(details)
         details = ui.snapshot("video-details", author=author)
     for _ in range(2):
-        region = work_region(details, author)
+        region = work_region(details)
         expand = region["expand"]
         if not expand:
             break
         ui.click(expand)
         details = ui.snapshot("expanded-description", author=author)
-    return parse_video(details, author, include_author_evidence=True)
+    return parse_video(details, author)
 
 
 def collect(ui, store, timings, launch=True):
@@ -307,31 +285,15 @@ def collect(ui, store, timings, launch=True):
         with timings.phase("collect_author_profile"):
             feed = ui.snapshot("before-author")
             target = author_in_feed(feed, ui.height)
-            if not visible_author_matches(target["text"], author):
-                raise ValueError("Feed changed before opening the author")
             ui.click(target)
             author_lines = ui.snapshot("author-profile", author=author)
-            try:
-                profile = parse_author(author_lines, author)
-            except ValueError:
-                author_lines = ui.refine_profile_name(author_lines, author)
-                profile = parse_author(author_lines, author)
-            author = profile["authorNickname"]
-            if not work_author_matches(video["_authorHeader"], author):
-                author_lines = ui.refine_profile_name(author_lines, author)
-                profile = parse_author(author_lines, author)
-                author = profile["authorNickname"]
-            if not work_author_matches(video.pop("_authorHeader"), author):
-                raise ValueError("Full profile name does not match the original work header")
-            video["authorNickname"] = author
+            profile = parse_author(author_lines, author)
             expand = profile_bio_expand(author_lines, author)
             if expand:
                 ui.click(expand)
                 author_lines = ui.snapshot("author-profile", author=author)
                 profile = parse_author(author_lines, author)
-                if normalize(profile["authorNickname"]) != normalize(author):
-                    raise ValueError("Profile author changed while expanding biography")
-            name = find(author_lines, "^" + re.escape(author) + "$")
+            name = profile_name(author_lines, author)
             ui.profile_more(name)
             menu = ui.snapshot("profile-menu")
             more = find(menu, r"^更多信息$")
@@ -341,25 +303,10 @@ def collect(ui, store, timings, launch=True):
             profile["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if profile[key] is None]
             ui.back()
             ui.back()
-        with timings.phase("verify_original_video"):
-            feed = ui.snapshot("returned-feed")
-            if not visible_author_matches(author_in_feed(feed, ui.height)["text"], author):
-                raise ValueError("Returned to a different author")
-            returned = video_details(ui, feed, author)
-            if not work_author_matches(returned.pop("_authorHeader"), author):
-                raise ValueError("Returned work author does not match the full profile name")
-            if identity(author, returned["description"]) != identity(author, video["description"]):
-                # Re-read the open drawer once; punctuation remains significant.
-                with timings.phase("verify_description_retry"):
-                    confirmed = parse_video(ui.snapshot("confirm-returned-description", author=author), author,
-                                            include_author_evidence=True)
-                    if not work_author_matches(confirmed.pop("_authorHeader"), author):
-                        raise ValueError("Returned work author changed during confirmation")
-                    if identity(author, confirmed["description"]) != identity(author, video["description"]):
-                        raise ValueError("Returned to a different work; event was not saved")
-            ui.back()
         with timings.phase("persist_video_draft"):
-            payload = {**video, **profile, "returnVerified": True}
+            # Keep the first feed nickname and first complete work description;
+            # later pages supply profile fields, not corrections to those values.
+            payload = {**profile, **video, "returnVerified": False}
             payload["missingFields"] += [key for key in ("publishTimeText", "publishLocation") if not payload[key]]
             event, duplicate = store.save(payload)
             timings.emit({"kind": "videoCollected", "eventId": event["event_id"],

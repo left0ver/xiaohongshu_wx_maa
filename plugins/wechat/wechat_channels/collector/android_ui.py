@@ -6,7 +6,6 @@ import struct
 import subprocess
 import tempfile
 import time
-from difflib import SequenceMatcher
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -313,40 +312,6 @@ class MaaUi:
             raise ValueError("Author profile menu icon was not recognized")
         box = detail.box
         self.click({"box": [box.x, box.y, box.w, box.h]})
-
-    def refine_profile_name(self, lines, hint):
-        # Large profile names can be split into overlapping detector boxes.
-        # Similarity chooses a region only; the resulting full name still has
-        # to agree with the original and returned work headers before saving.
-        candidates = [line for line in lines if 170 <= line["box"][0] < 540
-                      and self.height / 4 < line["box"][1] < self.height * 0.7]
-        target = max(candidates, key=lambda line: SequenceMatcher(None, hint, line["text"]).ratio(), default=None)
-        if target is None or SequenceMatcher(None, hint, target["text"]).ratio() < 0.6:
-            raise ValueError("Profile name region could not be identified")
-        center = target["box"][1] + target["box"][3] / 2
-        row = [line for line in candidates if abs(line["box"][1] + line["box"][3] / 2 - center) < target["box"][3] / 2]
-        left = max(0, min(line["box"][0] for line in row) - 20)
-        top = max(0, min(line["box"][1] for line in row) - 5)
-        right = min(540, max(line["box"][0] + line["box"][2] for line in row) + 8)
-        bottom = max(line["box"][1] + line["box"][3] for line in row) + 5
-        roi = [left, top, right - left, bottom - top]
-        if self.context:
-            result = self.context.run_task("BatchText", {"BatchText": {
-                "recognition": "OCR", "roi": roi, "only_rec": True, "threshold": 0.55,
-                "action": "DoNothing", "next": [], "pre_delay": 0, "post_delay": 0,
-            }})
-        else:
-            job = self.controller.post_screencap().wait()
-            if not job.succeeded:
-                raise RuntimeError("Screenshot failed")
-            self.image = job.get()
-            result = self.tasker.post_recognition("OCR", JOCR(roi=roi, only_rec=True, threshold=0.55), self.image).wait().get()
-        detail = result.nodes[-1].recognition if result and result.nodes else None
-        refined = detail.raw_detail.get("all", []) if detail else []
-        if len(refined) != 1 or refined[0].get("score", 0) < 0.55:
-            raise ValueError("Full profile name recognition failed")
-        (self.evidence_dir / "refined-profile-name.json").write_text(json.dumps(refined, ensure_ascii=False, indent=2), encoding="utf-8")
-        return [line for line in lines if line not in row] + self.annotate(refined, "ocr-name")
 
     def click(self, line):
         if self.tasker.stopping:

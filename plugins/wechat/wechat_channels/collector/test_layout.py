@@ -2,7 +2,7 @@
 
 import unittest
 
-from collection import parse_author, parse_basic_info, parse_video, work_author_matches
+from collection import parse_author, parse_basic_info, parse_video
 from layout import basic_info_ready, work_region
 from test_collection import AUTHOR, DETAILS, INFO, PROFILE, line
 
@@ -24,10 +24,10 @@ class LayoutTests(unittest.TestCase):
     def test_separate_nickname_tag_region_and_date_boxes(self):
         data = [DETAILS[0], line(AUTHOR, 99, 560, 150), line("作者", 260, 561, 55),
                 line("福建", 320, 560, 55), line("8月1日", 390, 562, 90), *DETAILS[2:]]
-        value = parse_video(data, AUTHOR, True)
+        value = parse_video(data, AUTHOR)
         self.assertEqual(value["publishLocation"], "福建")
         self.assertEqual(value["publishTimeText"], "8月1日")
-        self.assertTrue(work_author_matches(value["_authorHeader"], AUTHOR))
+        self.assertEqual(value["authorNickname"], AUTHOR)
 
     def test_metadata_below_author_row_and_split_across_rows(self):
         for metadata in ([line("福建8月1日", 99, 620)],
@@ -38,6 +38,15 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(result["publishLocation"], "福建")
             self.assertEqual(result["publishTimeText"], "8月1日")
             self.assertEqual(result["description"], "正文")
+
+    def test_nickname_containing_author_word_does_not_replace_separate_tag(self):
+        data = [DETAILS[0], line("示例作者", 99, 563), line("作者浙江6月27日", 99, 605),
+                line("正文", 99, 652), line("原声", 99, 701)]
+        result = parse_video(data, "首次昵称")
+        self.assertEqual(result["authorNickname"], "首次昵称")
+        self.assertEqual(result["publishLocation"], "浙江")
+        self.assertEqual(result["publishTimeText"], "6月27日")
+        self.assertEqual(result["description"], "正文")
 
     def test_unknown_header_badge_is_not_a_location(self):
         data = list(DETAILS)
@@ -79,12 +88,12 @@ class LayoutTests(unittest.TestCase):
 
     def test_comment_expand_is_not_a_work_expand_control(self):
         data = [*DETAILS, line("展开", 99, 1000)]
-        self.assertIsNone(work_region(data, AUTHOR)["expand"])
+        self.assertIsNone(work_region(data)["expand"])
         self.assertEqual(parse_video(data, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
 
     def test_work_expand_is_requested_before_accepting_description(self):
         data = [*DETAILS[:4], line("展开", 99, 684), line("原声", 99, 735)]
-        self.assertEqual(work_region(data, AUTHOR)["expand"]["text"], "展开")
+        self.assertEqual(work_region(data)["expand"]["text"], "展开")
         with self.assertRaisesRegex(ValueError, "expansion"):
             parse_video(data, AUTHOR)
 

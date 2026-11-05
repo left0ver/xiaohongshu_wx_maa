@@ -2,7 +2,7 @@
   "interface_version": 2,
   "name": "wechat_channels",
   "label": "$project_name",
-  "version": "0.6.0",
+    "version": "0.7.0",
   "description": "$project_description",
   "languages": {
     "zh_cn": "locale/zh_cn.json",

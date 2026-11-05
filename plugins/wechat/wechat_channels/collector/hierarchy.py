@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from collection import author_in_feed, find, parse_author, parse_basic_info, parse_video, profile_bio_expand
-from layout import LABELS, label_values, reading_rows, replace_region, supplemental_roi, work_region
+from layout import LABELS, label_values, profile_name, reading_rows, replace_region, supplemental_roi, work_region
 
 PACKAGE = "com.tencent.mm"
 
@@ -78,13 +78,13 @@ def complete_for(lines, label, height, author=None):
             return bool((home and find(lines, r"^通讯录$"))
                         or (discover and find(lines, r"^视频号$"))
                         or (find(lines, r"^推荐$") and find(lines, r"^关注$") and find(lines, r"^朋友")))
-        if label in ("feed", "before-author", "returned-feed"):
+        if label in ("feed", "before-author"):
             author_in_feed(lines, height)
             return label == "before-author" or bool(find(lines, r"^\d+(?:\.\d+)?[万wW]?$",
                 lambda line: line["box"][0] > 600 and line["box"][1] > height - 130))
-        if label in ("video-details", "expanded-description", "confirm-returned-description") and author:
+        if label in ("video-details", "expanded-description") and author:
             # Let the flow expand only a work-header control, never a comment.
-            if work_region(lines, author)["expand"]:
+            if work_region(lines)["expand"]:
                 return True
             video = parse_video(lines, author)
             return bool(video["publishTimeText"] and video["publishLocation"])
@@ -104,7 +104,10 @@ def complete_for(lines, label, height, author=None):
 def anchor_signature(lines, author, label):
     heading = find(lines, r"^评论\s*\d*$|^基础信息$")
     if label == "author-profile" and author:
-        heading = next((line for line in lines if line["text"].startswith(author)), None)
+        try:
+            heading = profile_name(lines, author)
+        except ValueError:
+            heading = None
     if not heading:
         return []
     # Include the known work text as well as author/title. Exclude the moving
@@ -140,11 +143,11 @@ def choose_snapshot(label, height, author, hierarchy, templates, ocr, regional_o
 
 
 def field_evidence(lines, label, author=None):
-    """Observed fields are not certified identities until the collection checks pass."""
+    """Record this snapshot's observations, without claiming cross-page identity verification."""
     try:
-        if label in ("video-details", "expanded-description", "confirm-returned-description") and author:
+        if label in ("video-details", "expanded-description") and author:
             values = parse_video(lines, author)
-            region = work_region(lines, author)
+            region = work_region(lines)
         elif label.startswith("author-basic-info"):
             values, region = parse_basic_info(lines), None
         elif label == "author-profile" and author:

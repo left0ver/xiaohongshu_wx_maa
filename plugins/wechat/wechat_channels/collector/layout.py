@@ -3,6 +3,7 @@
 import re
 import unicodedata
 from statistics import median
+from difflib import SequenceMatcher
 
 DATE = r"(?:\d{4}年)?\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:今天|昨天|前天)(?:\s*\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚"
 REGION = r"北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆|香港|澳门|台湾|中国|美国|日本|韩国|英国|法国|德国|加拿大|澳大利亚|新加坡|马来西亚|泰国|海外"
@@ -78,7 +79,7 @@ def comment_row(row, previous, following, height):
     return author_and_region and actions and row["top"] - previous["bottom"] >= height * 0.5
 
 
-def work_region(lines, author):
+def work_region(lines):
     rows = reading_rows(lines)
     height = line_height(lines)
     heading = next((row for row in rows if re.match(r"^评论\s*\d*", row["text"])), None)
@@ -87,28 +88,27 @@ def work_region(lines, author):
     rows = [row for row in rows if row["top"] > heading["bottom"]]
     header = None
     header_text = None
-    previous = None
-    for row in rows:
+    for index, row in enumerate(rows):
         if row["top"] - heading["bottom"] > height * 6:
             break
         pieces = [item for item in row["items"] if not re.search(r"已声明原创|都在搜", item["text"])]
         text = compact("".join(item["text"] for item in pieces))
-        offset = len(compact(author)) if text.startswith(compact(author)) else 0
-        marker = text.rfind("作者", offset)
+        marker = text.rfind("作者")
         if marker >= 0:
-            if text.startswith("作者") and previous and row["top"] - previous["bottom"] <= height * 1.5:
-                name = compact(previous["text"])
-                if name.startswith(compact(author)):
-                    text = name + text
-            if not text.startswith(compact(author)):
-                raise ValueError("Video author does not match the feed author")
+            # A nickname can itself end with 作者. Prefer a separate following
+            # author-tag row when it contains only the tag and metadata.
+            following = rows[index + 1] if index + 1 < len(rows) else None
+            if (marker + 2 == len(text) and following
+                    and following["top"] - row["bottom"] <= height * 1.5
+                    and re.fullmatch(f"作者(?:(?:{REGION})?(?:{DATE})?|(?:{DATE})(?:{REGION})?)",
+                                     compact(following["text"]))):
+                continue
             header, header_text = row, text
             break
-        previous = {**row, "text": "".join(item["text"] for item in pieces)}
     if header is None:
         raise WorkHeaderMissing("Original work header is missing or outside the visible drawer")
 
-    marker = header_text.rfind("作者", len(compact(author)))
+    marker = header_text.rfind("作者")
     metadata = header_text[marker + 2:]
     content = [row for row in rows if row["top"] >= header["bottom"]]
     # Metadata may occupy its own line. Consume only exact date/location rows
@@ -159,7 +159,7 @@ def metadata_values(region):
 
 
 def video_values(lines, author):
-    region = work_region(lines, author)
+    region = work_region(lines)
     if not region["boundary"]:
         raise ValueError("The full description boundary is not visible")
     if region["expand"]:
@@ -169,8 +169,25 @@ def video_values(lines, author):
                    and not re.fullmatch(r"收起", item["text"].strip()))
     if not text or text.rstrip().endswith(("…", "...")):
         raise ValueError("Description is empty or still truncated")
-    return {"authorNickname": author, "description": text,
-            **metadata_values(region), "_authorHeader": region["authorHeader"]}
+    return {"authorNickname": author, "description": text, **metadata_values(region)}
+
+
+def profile_name(lines, hint):
+    """Locate the current header without validating it against an earlier name."""
+    controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|关注|私信|客服)", item["text"])]
+    if len(controls) < 2:
+        raise ValueError("Author profile controls are missing")
+    end = min(item["box"][1] for item in controls)
+    height = max((bottom(item) for item in lines), default=0)
+    candidates = [item for item in lines if 170 <= item["box"][0] < 540
+                  and height / 4 < item["box"][1] < end]
+    # The hint ranks locations only. There is no similarity threshold, equality
+    # requirement or second OCR; the saved nickname remains the first reading.
+    name = max(candidates, key=lambda item: (SequenceMatcher(None, compact(hint), compact(item["text"])).ratio(),
+                                           -item["box"][1]), default=None)
+    if name is None:
+        raise ValueError("Author profile name region is missing")
+    return name
 
 
 def label_values(lines):
@@ -214,9 +231,9 @@ def basic_info_ready(lines):
 
 def supplemental_roi(lines, label, height, author=None):
     """Return a field group to replace; None means no reliable regional anchor."""
-    if label in ("video-details", "expanded-description", "confirm-returned-description") and author:
+    if label in ("video-details", "expanded-description") and author:
         try:
-            region = work_region(lines, author)
+            region = work_region(lines)
         except ValueError:
             return None
         missing_metadata = not all(metadata_values(region).values())
@@ -243,7 +260,10 @@ def supplemental_roi(lines, label, height, author=None):
             top = max(0, int(row["top"] - line_height(lines) / 2))
             return [0, top, 720, max(1, int(end - top))]
     if label == "author-profile" and author:
-        name = next((item for item in lines if compact(item["text"]).startswith(compact(author))), None)
+        try:
+            name = profile_name(lines, author)
+        except ValueError:
+            return None
         controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|关注|私信|客服)", item["text"])]
         if name and len(controls) >= 2:
             top, end = bottom(name), min(item["box"][1] for item in controls)

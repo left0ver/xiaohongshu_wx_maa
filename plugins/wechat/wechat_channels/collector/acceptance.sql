@@ -11,14 +11,15 @@ SELECT event_id, dedupe_key, collected_at, status,
 FROM video_drafts
 ORDER BY collected_at;
 
--- Both queries must return no rows.
+-- Both queries must return no rows. New records intentionally set returnVerified
+-- to false; historical records can still be true. Neither value certifies OCR accuracy.
 SELECT dedupe_key, count(*) AS copies
 FROM video_drafts GROUP BY dedupe_key HAVING count(*) > 1;
 
 SELECT event_id FROM video_drafts
 WHERE status <> 'local_only'
    OR coalesce(json_extract(event_json, '$.event_type'), '') <> 'VIDEO'
-   OR coalesce(json_extract(event_json, '$.payload.returnVerified'), 0) <> 1
+   OR coalesce(json_type(event_json, '$.payload.returnVerified'), '') NOT IN ('true', 'false')
    OR coalesce(json_extract(event_json, '$.payload.authorDouyinId'), '') = ''
    OR coalesce(json_extract(event_json, '$.payload.authorNickname'), '') = ''
    OR coalesce(json_extract(event_json, '$.payload.description'), '') = '';
