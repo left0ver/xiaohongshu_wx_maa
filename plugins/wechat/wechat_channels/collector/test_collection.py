@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from collection import LocalStore, Timings, collect, identity, open_basic_info, parse_author, parse_basic_info, parse_video
@@ -46,6 +46,20 @@ class FakeUi:
         self.labels.append(label)
         return next(self.snapshots)
 
+    @contextlib.contextmanager
+    def prepare_basic_info(self):
+        yield None
+
+    def wait_basic_info(self, timeout=5, reader=None):
+        from layout import basic_info_ready
+        lines = self.snapshot("author-basic-info-ready")
+        if not basic_info_ready(lines):
+            raise ValueError("Author basic information was not ready within 5 seconds")
+        return lines
+
+    def refine_profile_name(self, lines, author):
+        return lines
+
     def click(self, target):
         self.clicks.append(target["text"])
 
@@ -76,51 +90,32 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(ui.clicks, ["发现", "视频号", "推荐"])
         self.assertEqual(ui.labels, ["navigation-bottom", "navigation-top", "navigation-top", "feed"])
 
-    def test_basic_info_ready_continues_without_extra_wait(self):
+    def test_basic_info_ready_reuses_values_without_another_ocr(self):
         ui = FakeUi([INFO])
-        with patch("collection.time.monotonic", return_value=100), patch("collection.time.sleep") as sleep:
-            self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
-        sleep.assert_not_called()
+        self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        self.assertEqual(ui.labels, ["author-basic-info-ready"])
         self.assertEqual(ui.clicks, ["更多信息"])
 
-    def test_basic_info_loading_retries_without_clicking_again(self):
-        ui = FakeUi([[], INFO[:-1], INFO])
-        with patch("collection.time.monotonic", side_effect=[100, 100.6, 100.7, 101.2, 101.3, 101.8]), \
-                patch("collection.time.sleep") as sleep:
-            self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
-        self.assertEqual(sleep.call_count, 2)
+    def test_click_settling_consumes_the_same_readiness_budget(self):
+        ui = FakeUi([])
+        ui.wait_basic_info = Mock(return_value=INFO)
+        with patch("collection.time.monotonic", side_effect=[100, 100.8]):
+            open_basic_info(ui, line("更多信息", 280, 1400))
+        self.assertAlmostEqual(ui.wait_basic_info.call_args.kwargs["timeout"], 4.2)
+
+    def test_basic_info_readiness_does_not_certify_missing_id(self):
+        ui = FakeUi([INFO[:-1], INFO])
+        self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        self.assertEqual(ui.labels, ["author-basic-info-ready", "author-basic-info"])
         self.assertEqual(ui.clicks, ["更多信息"])
-        self.assertEqual(ui.labels, ["author-basic-info"] * 3)
-
-    def test_basic_info_timeout_does_not_take_another_snapshot(self):
-        for unavailable in ([], INFO[:-1]):
-            with self.subTest(unavailable=unavailable):
-                ui = FakeUi([unavailable])
-                with patch("collection.time.monotonic", side_effect=[100, 100.6, 104.8, 105]), \
-                        patch("collection.time.sleep") as sleep:
-                    with self.assertRaisesRegex(ValueError, "within 5 seconds"):
-                        open_basic_info(ui, line("更多信息", 280, 1400))
-                self.assertAlmostEqual(sleep.call_args.args[0], 0.2)
-                self.assertEqual(ui.labels, ["author-basic-info"])
-                self.assertEqual(ui.clicks, ["更多信息"])
-
-    def test_basic_info_slow_ocr_failure_does_not_extend_wait(self):
-        ui = FakeUi([[]])
-        with patch("collection.time.monotonic", side_effect=[100, 100.6, 106]), \
-                patch("collection.time.sleep") as sleep:
-            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
-                open_basic_info(ui, line("更多信息", 280, 1400))
-        sleep.assert_not_called()
-        self.assertEqual(ui.labels, ["author-basic-info"])
 
     def test_basic_info_timeout_keeps_flow_unsaved_and_records_failure(self):
         with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
             ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)], []])
             store = LocalStore(Path(root) / "videos.sqlite3")
             timings = Timings(Path(root) / "timings.jsonl", "info-timeout")
-            with patch("collection.time.monotonic", side_effect=[100, 100, 100.6, 105.1]):
-                with self.assertRaisesRegex(ValueError, "within 5 seconds"):
-                    collect(ui, store, timings)
+            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+                collect(ui, store, timings)
             with store.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
             self.assertEqual([(row["taskName"], row["outcome"]) for row in timings.rows[-2:]],
@@ -291,6 +286,16 @@ class CollectionTests(unittest.TestCase):
                     self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0 if changed else 1)
                 self.assertEqual(timings.rows[-1]["outcome"], "failed" if changed else "succeeded")
                 self.assertTrue(all(row["durationMs"] >= 0 for row in timings.rows))
+
+    def test_profile_expansion_is_bounded_and_never_saves_truncated_bio(self):
+        collapsed = [*PROFILE[:2], line("简介...展开", 35, 644), *PROFILE[3:]]
+        for expanded in (PROFILE, collapsed):
+            with self.subTest(expanded=expanded is PROFILE), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                ui = FakeUi([FEED, FEED, DETAILS, FEED, collapsed, expanded,
+                             [line("更多信息", 280, 1400)], INFO, FEED, DETAILS])
+                result = collect(ui, LocalStore(Path(root) / "db.sqlite3"), Timings(Path(root) / "timings.jsonl", "bio"))
+                self.assertEqual(ui.clicks.count("简介...展开"), 1)
+                self.assertEqual(result["payload"]["authorBio"], "作者简介" if expanded is PROFILE else None)
 
     def test_discover_page_opens_channels_instead_of_clicking_discover_again(self):
         from collection import ensure_feed

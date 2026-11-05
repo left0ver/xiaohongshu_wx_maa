@@ -13,9 +13,32 @@ import tempfile
 import time
 
 
-def run(args, timeout=15, stopped=lambda: False):
+def run(args, timeout=15, stopped=lambda: False, binary=False):
+    if timeout <= 0:
+        raise subprocess.TimeoutExpired(args, timeout)
+    if stopped():
+        raise InterruptedError("Task stopped")
     if not hasattr(sys, "getandroidapilevel"):
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=True).stdout
+        deadline = time.monotonic() + timeout
+        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary) as child:
+            try:
+                while True:
+                    if stopped():
+                        raise InterruptedError("Task stopped")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(args, timeout)
+                    try:
+                        output, error = child.communicate(timeout=min(0.05, remaining))
+                    except subprocess.TimeoutExpired:
+                        continue
+                    if child.returncode:
+                        raise subprocess.CalledProcessError(child.returncode, args, output=output, stderr=error)
+                    return output
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate()
     # Bionic API 28+ defines file_actions_t as a pointer; bundled Python lacks os.posix_spawn.
     libc = ctypes.CDLL("libc.so", use_errno=True)
     pointer = ctypes.POINTER(ctypes.c_void_p)
@@ -54,8 +77,9 @@ def run(args, timeout=15, stopped=lambda: False):
                     reaped = True
                     code = os.waitstatus_to_exitcode(status)
                     if code:
-                        raise subprocess.CalledProcessError(code, args)
-                    return output.read_text(errors="replace")
+                        raise subprocess.CalledProcessError(code, args, output=output.read_bytes(),
+                                                            stderr=error.read_bytes())
+                    return output.read_bytes() if binary else output.read_text(errors="replace")
                 if stopped():
                     raise InterruptedError("Task stopped")
                 if time.monotonic() >= deadline:

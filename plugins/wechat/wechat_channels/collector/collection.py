@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from layout import DATE, REGION, WorkHeaderMissing, label_values, line_height, video_values, work_region
+
 
 def normalize(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).strip()
@@ -53,71 +55,17 @@ def author_in_feed(lines, height):
     return candidates[0]
 
 
-DATE = r"(?:\d{4}年)?\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:今天|昨天|前天)(?:\s*\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚"
-
-
 def parse_video(lines, author, include_author_evidence=False):
-    header = find(lines, r"^评论\s*\d*")
-    if not header:
-        raise ValueError("The video details drawer is not open")
-    row = find(lines, r"作者", lambda line: line["box"][1] > header["box"][1]
-               and "作者" in (normalize(line["text"])[len(normalize(author)):]
-                              if normalize(line["text"]).startswith(normalize(author))
-                              else normalize(line["text"])))
-    if not row:
-        raise ValueError("Video author does not match the feed author")
-    # Select only the work's header, never a later comment marked 作者.
-    if row["box"][1] - header["box"][1] > 180:
-        raise ValueError("Original work header is outside the visible drawer")
-    author_header = row["text"]
-    if normalize(row["text"]).startswith("作者"):
-        # A separate author tag belongs to the nickname immediately above it
-        # (or to its left when OCR split a single visual row into boxes).
-        names = [item for item in lines if item is not row
-                 and normalize(item["text"]).startswith(normalize(author))
-                 and header["box"][1] < item["box"][1] <= row["box"][1] + 10
-                 and row["box"][1] - item["box"][1] <= 70
-                 and item["box"][0] <= row["box"][0] + 20]
-        if len(names) != 1:
-            raise ValueError("Video author does not match the feed author")
-        author_header = names[0]["text"] + row["text"]
-    if not normalize(author_header).startswith(normalize(author)):
-        raise ValueError("Video author does not match the feed author")
-    metadata = normalize(author_header)[len(normalize(author)):].split("作者", 1)[1].strip()
-    date = re.search(DATE, metadata)
-    published = date.group(0) if date else None
-    location = metadata[:date.start()].strip() if date else None
-    below = sorted((line for line in lines if line["box"][1] > row["box"][1] + row["box"][3] / 2),
-                   key=lambda item: (item["box"][1], item["box"][0]))
-    stop = next((line for line in below if
-                 re.fullmatch(r"[^\w\u4e00-\u9fff]*(?:相关)?音乐\s*", line["text"].strip())
-                 or re.search(r"相关音乐|音乐\s*[·•:：]|上热门|^展开|^收起|^全文|^更多|^暂无评论|抢沙发", line["text"])), None)
-    # A following comment's timestamp is also a hard boundary for the work text.
-    comment = next((line for line in below if re.search(DATE, line["text"])
-                    and line["box"][1] > row["box"][1] + 100), None)
-    boundaries = [line["box"][1] for line in (stop, comment) if line]
-    if not boundaries:
-        raise ValueError("The full description boundary is not visible")
-    end = min(boundaries)
-    description_lines = [line for line in below if line["box"][1] < end
-                         and line["box"][0] >= row["box"][0] - 15
-                         and not re.search(r"已声明原创|发表评论|回复|^\d+$", line["text"])]
-    description = "".join(line["text"].strip() for line in description_lines)
-    if not description or description.rstrip().endswith(("…", "...")):
-        raise ValueError("Description is empty or still truncated")
-    if stop and re.match(r"^(展开|全文|更多)", stop["text"]):
-        raise ValueError("Description needs expansion")
-    result = {"authorNickname": author, "description": description,
-              "publishTimeText": published, "publishLocation": location or None}
-    if include_author_evidence:
-        result["_authorHeader"] = author_header
+    result = video_values(lines, author)
+    if not include_author_evidence:
+        result.pop("_authorHeader")
     return result
 
 
 def parse_author(lines, author):
     contact = find(lines, r"^(私信|客服)$")
     follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
-    if not contact or not follow or abs(contact["box"][1] - follow["box"][1]) > 40:
+    if not contact or not follow or abs(contact["box"][1] - follow["box"][1]) > line_height(lines) * 2:
         raise ValueError("Author profile controls are missing")
     names = [line for line in lines if normalize(line["text"]).startswith(normalize(author))
              and line["box"][1] < follow["box"][1]]
@@ -127,11 +75,12 @@ def parse_author(lines, author):
     area = sorted((line for line in lines
                    if name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1]),
                   key=lambda line: (line["box"][1], line["box"][0]))
-    ip = find(area, r"IP\s*属地\s*[:：]?")
-    certification = find(area, r"认证|企业主体|职业信息|^音乐人$")
+    ip = find(area, r"IP\s*(?:归)?属地\s*[:：]?")
+    certification = find(area, r"认证|企业主体|职业信息|^音乐(?:人|达人)$")
     location = next((line for line in area
                      if line["box"][0] >= name["box"][0] - 15
-                     and line["box"][1] - name["box"][1] < 110
+                     and line["box"][1] - name["box"][1] < line_height(lines) * 4
+                     and re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:已实名)?", line["text"])
                      and line is not ip and line is not certification), None)
     bio = [line["text"] for line in area
            if line is not ip and line is not certification and line is not location
@@ -139,53 +88,53 @@ def parse_author(lines, author):
     fields = {
         "authorNickname": name["text"].strip(),
         "authorCertification": certification["text"] if certification else None,
-        "authorIpLocation": re.sub(r".*IP\s*属地\s*[:：]?\s*", "", ip["text"]) if ip else None,
+        "authorIpLocation": re.sub(r".*IP\s*(?:归)?属地\s*[:：]?\s*", "", ip["text"]) if ip else None,
         "authorProfileLocation": location["text"] if location else None,
-        "authorBio": "\n".join(bio) or None,
+        "authorBio": None if profile_bio_expand(lines, author) else ("\n".join(bio) or None),
     }
     fields["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if fields[key] is None]
     return fields
+
+
+def profile_bio_expand(lines, author):
+    """Only expand a truncated biography between the name and profile controls."""
+    follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
+    if not follow:
+        return None
+    name = find(lines, "^" + re.escape(author), lambda line: line["box"][1] < follow["box"][1])
+    if not name:
+        return None
+    return find(lines, r"(?:[.…⋯]+\s*(?:展开|全文)|^(?:展开|全文))$",
+                lambda line: name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1])
 
 
 def parse_basic_info(lines):
     if not find(lines, r"^基础信息$"):
         raise ValueError("Author basic information is not open")
 
-    def value_for(pattern):
-        label = find(lines, pattern)
-        if not label:
-            return None
-        x, y, width, height = label["box"]
-        values = [line for line in lines if line["box"][0] > x + width
-                  and abs(line["box"][1] + line["box"][3] / 2 - y - height / 2) < max(12, height / 2)]
-        return "".join(line["text"].strip() for line in sorted(values, key=lambda line: line["box"][0])) or None
-
-    channel_id = value_for(r"^视频号\s*ID$")
+    values = label_values(lines)
+    channel_id = re.sub(r"\s+", "", values.get("channel") or "")
     if not channel_id or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", channel_id):
         raise ValueError("A valid public Channels ID was not recognized")
-    return {"authorDouyinId": channel_id, "authorIdentityMethod": "wechat-channel-id",
-            "authorIpLocation": value_for(r"^IP(?:归)?属地$"),
-            "authorProfileLocation": value_for(r"^资料所在地$")}
+    result = {"authorDouyinId": channel_id, "authorIdentityMethod": "wechat-channel-id",
+              "authorIpLocation": values.get("ip"), "authorProfileLocation": values.get("location")}
+    if values.get("certification"):
+        result["authorCertification"] = values["certification"].rstrip("√✓✔")
+    return result
 
 
 def open_basic_info(ui, more):
-    # Include the click's settling delay in the readiness budget. An in-flight
-    # synchronous OCR cannot be interrupted, but no new attempt starts at expiry.
-    deadline = time.monotonic() + 5
-    ui.click(more)
-    last_error = None
-    while time.monotonic() < deadline:
-        lines = ui.snapshot("author-basic-info")
-        try:
-            return parse_basic_info(lines)
-        except ValueError as error:
-            last_error = error
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(0.5, remaining))
-    raise ValueError("Author basic information was not ready within 5 seconds"
-                     + (f": {last_error}" if last_error else "")) from last_error
+    # Library/model preparation happens before clicking and is logged separately.
+    with ui.prepare_basic_info() as reader:
+        deadline = time.monotonic() + 5
+        ui.click(more)
+        ready = ui.wait_basic_info(timeout=max(0, deadline - time.monotonic()), reader=reader)
+    try:
+        return parse_basic_info(ready)
+    except ValueError:
+        # Readiness (title + ID label) and reading the field values are separate
+        # measurements. A visible label does not certify a complete record.
+        return parse_basic_info(ui.snapshot("author-basic-info"))
 
 
 class LocalStore:
@@ -330,13 +279,16 @@ def video_details(ui, lines, author):
         raise ValueError("Comment control was not recognized")
     ui.click(comment)
     details = ui.snapshot("video-details", author=author)
+    try:
+        work_region(details, author)
+    except WorkHeaderMissing:
+        # A single drawer-only recovery; never swipe an unclassified feed.
+        ui.restore_work_header(details)
+        details = ui.snapshot("video-details", author=author)
     for _ in range(2):
-        expand = find(details, r"^(展开|全文|更多)$")
+        region = work_region(details, author)
+        expand = region["expand"]
         if not expand:
-            break
-        # Only expand within the work header, above the first ordinary comment.
-        row = find(details, "作者")
-        if not row or expand["box"][1] > row["box"][1] + 350:
             break
         ui.click(expand)
         details = ui.snapshot("expanded-description", author=author)
@@ -365,9 +317,20 @@ def collect(ui, store, timings, launch=True):
                 author_lines = ui.refine_profile_name(author_lines, author)
                 profile = parse_author(author_lines, author)
             author = profile["authorNickname"]
+            if not work_author_matches(video["_authorHeader"], author):
+                author_lines = ui.refine_profile_name(author_lines, author)
+                profile = parse_author(author_lines, author)
+                author = profile["authorNickname"]
             if not work_author_matches(video.pop("_authorHeader"), author):
                 raise ValueError("Full profile name does not match the original work header")
             video["authorNickname"] = author
+            expand = profile_bio_expand(author_lines, author)
+            if expand:
+                ui.click(expand)
+                author_lines = ui.snapshot("author-profile", author=author)
+                profile = parse_author(author_lines, author)
+                if normalize(profile["authorNickname"]) != normalize(author):
+                    raise ValueError("Profile author changed while expanding biography")
             name = find(author_lines, "^" + re.escape(author) + "$")
             ui.profile_more(name)
             menu = ui.snapshot("profile-menu")

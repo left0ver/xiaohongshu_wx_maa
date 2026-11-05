@@ -16,6 +16,20 @@
     "template": "profile-more.png",
     "threshold": 0.88
   },
+  "BatchBasicTitle": {
+    "$comment": "Read-only readiness helper matches these labels on a 360px-wide frame.",
+    "recognition": "TemplateMatch",
+    "template": "labels/basic-info-title",
+    "method": 5,
+    "threshold": 0.88
+  },
+  "BatchChannelsId": {
+    "$comment": "Read-only readiness helper matches these labels on a 360px-wide frame.",
+    "recognition": "TemplateMatch",
+    "template": "labels/channels-id",
+    "method": 5,
+    "threshold": 0.88
+  },
   "BatchDiscoverTab": {
     "recognition": "And",
     "all_of": [
