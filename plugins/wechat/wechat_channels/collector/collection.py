@@ -59,9 +59,13 @@ def parse_author(lines, author):
                      and line["box"][1] - name["box"][1] < line_height(lines) * 4
                      and re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:已实名)?", line["text"])
                      and line is not ip and line is not certification), None)
-    bio = [line["text"] for line in area
-           if line is not ip and line is not certification and line is not location
-           and not re.search(r"\d+条原创内容|\d+作品|粉丝|获赞|音乐电台.*人在听|^播放$", line["text"])]
+    # Profile statistics and feature rows follow the biography. Stop at their
+    # structural boundary, rather than collecting everything above Follow.
+    boundary = min((line["box"][1] for line in area
+                    if re.fullmatch(r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗", line["text"].strip())),
+                   default=follow["box"][1])
+    bio = [line["text"] for line in area if line["box"][1] < boundary
+           if line is not ip and line is not certification and line is not location]
     fields = {
         "authorNickname": name["text"].strip(),
         "authorCertification": certification["text"] if certification else None,
@@ -293,6 +297,7 @@ def collect(ui, store, timings, launch=True):
                 ui.click(expand)
                 author_lines = ui.snapshot("author-profile", author=author)
                 profile = parse_author(author_lines, author)
+            profile["authorBio"] = ui.read_profile_bio(author_lines, profile)
             name = profile_name(author_lines, author)
             ui.profile_more(name)
             menu = ui.snapshot("profile-menu")

@@ -63,6 +63,9 @@ class FakeUi:
     def back(self):
         self.backs += 1
 
+    def read_profile_bio(self, lines, profile):
+        return profile["authorBio"]
+
     def profile_more(self, name):
         self.clicks.append("profile-menu")
 
@@ -209,6 +212,19 @@ class CollectionTests(unittest.TestCase):
         self.assertIsNone(profile["authorIpLocation"])
         self.assertEqual(profile["authorBio"], "作者简介")
         self.assertIsNone(profile["authorCertification"])
+
+    def test_profile_feature_section_is_outside_biography(self):
+        profile = [*PROFILE[:4], line("音乐电台", 35, 720), line("播放", 570, 720), *PROFILE[4:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "作者简介")
+
+    def test_biography_fan_sentence_is_not_a_statistic(self):
+        profile = [*PROFILE[:2], line("欢迎大家关注呀！", 35, 610),
+                   line("不辜负任何一位粉丝。", 35, 644), *PROFILE[3:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "欢迎大家关注呀！\n不辜负任何一位粉丝。")
+
+    def test_biography_music_words_are_preserved(self):
+        profile = [*PROFILE[:2], line("喜欢音乐电台，也喜欢播放唱片", 35, 644), *PROFILE[3:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "喜欢音乐电台，也喜欢播放唱片")
 
     def test_profile_name_difference_does_not_require_another_read(self):
         self.assertEqual(parse_author(PROFILE, "其他作者")["authorBio"], "作者简介")

@@ -1,4 +1,6 @@
 {
+  "collect_comments_name": "Collect video and visible comments (batch 2 preview)",
+  "collect_comments_description": "Collect the video, then save complete visible top-level comments linked to it. Paging and replies are not collected; this is not a complete comment export. Public commenter IDs await batch 3. Local storage only; upload is deferred.",
   "project_name": "WeChat Channels Assistant",
   "project_description": "Compose WeChat Channels operations in order: open profiles and videos, like, and return. Add, remove and drag tasks to reorder them. Keep the phone unlocked, awake and in portrait, and use foreground mode.",
   "resource_name": "Portrait Channels resource",
