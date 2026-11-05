@@ -1,6 +1,6 @@
 # 微信视频号与小红书 Maa 插件
 
-基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，通过实时控件、图像模板与 OCR 识别页面；不依赖某一台手机的固定点击坐标。
+基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，主要通过实时控件、图像模板与 OCR 识别页面。微信原组合的点赞步骤按已识别的视频页面连续点击视频区域三次，使用短边 720 归一化坐标，仍有布局适配限制。
 
 ## 仓库结构
 
@@ -8,6 +8,7 @@
 - `plugins/xiaohongshu/`：小红书 Python Agent、页面解析、评论采集、Java 控件树助手、PI 资源和测试。
 - `patches/maa-tauri-android.patch`：当前两个插件依赖的宿主修改。
 - `docs/xiaohongshu-checklist.md`：原始需求清单。勾选要求完整验收，不能将本地单次成功等同于服务端验收。
+- `docs/wechat-batch1.md`：视频号第一批采集范围、运行方式、三轮耗时及已知问题。
 
 宿主补丁包含屏幕尺寸和截图管道修复、任务失败停止选项、微信 `MtaOcrFallback` 回调，以及小红书物理屏幕校验与前台剪贴板桥接。直接使用未经补丁修改的上游 APK，不能保证这些资源能运行。
 
@@ -15,7 +16,7 @@
 
 | 插件 | 已有行为 | 验证边界 |
 | --- | --- | --- |
-| 微信视频号 | 打开微信、进入发现和视频号、点赞当前视频、打开作者主页、打开主页视频、返回、进入个人页；支持操作组合 | 当前组合与 60 秒优化版本未完成完整真机验收，不承诺达到 60 秒 |
+| 微信视频号 | 保留原有操作组合；新增视频、作者资料采集、返回身份校验、本地去重保存及阶段计时 | 采集代码的应用内三轮实测：两轮失败、一轮成功（243.122 秒）；本次整合后的 APK 尚未重新构建验收 |
 | 小红书图文 | 发现页选作品、读取标题正文、进入作者主页取小红书号、复制分享链接、返回列表并本地保存 | 一次完整实测：采集 24.6 秒，含准备共 37 秒；长正文和无独立标题等样式仍待适配 |
 | 小红书评论 | 从当前图文打开评论区、读取可见评论、进入一位评论者主页、读取小红书号和粉丝数、返回原评论位置 | 一次实测读取 5 条评论并访问 1 人：操作 17 秒，总计 22.8 秒 |
 | 小红书视频 | 筛选视频、读取文案、进入作者主页等代码已接入 | 完整流程未验收，部分作者主页加载或身份校验失败 |
@@ -55,11 +56,11 @@ host_root="$(cd ../MaaTauriAndroid-host && pwd)"
 (cd "$host_root" && corepack pnpm@11 install)
 ```
 
-微信视频号无需 Python Agent runtime：
+微信视频号采集需要 Python Agent runtime；Maa 和 NumPy 由宿主匹配版本的 Agent core 提供：
 
 ```bash
 python3 "$host_root/scripts/build_apk.py" \
-  --profile "$plugin_root/plugins/wechat/profile.toml" --debug
+  --profile "$plugin_root/plugins/wechat/profile.toml" --debug --use-prebuilt-core
 ```
 
 小红书需要 Java 助手和 Python Agent runtime：
@@ -88,6 +89,7 @@ python3 "$host_root/scripts/build_apk.py" \
 
 ```bash
 python3 -m unittest discover -s plugins/wechat/tests
+python3 -m unittest discover -s plugins/wechat/wechat_channels/collector
 python3 -m unittest discover -s plugins/xiaohongshu/tests
 ```
 

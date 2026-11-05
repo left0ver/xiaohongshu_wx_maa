@@ -1,0 +1,272 @@
+"""Business tests: parsing, identity, persistence, failure safety and timing."""
+
+import contextlib
+import io
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).parent))
+from collection import LocalStore, Timings, collect, identity, parse_author, parse_basic_info, parse_video
+
+
+def line(text, x, y, width=160, height=28):
+    return {"text": text, "box": [x, y, width, height], "score": 0.99}
+
+
+AUTHOR = "示例作者"
+FEED = [line("关注", 210, 92), line("朋友", 315, 92), line("推荐", 445, 92),
+        line(AUTHOR, 122, 1455), line("294", 630, 1500, 55)]
+DETAILS = [line("评论294", 27, 482), line(AUTHOR + "W作者福建8月1日", 99, 568, 362),
+           line("完整的作品文案#音乐#我", 98, 604, 594), line("们俩", 99, 643, 58),
+           line("相关音乐·我们俩", 102, 691, 251), line("帮她上热门", 122, 766),
+           line("评论者四川8月1日", 99, 870), line("不能采集成作品文案", 99, 909)]
+PROFILE = [line(AUTHOR, 192, 509), line("福建厦门女", 192, 552),
+           line("作者简介", 35, 644), line("115条原创内容", 35, 682),
+           line("关注", 162, 760, 56), line("私信", 496, 760, 56)]
+INFO = [line("基础信息", 40, 479), line("IP归属地", 40, 608, 125), line("福建", 250, 607, 68),
+        line("资料所在地", 40, 670), line("福建厦门", 252, 673),
+        line("视频号ID", 41, 737, 126), line("sphExample123", 250, 735, 278)]
+
+
+class FakeUi:
+    height = 1558
+
+    def __init__(self, snapshots):
+        self.snapshots = iter(snapshots)
+        self.clicks = []
+        self.backs = 0
+        self.labels = []
+
+    def snapshot(self, label):
+        self.labels.append(label)
+        return next(self.snapshots)
+
+    def click(self, target):
+        self.clicks.append(target["text"])
+
+    def back(self):
+        self.backs += 1
+
+    def profile_more(self, name):
+        self.clicks.append("profile-menu")
+
+    def start_wechat(self):
+        pass
+
+
+class CollectionTests(unittest.TestCase):
+    def test_navigation_uses_bottom_then_top_quarter(self):
+        from collection import ensure_feed, navigation_roi
+        home = [line("发现", 426, 1522), line("通讯录", 220, 1522)]
+        discover = [line("发现", 320, 90), line("视频号", 100, 300)]
+        ui = FakeUi([home, discover, FEED[:3], FEED])
+        ensure_feed(ui)
+        self.assertEqual(ui.labels, ["navigation-bottom", "navigation-top", "navigation-top", "feed"])
+        self.assertEqual(ui.clicks, ["发现", "视频号", "推荐"])
+        self.assertEqual(navigation_roi("navigation-bottom", 1559), [0, 1169, 720, 390])
+        self.assertEqual(navigation_roi("navigation-top", 1559), [0, 0, 720, 390])
+
+    def test_bare_music_and_misread_icon_end_description(self):
+        for music in ("音乐", "」音乐", "♪ 音乐", "相关音乐"):
+            details = list(DETAILS)
+            details[4] = line(music, 102, 691)
+            self.assertEqual(parse_video(details, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
+
+    def test_punctuation_mismatch_requires_exact_confirmation(self):
+        for recovered in (True, False):
+            with self.subTest(recovered=recovered), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                dotted = list(DETAILS)
+                dotted[3] = line("们俩.", 99, 643, 58)
+                ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)],
+                             INFO, FEED, dotted, DETAILS if recovered else dotted])
+                store = LocalStore(Path(root) / "drafts.sqlite3")
+                timing = Timings(Path(root) / "timings.jsonl", "confirmation")
+                if recovered:
+                    self.assertTrue(collect(ui, store, timing)["payload"]["returnVerified"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "different work"):
+                        collect(ui, store, timing)
+                with store.connect() as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], int(recovered))
+                retry = [row for row in timing.rows if row["taskName"] == "verify_description_retry"]
+                self.assertEqual(len(retry), 1)
+                self.assertEqual(retry[0]["outcome"], "succeeded" if recovered else "failed")
+
+    def test_feed_certification_checkmark_is_not_another_author(self):
+        from collection import author_in_feed
+        self.assertEqual(author_in_feed([*FEED, line("√", 220, 1459, 16, 13)], 1558)["text"], AUTHOR)
+
+    def test_split_author_header_and_music_boundary(self):
+        lines = [line("评论1102", 27, 482), line("小憩memories W", 99, 563),
+                 line("作者浙江6月27日", 101, 605),
+                 line("去看更多视频#钢琴", 99, 652), line("音乐·Luvsic", 104, 701),
+                 line("帮他上热门", 120, 776), line("其他评论", 99, 880)]
+        result = parse_video(lines, "小憩memories", include_author_evidence=True)
+        self.assertEqual(result["publishLocation"], "浙江")
+        self.assertEqual(result["publishTimeText"], "6月27日")
+        self.assertEqual(result["description"], "去看更多视频#钢琴")
+        from collection import work_author_matches
+        self.assertTrue(work_author_matches(result["_authorHeader"], "小憩memories"))
+        with self.assertRaises(ValueError):
+            parse_video(lines, "其他作者")
+
+    def test_startup_waits_for_ready_page_and_continues_early(self):
+        from collection import ensure_feed
+        ui = FakeUi([[], [], FEED, FEED])
+        with patch("collection.time.monotonic", side_effect=[100, 101, 101.5]), patch("collection.time.sleep") as sleep:
+            self.assertEqual(ensure_feed(ui), FEED)
+        sleep.assert_called_once_with(0.5)
+        self.assertEqual(ui.clicks, ["推荐"])
+
+    def test_startup_timeout_does_not_click(self):
+        from collection import ensure_feed
+        ui = FakeUi([[], []])
+        with patch("collection.time.monotonic", side_effect=[100, 110]), patch("collection.time.sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "10 seconds"):
+                ensure_feed(ui)
+        sleep.assert_not_called()
+        self.assertEqual(ui.clicks, [])
+
+    def payload(self):
+        return {**parse_video(DETAILS, AUTHOR), **parse_author(PROFILE, AUTHOR), **parse_basic_info(INFO)}
+
+    def test_work_text_excludes_comments_and_preserves_wrapped_hashtags(self):
+        value = parse_video(DETAILS, AUTHOR)
+        self.assertEqual(value["description"], "完整的作品文案#音乐#我们俩")
+        self.assertEqual(value["publishTimeText"], "8月1日")
+        self.assertEqual(value["publishLocation"], "福建")
+
+    def test_reject_different_author_and_missing_work_header(self):
+        for lines, author in ((DETAILS, "其他作者"), (DETAILS[1:], AUTHOR), (DETAILS[3:], AUTHOR)):
+            with self.subTest(author=author, count=len(lines)), self.assertRaises(ValueError):
+                parse_video(lines, author)
+
+    def test_reject_truncated_or_unbounded_description(self):
+        truncated = [*DETAILS[:2], line("长文案…", 98, 604), *DETAILS[4:]]
+        for lines in (truncated, DETAILS[:4]):
+            with self.subTest(lines=lines), self.assertRaises(ValueError):
+                parse_video(lines, AUTHOR)
+
+    def test_profile_location_is_not_ip_location(self):
+        profile = parse_author(PROFILE, AUTHOR)
+        self.assertIsNone(profile["authorIpLocation"])
+        self.assertEqual(profile["authorBio"], "作者简介")
+        self.assertIsNone(profile["authorCertification"])
+
+    def test_profile_mismatch_fails(self):
+        with self.assertRaises(ValueError):
+            parse_author(PROFILE, "其他作者")
+
+    def test_certification_and_music_controls_are_not_bio(self):
+        profile = [*PROFILE[:1], line("音乐人", 192, 550), line("江苏女", 192, 590),
+                   *PROFILE[2:], line("音乐电台40人在听", 35, 720), line("播放", 597, 720)]
+        result = parse_author(profile, AUTHOR)
+        self.assertEqual(result["authorCertification"], "音乐人")
+        self.assertEqual(result["authorProfileLocation"], "江苏女")
+        self.assertEqual(result["authorBio"], "作者简介")
+
+    def test_basic_information_pairs_labels_with_same_row_values(self):
+        value = parse_basic_info(INFO)
+        self.assertEqual(value["authorIpLocation"], "福建")
+        self.assertEqual(value["authorProfileLocation"], "福建厦门")
+        self.assertEqual(value["authorDouyinId"], "sphExample123")
+
+    def test_no_author_id_is_invented(self):
+        with self.assertRaises(ValueError):
+            parse_basic_info(INFO[:-1])
+
+    def test_identity_normalizes_wrapping_but_separates_author_and_description(self):
+        self.assertEqual(identity("作者", "文案\n#标签"), identity("作者", "文案 #标签"))
+        self.assertNotEqual(identity("ab", "c"), identity("a", "bc"))
+        self.assertNotEqual(identity("作者A", "文案"), identity("作者B", "文案"))
+
+    def test_duplicate_keeps_event_id_timestamp_and_device_after_reopen(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "videos.sqlite3"
+            first, duplicate = LocalStore(path).save(self.payload())
+            self.assertFalse(duplicate)
+            second, duplicate = LocalStore(path).save({**self.payload(), "authorBio": "更新后的简介"})
+            self.assertTrue(duplicate)
+            for key in ("event_id", "device_id", "collected_at", "dedupe_key"):
+                self.assertEqual(first[key], second[key])
+            self.assertEqual(second["payload"]["authorBio"], "更新后的简介")
+            with contextlib.closing(sqlite3.connect(path)) as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 1)
+
+    def test_incomplete_record_does_not_enter_storage(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalStore(Path(root) / "drafts.sqlite3")
+            with self.assertRaises(ValueError):
+                store.save({"authorNickname": AUTHOR})
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
+
+    def test_full_flow_and_return_mismatch(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                returned = list(DETAILS)
+                if changed:
+                    returned[2] = line("另一条作品", 98, 604, 594)
+                ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)], INFO, FEED, returned, returned])
+                store = LocalStore(Path(root) / "videos.sqlite3")
+                timings = Timings(Path(root) / "timings.jsonl", "test-run")
+                if changed:
+                    with self.assertRaisesRegex(ValueError, "different work"):
+                        collect(ui, store, timings)
+                else:
+                    self.assertTrue(collect(ui, store, timings)["payload"]["returnVerified"])
+                with store.connect() as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0 if changed else 1)
+                self.assertEqual(timings.rows[-1]["outcome"], "failed" if changed else "succeeded")
+                self.assertTrue(all(row["durationMs"] >= 0 for row in timings.rows))
+
+    def test_discover_page_opens_channels_instead_of_clicking_discover_again(self):
+        from collection import ensure_feed
+        discover = [line("发现", 320, 90), line("视频号", 100, 300),
+                    line("发现", 426, 1522), line("通讯录", 220, 1522)]
+        ui = FakeUi([discover, FEED, FEED])
+        ensure_feed(ui, launch=False)
+        self.assertEqual(ui.clicks, ["视频号", "推荐"])
+
+    def test_faded_feed_name_requires_full_profile_and_work_header_agreement(self):
+        for wrong_header in (False, True, "longer-name"):
+            with self.subTest(wrong_header=wrong_header), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                initial = [*FEED[:3], line("示例作", 122, 1455), FEED[-1]]
+                after = [*FEED[:3], line("示例", 122, 1455), FEED[-1]]
+                details = list(DETAILS)
+                if wrong_header:
+                    header_author = AUTHOR + "乙" if wrong_header == "longer-name" else "示例作品乙"
+                    details[1] = line(header_author + "W作者福建8月1日", 99, 568, 362)
+                ui = FakeUi([initial, initial, details, after, PROFILE,
+                             [line("更多信息", 280, 1400)], INFO, after, DETAILS])
+                store = LocalStore(Path(root) / "videos.sqlite3")
+                timings = Timings(Path(root) / "timings.jsonl", "faded-name")
+                if wrong_header:
+                    with self.assertRaisesRegex(ValueError, "Full profile name"):
+                        collect(ui, store, timings)
+                else:
+                    event = collect(ui, store, timings)
+                    self.assertEqual(event["payload"]["authorNickname"], AUTHOR)
+                    self.assertNotIn("_authorHeader", event["payload"])
+                with store.connect() as db:
+                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0 if wrong_header else 1)
+
+    def test_timing_is_written_on_exception(self):
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(root) / "timing.jsonl"
+            timings = Timings(path, "run-1")
+            with self.assertRaises(RuntimeError), timings.phase("failed-step"):
+                raise RuntimeError("expected")
+            record = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(record["outcome"], "failed")
+            self.assertEqual(record["runId"], "run-1")
+            self.assertIsInstance(record["durationMs"], int)
+
+
+if __name__ == "__main__":
+    unittest.main()

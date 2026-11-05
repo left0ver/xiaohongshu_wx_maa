@@ -2,3 +2,21 @@ pi_assets = "wechat_channels"
 resource_id = "wechat_channels"
 app_name = "微信视频号助手"
 virtual_display_orientation = "portrait"
+pi_include = ["collector"]
+
+[agent]
+timeout_ms = 600000
+
+[[agent.runtimes]]
+bundle = "dist/wechat-channels-agent-runtime-{abi}.zip"
+exec = "bin/python3"
+executables = ["bin/python3"]
+args = ["-u", "collector/main.py", "{identifier}"]
+working_dir = "{pi}"
+
+[agent.runtimes.env]
+PYTHONHOME = "{bundle}/prefix"
+PYTHONPATH = "{bundle}/site-packages:{bundle}/site-packages/pure.zip"
+LD_LIBRARY_PATH = "{bundle}/prefix/lib:{bundle}/site-packages/numpy.libs:{bundle}/site-packages/chaquopy/lib:{bundle}/lib/{abi}:{nativeLib}"
+MAAFW_BINARY_PATH = "{bundle}/lib/{abi}"
+WECHAT_DATA_DIR = "/data/local/tmp/wechat-channels-data"
