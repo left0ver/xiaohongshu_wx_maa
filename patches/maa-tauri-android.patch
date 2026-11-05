@@ -457,7 +457,7 @@ index cb79167..0d88272 100644
                          &report_progress,
                          &probe_target_app_state,
 diff --git a/src-tauri/src/runtime.rs b/src-tauri/src/runtime.rs
-index 79a790a..49dc062 100644
+index 79a790a..39d8fb4 100644
 --- a/src-tauri/src/runtime.rs
 +++ b/src-tauri/src/runtime.rs
 @@ -1162,6 +1162,8 @@ pub fn create_session(
@@ -490,7 +490,41 @@ index 79a790a..49dc062 100644
      logger: &crate::run_log::RunLogger,
      progress: &dyn Fn(u32, u32, &ResolvedTask),
      state_probe: &dyn Fn() -> Option<crate::run_diagnosis::TargetAppState>,
-@@ -1570,7 +1573,7 @@ pub fn run_tasks(
+@@ -1524,12 +1527,30 @@ pub fn run_tasks(
+             )
+             .map_err(|error| RuntimeError::Maa(error.to_string()))?;
+         let pipeline = task_pipeline(base_pipeline, Some(task));
++        let started = Instant::now();
+         // A failure to *post* is not a task failure: the queue never started,
+         // so it ends the run instead of being remembered and stepped over.
+-        let job = tasker
+-            .post_task(&task.task.entry, &pipeline.to_string())
+-            .map_err(RuntimeError::from)?;
++        let job = match tasker.post_task(&task.task.entry, &pipeline.to_string()) {
++            Ok(job) => job,
++            Err(error) => {
++                log_task_duration(logger, task, index, started.elapsed(), "postFailed");
++                return Err(RuntimeError::from(error));
++            }
++        };
+         let status = job.wait();
++        log_task_duration(
++            logger,
++            task,
++            index,
++            started.elapsed(),
++            if status.is_success() {
++                "succeeded"
++            } else if tasker.stopping() {
++                "cancelled"
++            } else {
++                "failed"
++            },
++        );
+         if status.is_success() {
+             continue;
+         }
+@@ -1570,7 +1591,7 @@ pub fn run_tasks(
                  diagnostic_code,
                  screenshot,
              );
@@ -499,7 +533,36 @@ index 79a790a..49dc062 100644
                  break;
              }
          }
-@@ -1588,8 +1591,11 @@ fn failure_diagnostic_code(cause: &crate::run_diagnosis::FailureCause) -> Option
+@@ -1581,6 +1602,28 @@ pub fn run_tasks(
+     }
+ }
+ 
++fn log_task_duration(
++    logger: &crate::run_log::RunLogger,
++    task: &ResolvedTask,
++    index: usize,
++    elapsed: Duration,
++    outcome: &str,
++) {
++    let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
++    let _ = logger.append_to_ui(
++        crate::run_log::RunEventKind::Task,
++        RunState::Running,
++        format!("Maa task {} {outcome} in {duration_ms} ms", task.task.entry),
++        Some(task.task.name.clone()),
++        Some(serde_json::json!({
++            "taskEntry": task.task.entry,
++            "taskIndex": index + 1,
++            "durationMs": duration_ms,
++            "outcome": outcome,
++        })),
++    );
++}
++
+ fn failure_diagnostic_code(cause: &crate::run_diagnosis::FailureCause) -> Option<&'static str> {
+     match cause {
+         crate::run_diagnosis::FailureCause::ScreenEmpty => Some("screenEmpty"),
+@@ -1588,8 +1631,11 @@ fn failure_diagnostic_code(cause: &crate::run_diagnosis::FailureCause) -> Option
      }
  }
  
@@ -513,7 +576,7 @@ index 79a790a..49dc062 100644
  }
  
  #[cfg(test)]
-@@ -1686,16 +1692,32 @@ mod tests {
+@@ -1686,16 +1732,32 @@ mod tests {
          ));
      }
  
@@ -549,6 +612,77 @@ index 79a790a..49dc062 100644
          ));
          assert_eq!(
              failure_diagnostic_code(&crate::run_diagnosis::FailureCause::ScreenEmpty),
+@@ -1829,9 +1891,8 @@ mod tests {
+         assert_eq!(log::max_level(), log::LevelFilter::Info);
+     }
+ 
+-    #[test]
+-    fn task_pipeline_overrides_are_scoped_to_task() {
+-        let task = ResolvedTask {
++    fn sample_resolved_task() -> ResolvedTask {
++        ResolvedTask {
+             task: TaskDefinition {
+                 name: "Task".to_string(),
+                 label: "Task".to_string(),
+@@ -1849,8 +1910,12 @@ mod tests {
+             enabled: true,
+             unavailable_reason: None,
+             pipeline_override: serde_json::json!({"Task": {"timeout": 1000}}),
+-        };
++        }
++    }
+ 
++    #[test]
++    fn task_pipeline_overrides_are_scoped_to_task() {
++        let task = sample_resolved_task();
+         let pipeline = task_pipeline(
+             &serde_json::json!({"Task": {"timeout": 5000}, "Global": true}),
+             Some(&task),
+@@ -1861,6 +1926,44 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn task_durations_are_persisted_for_all_outcomes() {
++        let task = sample_resolved_task();
++        // Timing records identify repeated entries by queue position and are
++        // persisted for success, execution failure, cancellation and post failure.
++        let root = tempfile::tempdir().unwrap();
++        let logger = crate::run_log::RunLogger::create(root.path(), "timing-run", 4).unwrap();
++        for (index, outcome) in ["succeeded", "failed", "cancelled", "postFailed"]
++            .into_iter()
++            .enumerate()
++        {
++            log_task_duration(&logger, &task, index, Duration::from_millis(1234), outcome);
++        }
++        let history = std::fs::read_dir(logger.run_dir())
++            .unwrap()
++            .map(|entry| entry.unwrap().path())
++            .find(|path| {
++                path.extension()
++                    .is_some_and(|extension| extension == "jsonl")
++            })
++            .unwrap();
++        let records: Vec<Value> = std::fs::read_to_string(history)
++            .unwrap()
++            .lines()
++            .map(|line| serde_json::from_str(line).unwrap())
++            .collect();
++        assert_eq!(records.len(), 4);
++        for (index, outcome) in ["succeeded", "failed", "cancelled", "postFailed"]
++            .into_iter()
++            .enumerate()
++        {
++            assert_eq!(records[index]["taskName"], "Task");
++            assert_eq!(records[index]["data"]["taskIndex"], index + 1);
++            assert_eq!(records[index]["data"]["durationMs"], 1234);
++            assert_eq!(records[index]["data"]["outcome"], outcome);
++        }
++    }
++
+     #[test]
+     fn maa_library_initialization_is_cached() {
+         let state = std::sync::OnceLock::new();
 diff --git a/src-tauri/src/secrets.rs b/src-tauri/src/secrets.rs
 index 44fc9a7..c1e552f 100644
 --- a/src-tauri/src/secrets.rs

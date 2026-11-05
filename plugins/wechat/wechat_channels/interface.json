@@ -2,7 +2,7 @@
   "interface_version": 2,
   "name": "wechat_channels",
   "label": "$project_name",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "$project_description",
   "languages": {
     "zh_cn": "locale/zh_cn.json",
@@ -26,11 +26,18 @@
   ],
   "task": [
     {
+      "name": "collect_video",
+      "label": "$collect_task_name",
+      "description": "$collect_task_description",
+      "entry": "CollectWechatVideo",
+      "default_check": true
+    },
+    {
       "name": "like_and_visit",
       "label": "$task_name",
       "description": "$task_description",
       "entry": "StartWeChat",
-      "default_check": true
+      "default_check": false
     },
     {
       "name": "open_wechat",
@@ -229,5 +236,11 @@
         }
       ]
     }
-  ]
+  ],
+  "agent": {
+    "child_exec": "python3",
+    "child_args": [
+      "collector/main.py"
+    ]
+  }
 }

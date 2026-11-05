@@ -3,13 +3,15 @@
 import copy
 import json
 import re
+import tomllib
 import unittest
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1] / "wechat_channels"
 BASE = PROJECT / "resource/base"
-NODES = {k: v for k, v in json.loads((BASE / "pipeline/channels.json").read_text()).items() if not k.startswith("$")}
-INTERFACE = json.loads((PROJECT / "interface.json").read_text())
+NODES = {k: v for path in sorted((BASE / "pipeline").glob("*.json"))
+         for k, v in json.loads(path.read_text(encoding="utf-8")).items() if not k.startswith("$")}
+INTERFACE = json.loads((PROJECT / "interface.json").read_text(encoding="utf-8"))
 
 
 def merge(target, source):
@@ -21,6 +23,22 @@ def merge(target, source):
 
 
 class ResourceFlowTests(unittest.TestCase):
+    def test_collector_is_the_only_default_task_and_has_an_agent(self):
+        defaults = [task for task in INTERFACE["task"] if task["default_check"]]
+        self.assertEqual([task["name"] for task in defaults], ["collect_video"])
+        self.assertEqual(NODES[defaults[0]["entry"]]["custom_action"], "CollectWechatVideo")
+        self.assertTrue((PROJECT / INTERFACE["agent"]["child_args"][0]).is_file())
+        profile = tomllib.loads((PROJECT.parent / "profile.toml").read_text(encoding="utf-8"))
+        self.assertEqual(profile["pi_assets"], PROJECT.name)
+        self.assertIn("collector", profile["pi_include"])
+        self.assertEqual(profile["agent"]["timeout_ms"], 600000)
+        runtime = profile["agent"]["runtimes"][0]
+        self.assertEqual(runtime["args"][1], INTERFACE["agent"]["child_args"][0])
+        self.assertIn("{abi}", runtime["env"]["MAAFW_BINARY_PATH"])
+        self.assertTrue((PROJECT / "requirements.txt").is_file())
+        template = NODES["BatchProfileMore"]["template"]
+        self.assertTrue((BASE / "image" / template).is_file())
+
     def test_each_composed_task_is_acyclic_and_likes_at_most_once(self):
         for task in INTERFACE["task"]:
             nodes = copy.deepcopy(NODES)
@@ -30,7 +48,7 @@ class ResourceFlowTests(unittest.TestCase):
                 path = [*path, name]
                 node = nodes[name]
                 self.assertFalse(node.get("on_error"))
-                self.assertLessEqual(node.get("repeat", 1), 1)
+                self.assertEqual(node.get("repeat", 1), 3 if name == "LikeCurrentVideo" else 1)
                 self.assertLessEqual(sum(x in ("LikeCurrentVideo", "LikeVisibleVideo") for x in path), 1)
                 for successor in node.get("next", []):
                     visit(successor, path)
@@ -61,6 +79,9 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertFalse(NODES["LikedVideoReady"].get("next"))
 
     def test_default_like_does_not_retry_or_skip_red_confirmation(self):
+        self.assertEqual(NODES["LikeCurrentVideo"]["target"], [360, 720])
+        self.assertEqual(NODES["LikeCurrentVideo"]["repeat"], 3)
+        self.assertEqual(NODES["LikeCurrentVideo"]["repeat_delay"], 80)
         self.assertEqual(NODES["LikeCurrentVideo"]["next"], ["OpenAuthorAfterLike"])
         guard = NODES["OpenAuthorAfterLike"]["all_of"][1]
         self.assertEqual(guard["roi"], "LikeCurrentVideo")
@@ -98,7 +119,10 @@ class ResourceFlowTests(unittest.TestCase):
         def walk(node):
             if node.get("action") == "Click":
                 self.assertNotEqual(node.get("recognition"), "DirectHit")
-                self.assertNotIn("target", node)
+                if node is NODES["LikeCurrentVideo"]:
+                    self.assertEqual(node["target"], [360, 720])
+                else:
+                    self.assertNotIn("target", node)
                 self.assertNotIn("target_offset", node)
                 self.assertEqual(node["max_hit"], 1)
             if node.get("recognition") == "TemplateMatch":
@@ -144,7 +168,7 @@ class ResourceFlowTests(unittest.TestCase):
                          ["open_wechat", "open_discover", "open_channels", "open_author", "open_author_video", "like_video"])
 
     def test_localizations_cover_all_tasks_and_models_exist(self):
-        catalogs = [json.loads((PROJECT / path).read_text()) for path in INTERFACE["languages"].values()]
+        catalogs = [json.loads((PROJECT / path).read_text(encoding="utf-8")) for path in INTERFACE["languages"].values()]
         self.assertEqual(set(catalogs[0]), set(catalogs[1]))
         for task in INTERFACE["task"]:
             self.assertIn(task["entry"], NODES)

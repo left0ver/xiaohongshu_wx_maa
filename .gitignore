@@ -12,3 +12,6 @@
 *.keystore
 local.properties
 /host/
+**/data/
+*-runtime-*.zip
+*.apk
