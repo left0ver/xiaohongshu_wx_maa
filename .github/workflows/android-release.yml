@@ -1,0 +1,155 @@
+name: Android Release
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [wechat, xiaohongshu]
+    env:
+      HOST_COMMIT: 4da508b20e4d7be132621ca24ec32f2b5b5a5fa0
+      MAAFW_VERSION: v5.14.2
+      MAAFW_CORE_TAG: agent-core-3.13.15-maafw5.14.2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: Craun718/MaaTauriAndroid
+          ref: ${{ env.HOST_COMMIT }}
+          path: host/MaaTauriAndroid
+          persist-credentials: false
+      - name: Apply host patch
+        run: git -C host/MaaTauriAndroid apply "$GITHUB_WORKSPACE/patches/maa-tauri-android.patch"
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: host/MaaTauriAndroid/pnpm-lock.yaml
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v4
+      - name: Install Android build dependencies
+        run: |
+          sdkmanager --install 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-36' 'platforms;android-37.0' 'build-tools;36.0.0'
+          if [ ! -e "$ANDROID_HOME/platforms/android-37" ]; then
+            ln -s android-37.0 "$ANDROID_HOME/platforms/android-37"
+          fi
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          workspaces: host/MaaTauriAndroid/src-tauri
+          key: release-${{ matrix.plugin }}
+      - uses: actions/cache@v6
+        with:
+          path: host/MaaTauriAndroid/.cache/maafw
+          key: agent-${{ env.MAAFW_CORE_TAG }}-${{ env.MAAFW_VERSION }}
+      - name: Test plugin logic
+        run: python3 -m unittest discover -s plugins/${{ matrix.plugin }}/tests
+      - name: Build Java helper
+        if: matrix.plugin == 'xiaohongshu'
+        run: bash plugins/xiaohongshu/tools/build-ui-helper.sh
+      - name: Set increasing APK version
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('host/MaaTauriAndroid/src-tauri/gen/android/app/build.gradle.kts')
+          source = path.read_text()
+          replacements = {
+              'versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()':
+                  f'versionCode = {1000000 + int(os.environ["GITHUB_RUN_NUMBER"])}',
+              'versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")':
+                  f'versionName = "1.0.{os.environ["GITHUB_RUN_NUMBER"]}"',
+          }
+          for old, new in replacements.items():
+              assert source.count(old) == 1, f'Host version declaration changed: {old}'
+              source = source.replace(old, new)
+          path.write_text(source)
+          PY
+      - name: Build release APK
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 host/MaaTauriAndroid/scripts/build_apk.py \
+            --profile "$GITHUB_WORKSPACE/plugins/${{ matrix.plugin }}/profile.toml" \
+            --abi arm64-v8a --release --use-prebuilt-core
+      - name: Sign and verify APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Missing release keystore secret}"
+          : "${KEYSTORE_PASSWORD:?Missing release keystore password}"
+          umask 077
+          keyfile="$RUNNER_TEMP/release.p12"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keyfile"
+          mapfile -d '' apks < <(find host/MaaTauriAndroid/src-tauri/gen/android/app/build/outputs/apk -path '*/release/*.apk' -print0)
+          [ "${#apks[@]}" -eq 1 ] || { echo 'Expected exactly one release APK'; exit 1; }
+          mkdir -p dist
+          output="dist/${{ matrix.plugin }}-arm64-v8a-release-${GITHUB_SHA:0:7}.apk"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$build_tools/zipalign" -P 16 -f 4 "${apks[0]}" "$RUNNER_TEMP/aligned.apk"
+          "$build_tools/apksigner" sign --ks "$keyfile" --ks-key-alias release \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
+            --out "$output" "$RUNNER_TEMP/aligned.apk"
+          "$build_tools/apksigner" verify --verbose "$output"
+          "$build_tools/zipalign" -c -P 16 4 "$output"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apk-${{ matrix.plugin }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: apk-*
+          merge-multiple: true
+          path: dist
+      - name: Publish both APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          cd dist
+          test "$(find . -maxdepth 1 -name '*.apk' | wc -l)" -eq 2
+          sha256sum *.apk > SHA256SUMS
+          printf 'Commit: %s\n\n微信视频号助手与小红书助手，arm64-v8a，固定签名 Release APK。\n首次由 debug 包切换可能需要先备份数据并卸载旧包。\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes.md"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --draft \
+              --title "Android build $GITHUB_RUN_NUMBER" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$tag" ./*.apk SHA256SUMS --clobber
+          gh release edit "$tag" --draft=false --latest=false
