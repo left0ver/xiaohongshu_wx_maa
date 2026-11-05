@@ -240,7 +240,7 @@
   "agent": {
     "child_exec": "python3",
     "child_args": [
-      "collector/main.py"
+      "agent/main.py"
     ]
   }
 }

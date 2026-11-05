@@ -40,6 +40,8 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertEqual([task["name"] for task in defaults], ["collect_video"])
         self.assertEqual(NODES[defaults[0]["entry"]]["custom_action"], "CollectWechatVideo")
         self.assertTrue((PROJECT / INTERFACE["agent"]["child_args"][0]).is_file())
+        self.assertEqual(INTERFACE["agent"]["child_args"][0], "agent/main.py")
+        self.assertTrue((PROJECT / "collector/main.py").is_file())
         profile = tomllib.loads((PROJECT.parent / "profile.toml").read_text(encoding="utf-8"))
         self.assertEqual(profile["pi_assets"], PROJECT.name)
         self.assertIn("collector", profile["pi_include"])
