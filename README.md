@@ -6,7 +6,6 @@
 
 - `plugins/wechat/`：微信视频号 PI 资源、图标模板、OCR 模型、操作组合和测试。
 - `plugins/xiaohongshu/`：小红书 Python Agent、页面解析、评论采集、Java 控件树助手、PI 资源和测试。
-- `host/MaaTauriAndroid/`：上游宿主的 Git 子模块，固定在 `4da508b20e4d7be132621ca24ec32f2b5b5a5fa0`。
 - `patches/maa-tauri-android.patch`：当前两个插件依赖的宿主修改。
 - `docs/xiaohongshu-checklist.md`：原始需求清单。勾选要求完整验收，不能将本地单次成功等同于服务端验收。
 
@@ -25,39 +24,50 @@
 
 目前资源随 APK 打包，**插件导入、热更新和切换管理尚未完成**。评论全量翻页、二级回复关联、视频评论抽屉、搜索/同城、互动发布、服务端上传和多机型验收也尚未完成。SQLite 队列已有基础逻辑和测试，但还没有与采集上传链路接通。
 
-## 获取宿主
+## 依赖与拉取方式
+
+本仓库只维护插件与必要的宿主补丁，不包含 MaaTauriAndroid 源码，也不使用 Git 子模块。宿主从上游单独克隆到同级目录，固定版本为 `4da508b20e4d7be132621ca24ec32f2b5b5a5fa0`。
+
+在准备存放两个项目的目录执行：
 
 ```bash
 git clone https://github.com/muyuzhong/xiaohongshu_wx_maa.git
+git clone https://github.com/Craun718/MaaTauriAndroid.git MaaTauriAndroid-host
 cd xiaohongshu_wx_maa
-./scripts/prepare-host.sh
+plugin_root="$PWD"
+host_root="$(cd ../MaaTauriAndroid-host && pwd)"
+git -C "$host_root" checkout --detach 4da508b20e4d7be132621ca24ec32f2b5b5a5fa0
+git -C "$host_root" apply --check "$plugin_root/patches/maa-tauri-android.patch"
+git -C "$host_root" apply "$plugin_root/patches/maa-tauri-android.patch"
 ```
 
-脚本会拉取固定的上游版本并应用补丁；再次运行会识别已应用状态，不会用 `reset` 丢弃本地修改。补丁应用后子模块显示修改状态是预期结果。升级宿主时需要重新检查补丁及两个插件，不能直接更新子模块到最新分支。
+补丁只需应用一次，应用后宿主工作区显示修改状态是预期结果。升级宿主时需要重新检查补丁及两个插件，不要直接切到最新版本。已有开发目录可以继续使用，无需覆盖或重置其中的修改。
 
 ## 构建 APK
 
 Linux 构建环境需按宿主说明安装 Rust/Android 工具链、pnpm 11、JDK 17、Android SDK 和 NDK。小红书 Java 助手使用 Android API 36、Build Tools 36.0.0；历史构建使用 NDK 28.2.13676358。自行设置 `JAVA_HOME`、`ANDROID_HOME`，不要复制某台开发电脑的绝对路径。
 
-以下命令在本仓库根目录执行。先安装宿主的前端依赖：
+以下命令在本仓库根目录执行，默认宿主位于同级的 `MaaTauriAndroid-host`；若使用已有目录，请将 `host_root` 改为实际路径。先安装宿主的前端依赖：
 
 ```bash
-(cd host/MaaTauriAndroid && corepack pnpm@11 install)
+plugin_root="$PWD"
+host_root="$(cd ../MaaTauriAndroid-host && pwd)"
+(cd "$host_root" && corepack pnpm@11 install)
 ```
 
 微信视频号无需 Python Agent runtime：
 
 ```bash
-python3 host/MaaTauriAndroid/scripts/build_apk.py \
-  --profile "$PWD/plugins/wechat/profile.toml" --debug
+python3 "$host_root/scripts/build_apk.py" \
+  --profile "$plugin_root/plugins/wechat/profile.toml" --debug
 ```
 
 小红书需要 Java 助手和 Python Agent runtime：
 
 ```bash
 bash plugins/xiaohongshu/tools/build-ui-helper.sh
-python3 host/MaaTauriAndroid/scripts/build_apk.py \
-  --profile "$PWD/plugins/xiaohongshu/profile.toml" --debug --use-prebuilt-core
+python3 "$host_root/scripts/build_apk.py" \
+  --profile "$plugin_root/plugins/xiaohongshu/profile.toml" --debug --use-prebuilt-core
 ```
 
 `build_apk.py` 使用上游的依赖准备和运行时构建流程；会修改宿主 Android 工程的本地 profile 配置，并执行编译。当前固定宿主 commit 没有 tag，因此这里明确使用 debug 签名。APK 位于宿主 Gradle 输出目录；本仓库不提交生成的 APK、runtime ZIP、签名密钥或 SDK。
