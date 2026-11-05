@@ -23,6 +23,18 @@ def merge(target, source):
 
 
 class ResourceFlowTests(unittest.TestCase):
+    def test_collection_navigation_fast_paths_are_guarded_templates_without_actions(self):
+        for name, original in [("BatchDiscoverTab", "OpenDiscover"), ("BatchChannelsEntry", "OpenChannels"),
+                               ("BatchRecommended", "FeedHeader")]:
+            node = NODES[name]
+            fast = NODES[original]["any_of"][0]
+            self.assertEqual(node["all_of"], fast["all_of"])
+            self.assertEqual(node.get("box_index", 0), fast.get("box_index", 0))
+            self.assertTrue(all(child["recognition"] == "TemplateMatch" for child in node["all_of"]))
+            self.assertEqual(node["action"], "DoNothing")
+            self.assertEqual(node["next"], [])
+            self.assertEqual(node["timeout"], 1)
+
     def test_collector_is_the_only_default_task_and_has_an_agent(self):
         defaults = [task for task in INTERFACE["task"] if task["default_check"]]
         self.assertEqual([task["name"] for task in defaults], ["collect_video"])
@@ -36,6 +48,7 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertEqual(runtime["args"][1], INTERFACE["agent"]["child_args"][0])
         self.assertIn("{abi}", runtime["env"]["MAAFW_BINARY_PATH"])
         self.assertTrue((PROJECT / "requirements.txt").is_file())
+        self.assertTrue((PROJECT / "collector/ui-dump.dex").read_bytes().startswith(b"dex\n"))
         template = NODES["BatchProfileMore"]["template"]
         self.assertTrue((BASE / "image" / template).is_file())
 
@@ -48,7 +61,7 @@ class ResourceFlowTests(unittest.TestCase):
                 path = [*path, name]
                 node = nodes[name]
                 self.assertFalse(node.get("on_error"))
-                self.assertEqual(node.get("repeat", 1), 3 if name == "LikeCurrentVideo" else 1)
+                self.assertEqual(node.get("repeat", 1), 1)
                 self.assertLessEqual(sum(x in ("LikeCurrentVideo", "LikeVisibleVideo") for x in path), 1)
                 for successor in node.get("next", []):
                     visit(successor, path)
@@ -79,9 +92,10 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertFalse(NODES["LikedVideoReady"].get("next"))
 
     def test_default_like_does_not_retry_or_skip_red_confirmation(self):
-        self.assertEqual(NODES["LikeCurrentVideo"]["target"], [360, 720])
-        self.assertEqual(NODES["LikeCurrentVideo"]["repeat"], 3)
-        self.assertEqual(NODES["LikeCurrentVideo"]["repeat_delay"], 80)
+        self.assertNotIn("target", NODES["LikeCurrentVideo"])
+        self.assertEqual(NODES["LikeCurrentVideo"].get("repeat", 1), 1)
+        self.assertEqual(NODES["LikeCurrentVideo"]["all_of"][2], "WhiteThumb")
+        self.assertEqual(NODES["LikeCurrentVideo"]["box_index"], 2)
         self.assertEqual(NODES["LikeCurrentVideo"]["next"], ["OpenAuthorAfterLike"])
         guard = NODES["OpenAuthorAfterLike"]["all_of"][1]
         self.assertEqual(guard["roi"], "LikeCurrentVideo")
@@ -119,10 +133,7 @@ class ResourceFlowTests(unittest.TestCase):
         def walk(node):
             if node.get("action") == "Click":
                 self.assertNotEqual(node.get("recognition"), "DirectHit")
-                if node is NODES["LikeCurrentVideo"]:
-                    self.assertEqual(node["target"], [360, 720])
-                else:
-                    self.assertNotIn("target", node)
+                self.assertNotIn("target", node)
                 self.assertNotIn("target_offset", node)
                 self.assertEqual(node["max_hit"], 1)
             if node.get("recognition") == "TemplateMatch":

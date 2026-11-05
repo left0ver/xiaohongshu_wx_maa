@@ -168,6 +168,26 @@ def parse_basic_info(lines):
             "authorProfileLocation": value_for(r"^资料所在地$")}
 
 
+def open_basic_info(ui, more):
+    # Include the click's settling delay in the readiness budget. An in-flight
+    # synchronous OCR cannot be interrupted, but no new attempt starts at expiry.
+    deadline = time.monotonic() + 5
+    ui.click(more)
+    last_error = None
+    while time.monotonic() < deadline:
+        lines = ui.snapshot("author-basic-info")
+        try:
+            return parse_basic_info(lines)
+        except ValueError as error:
+            last_error = error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.5, remaining))
+    raise ValueError("Author basic information was not ready within 5 seconds"
+                     + (f": {last_error}" if last_error else "")) from last_error
+
+
 class LocalStore:
     def __init__(self, path):
         self.path = Path(path)
@@ -267,6 +287,15 @@ def ensure_feed(ui, launch=True):
         if navigation_label == "navigation-bottom" and not find(lines, r"^发现$|^推荐$|^视频号$|^评论\s*\d*|^(私信|客服)$|^我的视频号$"):
             # Already inside Channels: inspect its top tabs without full-screen OCR.
             lines = ui.snapshot("navigation-top")
+        if lines and lines[0].get("navigation"):
+            target = lines[0]
+            ui.click(target)
+            if target["navigation"] == "recommend":
+                return ui.snapshot("feed")
+            navigation_label = "navigation-top"
+            waiting_for_start = False
+            navigation_steps += 1
+            continue
         recommended = find(lines, r"^推荐$", lambda line: line["box"][1] < 250)
         if recommended and find(lines, r"^关注$", lambda line: line["box"][1] < 250) and find(lines, r"^朋友", lambda line: line["box"][1] < 250):
             ui.click(recommended)
@@ -300,7 +329,7 @@ def video_details(ui, lines, author):
     if not comment:
         raise ValueError("Comment control was not recognized")
     ui.click(comment)
-    details = ui.snapshot("video-details")
+    details = ui.snapshot("video-details", author=author)
     for _ in range(2):
         expand = find(details, r"^(展开|全文|更多)$")
         if not expand:
@@ -310,7 +339,7 @@ def video_details(ui, lines, author):
         if not row or expand["box"][1] > row["box"][1] + 350:
             break
         ui.click(expand)
-        details = ui.snapshot("expanded-description")
+        details = ui.snapshot("expanded-description", author=author)
     return parse_video(details, author, include_author_evidence=True)
 
 
@@ -329,7 +358,7 @@ def collect(ui, store, timings, launch=True):
             if not visible_author_matches(target["text"], author):
                 raise ValueError("Feed changed before opening the author")
             ui.click(target)
-            author_lines = ui.snapshot("author-profile")
+            author_lines = ui.snapshot("author-profile", author=author)
             try:
                 profile = parse_author(author_lines, author)
             except ValueError:
@@ -345,8 +374,7 @@ def collect(ui, store, timings, launch=True):
             more = find(menu, r"^更多信息$")
             if not more:
                 raise ValueError("More information menu item is missing")
-            ui.click(more)
-            profile.update(parse_basic_info(ui.snapshot("author-basic-info")))
+            profile.update(open_basic_info(ui, more))
             profile["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if profile[key] is None]
             ui.back()
             ui.back()
@@ -360,7 +388,7 @@ def collect(ui, store, timings, launch=True):
             if identity(author, returned["description"]) != identity(author, video["description"]):
                 # Re-read the open drawer once; punctuation remains significant.
                 with timings.phase("verify_description_retry"):
-                    confirmed = parse_video(ui.snapshot("confirm-returned-description"), author,
+                    confirmed = parse_video(ui.snapshot("confirm-returned-description", author=author), author,
                                             include_author_evidence=True)
                     if not work_author_matches(confirmed.pop("_authorHeader"), author):
                         raise ValueError("Returned work author changed during confirmation")

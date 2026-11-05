@@ -1,6 +1,6 @@
 # 微信视频号与小红书 Maa 插件
 
-基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，主要通过实时控件、图像模板与 OCR 识别页面。微信原组合的点赞步骤按已识别的视频页面连续点击视频区域三次，使用短边 720 归一化坐标，仍有布局适配限制。
+基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，通过实时控件、图像模板与 OCR 识别页面。微信采集优先读取控件树，导航在控件信息不完整时先匹配模板、失败才调用 OCR；点赞只点击识别到的拇指图标并验证状态。
 
 ## 仓库结构
 
@@ -71,6 +71,7 @@ host_root="$(cd ../MaaTauriAndroid-host && pwd)"
 微信视频号采集需要 Python Agent runtime；Maa 和 NumPy 由宿主匹配版本的 Agent core 提供：
 
 ```bash
+bash plugins/wechat/tools/build-ui-helper.sh
 python3 "$host_root/scripts/build_apk.py" \
   --profile "$plugin_root/plugins/wechat/profile.toml" --debug --use-prebuilt-core
 ```
@@ -85,7 +86,7 @@ python3 "$host_root/scripts/build_apk.py" \
 
 `build_apk.py` 使用上游的依赖准备和运行时构建流程；会修改宿主 Android 工程的本地 profile 配置，并执行编译。当前固定宿主 commit 没有 tag，因此这里明确使用 debug 签名。APK 位于宿主 Gradle 输出目录；本仓库不提交生成的 APK、runtime ZIP、签名密钥或 SDK。
 
-`ui-dump.dex` 与 Java 源码一起保留，修改 `UiDump.java` 后必须重新生成。模型、图标和助手资源位于打包目录，不依赖开发机的 `/tmp` 或本地截图目录。
+两个插件复用 `plugins/xiaohongshu/tools/UiDump.java` 的通用控件树导出实现，各自打包 `ui-dump.dex`；修改 Java 源码后需运行两个插件的 `build-ui-helper.sh` 重新生成。微信只使用其 XML 导出入口，不调用小红书专用的恢复任务入口。模型、图标和助手资源位于打包目录，不依赖开发机的 `/tmp` 或本地截图目录。
 
 ## 手机测试
 

@@ -1,5 +1,5 @@
 {
-  "$comment": "shortcut: Chinese portrait layouts and sampled icon scales only; extend captures for changed WeChat layouts. Numeric ROIs restrict searches, never click targets. Shared operations use explicit task next overrides; recognitions remain guarded and each like action executes at most once. Template-first labels retain thresholded OCR fallback; MtaOcrFallback calls the original OCR tree only after template failure, avoiding eager batch OCR. Requires the bundled host callback. LikeCurrentVideo uses three taps at [360, 720] on the normalized 720px-short-side frame, followed by red-thumb verification; this point is a layout assumption.",
+  "$comment": "shortcut: Chinese portrait layouts and sampled icon scales only; extend captures for changed WeChat layouts. Numeric ROIs restrict searches, never click targets. Shared operations use explicit task next overrides; recognitions remain guarded and each like action executes at most once. Template-first labels retain thresholded OCR fallback; MtaOcrFallback calls the original OCR tree only after template failure, avoiding eager batch OCR. Requires the bundled host callback.",
   "StartWeChat": {
     "action": "StartApp",
     "package": "com.tencent.mm",
@@ -209,18 +209,11 @@
     ],
     "action": "Click",
     "max_hit": 1,
-    "post_delay": 1200,
+    "post_delay": 600,
     "next": [
       "OpenAuthorAfterLike"
     ],
-    "box_index": 2,
-    "target": [
-      360,
-      720
-    ],
-    "repeat": 3,
-    "repeat_delay": 80,
-    "$comment": "Tap the same point in the video area three times (720px short-side coordinates). Keep the white-thumb recognition box for subsequent red-thumb verification."
+    "box_index": 2
   },
   "OpenAuthor": {
     "recognition": "And",
@@ -751,7 +744,7 @@
       "ReturnToFeed"
     ],
     "box_index": 2,
-    "$comment": "After the video-area taps, verify red near the previously recognized white thumb; a miss only retries recognition, never the like action."
+    "$comment": "After a like, verify red near the actual clicked recognition box; a miss only retries recognition, never the like action."
   },
   "DiscoverReady": {
     "recognition": "And",

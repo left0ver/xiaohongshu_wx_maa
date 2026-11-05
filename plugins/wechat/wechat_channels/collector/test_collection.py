@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from collection import LocalStore, Timings, collect, identity, parse_author, parse_basic_info, parse_video
+from collection import LocalStore, Timings, collect, identity, open_basic_info, parse_author, parse_basic_info, parse_video
 
 
 def line(text, x, y, width=160, height=28):
@@ -42,7 +42,7 @@ class FakeUi:
         self.backs = 0
         self.labels = []
 
-    def snapshot(self, label):
+    def snapshot(self, label, author=None):
         self.labels.append(label)
         return next(self.snapshots)
 
@@ -60,6 +60,73 @@ class FakeUi:
 
 
 class CollectionTests(unittest.TestCase):
+    def test_already_in_channels_can_use_top_template_after_bottom_miss(self):
+        target = {"text": "推荐", "navigation": "recommend", "box": [440, 90, 50, 30]}
+        ui = FakeUi([[], [target], FEED])
+        from collection import ensure_feed
+        self.assertEqual(ensure_feed(ui), FEED)
+        self.assertEqual(ui.clicks, ["推荐"])
+
+    def test_template_navigation_does_not_need_synthetic_ocr_labels(self):
+        targets = [{"text": text, "navigation": role, "box": [100, 100, 50, 30]}
+                   for text, role in [("发现", "discover"), ("视频号", "channels"), ("推荐", "recommend")]]
+        ui = FakeUi([[target] for target in targets] + [FEED])
+        from collection import ensure_feed
+        self.assertEqual(ensure_feed(ui), FEED)
+        self.assertEqual(ui.clicks, ["发现", "视频号", "推荐"])
+        self.assertEqual(ui.labels, ["navigation-bottom", "navigation-top", "navigation-top", "feed"])
+
+    def test_basic_info_ready_continues_without_extra_wait(self):
+        ui = FakeUi([INFO])
+        with patch("collection.time.monotonic", return_value=100), patch("collection.time.sleep") as sleep:
+            self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        sleep.assert_not_called()
+        self.assertEqual(ui.clicks, ["更多信息"])
+
+    def test_basic_info_loading_retries_without_clicking_again(self):
+        ui = FakeUi([[], INFO[:-1], INFO])
+        with patch("collection.time.monotonic", side_effect=[100, 100.6, 100.7, 101.2, 101.3, 101.8]), \
+                patch("collection.time.sleep") as sleep:
+            self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(ui.clicks, ["更多信息"])
+        self.assertEqual(ui.labels, ["author-basic-info"] * 3)
+
+    def test_basic_info_timeout_does_not_take_another_snapshot(self):
+        for unavailable in ([], INFO[:-1]):
+            with self.subTest(unavailable=unavailable):
+                ui = FakeUi([unavailable])
+                with patch("collection.time.monotonic", side_effect=[100, 100.6, 104.8, 105]), \
+                        patch("collection.time.sleep") as sleep:
+                    with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+                        open_basic_info(ui, line("更多信息", 280, 1400))
+                self.assertAlmostEqual(sleep.call_args.args[0], 0.2)
+                self.assertEqual(ui.labels, ["author-basic-info"])
+                self.assertEqual(ui.clicks, ["更多信息"])
+
+    def test_basic_info_slow_ocr_failure_does_not_extend_wait(self):
+        ui = FakeUi([[]])
+        with patch("collection.time.monotonic", side_effect=[100, 100.6, 106]), \
+                patch("collection.time.sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+                open_basic_info(ui, line("更多信息", 280, 1400))
+        sleep.assert_not_called()
+        self.assertEqual(ui.labels, ["author-basic-info"])
+
+    def test_basic_info_timeout_keeps_flow_unsaved_and_records_failure(self):
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)], []])
+            store = LocalStore(Path(root) / "videos.sqlite3")
+            timings = Timings(Path(root) / "timings.jsonl", "info-timeout")
+            with patch("collection.time.monotonic", side_effect=[100, 100, 100.6, 105.1]):
+                with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+                    collect(ui, store, timings)
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
+            self.assertEqual([(row["taskName"], row["outcome"]) for row in timings.rows[-2:]],
+                             [("collect_author_profile", "failed"), ("collect_video_total", "failed")])
+            self.assertNotIn("returned-feed", ui.labels)
+
     def test_navigation_uses_bottom_then_top_quarter(self):
         from collection import ensure_feed, navigation_roi
         home = [line("发现", 426, 1522), line("通讯录", 220, 1522)]

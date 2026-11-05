@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'plugins/wechat/**'
+      - 'plugins/xiaohongshu/tools/**'
       - '.github/workflows/wechat-tests.yml'
   pull_request:
     paths:
       - 'plugins/wechat/**'
+      - 'plugins/xiaohongshu/tools/**'
       - '.github/workflows/wechat-tests.yml'
 
 permissions:
