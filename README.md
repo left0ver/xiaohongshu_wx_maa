@@ -44,6 +44,18 @@ git -C "$host_root" apply "$plugin_root/patches/maa-tauri-android.patch"
 
 补丁只需应用一次，应用后宿主工作区显示修改状态是预期结果。升级宿主时需要重新检查补丁及两个插件，不要直接切到最新版本。已有开发目录可以继续使用，无需覆盖或重置其中的修改。
 
+## CI 自动构建与发版
+
+每次推送分支（包括 `main`），或在 Actions 手动运行 `Android Release`，都会测试插件并分别构建微信、小红书 **arm64-v8a Release APK**。两个包全部构建、签名校验成功后，自动发布到 [GitHub Releases](https://github.com/muyuzhong/xiaohongshu_wx_maa/releases)，附带 `SHA256SUMS`。失败的构建不会发布新版本。
+
+版本名为 `1.0.<运行序号>`，versionCode 随运行序号递增；Release 标签为 `build-<运行序号>-<commit前7位>`，APK 文件名也带 commit。每次构建独立保留，不覆盖旧版本，也不将每次 CI 构建标记为稳定版 Latest。标签推送不会再次触发构建。
+
+CI 单独拉取上面固定版本的宿主并应用补丁，不将宿主源码提交到本仓库。本自动发版流程按要求显式使用 `--release`；下面手动开发构建仍使用 debug。
+
+签名依赖仓库 Actions Secrets：`ANDROID_RELEASE_KEYSTORE_BASE64`（PKCS12 密钥文件的 Base64）和 `ANDROID_RELEASE_KEYSTORE_PASSWORD`（密钥库及私钥共用密码），别名固定为 `release`。两种 APK 共用固定发行密钥，不能每次生成新密钥；私钥与密码不得提交。新建或迁移仓库时需要配置相同 Secrets 才能保持覆盖升级。
+
+首次从原有 debug 包切换到此 Release 包可能因签名不同无法覆盖安装，需先备份数据再处理旧包；后续 CI 包保持相同签名。CI 验证不等于真机行为验收。
+
 ## 构建 APK
 
 Linux 构建环境需按宿主说明安装 Rust/Android 工具链、pnpm 11、JDK 17、Android SDK 和 NDK。小红书 Java 助手使用 Android API 36、Build Tools 36.0.0；历史构建使用 NDK 28.2.13676358。自行设置 `JAVA_HOME`、`ANDROID_HOME`，不要复制某台开发电脑的绝对路径。
