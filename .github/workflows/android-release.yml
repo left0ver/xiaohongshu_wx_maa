@@ -17,6 +17,8 @@ jobs:
       matrix:
         plugin: [wechat, xiaohongshu]
     env:
+      # MaaFramework release optimization exceeds rustc's default stack.
+      RUST_MIN_STACK: 33554432
       HOST_COMMIT: 4da508b20e4d7be132621ca24ec32f2b5b5a5fa0
       MAAFW_VERSION: v5.14.2
       MAAFW_CORE_TAG: agent-core-3.13.15-maafw5.14.2
