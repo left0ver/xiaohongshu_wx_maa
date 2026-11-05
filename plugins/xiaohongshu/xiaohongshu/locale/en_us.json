@@ -8,6 +8,6 @@
   "collect_one": "Open Xiaohongshu and collect one note locally",
   "discover": "Open Discover",
   "collect_video_one": "Open Xiaohongshu → collect one video (up to six screens, local)",
-  "inspect_comments": "Read comments → visit commenter → return",
-  "inspect_comments_description": "Open an image note first. Read visible text comments, verify one commenter profile and read its ID and follower count, then return to the same comment position. Local verification only; no interactions."
+  "inspect_comments": "Collect comment pages → visit commenters → return",
+  "inspect_comments_description": "Open an image note first. Read up to 10 overlapping text-comment views, expand replies and folded comments, and verify up to 5 profile round trips. Allow up to 90 seconds for loading. Mark text collection complete only at a verified end or empty state with matching totals; otherwise save partial results. Reply targets are display names only. Local only; no attachments, uploads or interactions."
 }

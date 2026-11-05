@@ -2,8 +2,12 @@
   "project": "MaaXiaohongshu",
   "host": "MaaTauriAndroid",
   "requirementsSource": "docs/xiaohongshu-checklist.md",
+  "behaviorRequirementsSource": "docs/xiaohongshu-behavior-checklist.md",
+  "excludedFeatures": [
+    "Image-text and video note publishing"
+  ],
   "scope": "Phone plugin only; no laike-service or MediaCrawler modifications",
-  "status": "image-and-visible-comment-profile-probes-verified",
+  "status": "image-comment-pagination-folded-and-empty-endings-verified",
   "implementedUnverified": [
     "PI v2 tasks for launch, discovery navigation and one-work local collection",
     "Semantic accessibility selectors with fresh physical bounds and transition checks",
@@ -19,9 +23,9 @@
     "Bounded stop/recovery validation"
   ],
   "remainingChecklistAreas": [
-    "Full comment pagination, nested reply relationships, media comments and video comment drawers",
+    "Large comment-thread exhaustion, media attachments, verified reply-target identities and video comment drawers",
     "Production COMMENT/USER event linkage, queue integration and transport",
-    "Configured interactions, replies, private messages and note publishing",
+    "Configured interactions, replies and private messages",
     "Daily quotas, incoming remote tasks and notification processing",
     "Recommendation, search, city and automatic modes",
     "Captcha pause, bounded recovery and multi-device validation"
@@ -37,9 +41,11 @@
     "Read-only collection only; no interaction writes executed",
     "Earlier subprocess hangs mitigated with Bionic posix_spawn; command timeout/cancel tested on vivo, full-run cancellation still pending",
     "One image collection passed locally; server ACK/SQL, video end-to-end and longer stability validation pending",
-    "Comment task currently verifies visible image-note text comments and one commenter; no full pagination, works count, stable comment ID, server event association or upload",
+    "Comment task reads bounded image-note text comment batches, expands replies and links them to primary comments, and verifies profile round trips; text completeness requires a verified end and matching initial/final counts; no media attachments, works count, stable server comment ID, event upload or video comment drawers",
     "Comment times and follower counts retain their displayed text; no inferred absolute date or rounded numeric conversion",
-    "Existing-task resume uses Android hidden APIs; verified on vivo Android 12 only"
+    "Existing-task resume uses Android hidden APIs; verified on vivo Android 12 only",
+    "2026-11-05 changes were exercised through Android Python directly; installed APK assets still contain the previous plugin until a new APK is packaged",
+    "replyToNickname is parsed display text only; ambiguous delimiters yield null, and no target user/comment ID is inferred"
   ],
   "tests": {
     "python": {
@@ -51,7 +57,12 @@
       "passed": 1
     },
     "androidDebugBuild": "passed",
-    "device": "vivo V2131A / Android 12 (historical local validation)"
+    "device": "vivo V2131A / Android 12 (historical local validation)",
+    "commentBatchOnDevice": {
+      "date": "2026-11-05",
+      "passed": 21,
+      "scope": "comment parsing including translation actions, pagination overlap, reply-parent and display-name linkage, folded/empty/end handling, count reconciliation, profile return, stop/failure and limit validation"
+    }
   },
   "deviceRuns": [
     {
@@ -77,6 +88,88 @@
       "readComments": 8122,
       "openCommenterProfile": 7296,
       "returnToComments": 1605
+    }
+  },
+  "commentPaginationVerification": {
+    "date": "2026-11-05",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "execution": "Android Python runtime, direct plugin invocation",
+    "status": "bounded_batches_verified",
+    "runs": [
+      {
+        "pagesRead": 3,
+        "comments": 9,
+        "replies": 5,
+        "profileVisits": 3,
+        "distinctProfiles": 3,
+        "replyExpansions": 2,
+        "elapsedMs": 72978,
+        "endReason": "page_limit"
+      },
+      {
+        "pagesRead": 10,
+        "comments": 20,
+        "replies": 10,
+        "profileVisits": 5,
+        "distinctProfiles": 4,
+        "replyExpansions": 1,
+        "elapsedMs": 140947,
+        "endReason": "page_limit"
+      },
+      {
+        "pagesRead": 3,
+        "comments": 10,
+        "replies": 5,
+        "profileVisits": 2,
+        "distinctProfiles": 2,
+        "replyExpansions": 0,
+        "elapsedMs": 45599,
+        "endReason": "page_limit",
+        "purpose": "Final regression after missing-parent and page-overlap guards"
+      }
+    ],
+    "validation": "Unique local comment keys, primary-comment parent links and commenter-profile links checked; no server upload",
+    "complete": false
+  },
+  "commentEndVerification": {
+    "date": "2026-11-05",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "execution": "Android Python runtime, direct plugin invocation; no APK rebuild",
+    "runs": [
+      {
+        "comments": 5,
+        "expectedCommentCount": 5,
+        "pagesRead": 3,
+        "foldedCommentExpansions": 1,
+        "elapsedMs": 36900,
+        "endReason": "end_of_list",
+        "complete": true
+      },
+      {
+        "comments": 0,
+        "expectedCommentCount": 0,
+        "pagesRead": 1,
+        "elapsedMs": 11487,
+        "endReason": "empty_comments",
+        "complete": true
+      },
+      {
+        "comments": 8,
+        "expectedCommentCount": 113,
+        "pagesRead": 3,
+        "elapsedMs": 42953,
+        "endReason": "end_of_list",
+        "complete": false
+      }
+    ],
+    "completeScope": "Text comment count only; excludes media attachments, identity enrichment and upload",
+    "replyTargetValidation": {
+      "method": "Android Python replay of a previously verified device report; not a new live UI end-to-end run",
+      "parsedDisplayNames": 1,
+      "rawContentAndParentPreserved": true,
+      "verifiedTargetIdentity": false
     }
   }
 }

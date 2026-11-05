@@ -1,0 +1,93 @@
+<hierarchy>
+  <node text="样本作者" content-desc="" resource-id="com.xingin.xhs:id/nickNameTV" class="android.widget.TextView" package="com.xingin.xhs" bounds="[270,142][495,193]" clickable="false" enabled="true" selected="false" scrollable="false" />
+  <node text="" content-desc="" resource-id="com.xingin.xhs:id/moreOperateIV" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[954,129][1032,207]" clickable="true" enabled="true" selected="false" scrollable="false" />
+  <node text="说点什么..." content-desc="评论框" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[45,2270][408,2378]" clickable="true" enabled="true" selected="false" scrollable="false" />
+  <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="androidx.recyclerview.widget.RecyclerView" package="com.xingin.xhs" bounds="[0,252][1080,2240]" clickable="false" enabled="true" selected="false" scrollable="true">
+    <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[0,252][1080,554]" clickable="false" enabled="true" selected="false" scrollable="false">
+      <node text="" content-desc="" resource-id="" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[0,252][1080,554]" clickable="false" enabled="true" selected="false" scrollable="false">
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.view.View" package="com.xingin.xhs" bounds="[45,252][1035,253]" clickable="false" enabled="true" selected="false" scrollable="false" />
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.RelativeLayout" package="com.xingin.xhs" bounds="[45,283][1035,344]" clickable="false" enabled="true" selected="false" scrollable="false">
+          <node text="共 623 条评论" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[45,283][351,344]" clickable="true" enabled="true" selected="false" scrollable="false" />
+        </node>
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.RelativeLayout" package="com.xingin.xhs" bounds="[0,374][1080,530]" clickable="true" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[45,398][153,506]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[45,398][153,506]" clickable="false" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[45,398][153,506]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            </node>
+          </node>
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[153,391][1080,512]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[198,391][1035,512]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            <node text="样本回复正文" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[243,421][621,482]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[831,392][1035,512]" clickable="false" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[831,392][1035,512]" clickable="false" enabled="true" selected="false" scrollable="false">
+                <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[831,416][903,488]" clickable="true" enabled="true" selected="false" scrollable="false" />
+                <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[933,416][1005,488]" clickable="true" enabled="true" selected="false" scrollable="false" />
+              </node>
+            </node>
+          </node>
+        </node>
+      </node>
+    </node>
+    <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[0,602][1080,1350]" clickable="true" enabled="true" selected="false" scrollable="false">
+      <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[0,602][1080,1350]" clickable="false" enabled="true" selected="false" scrollable="false">
+        <node text="" content-desc="" resource-id="" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[45,602][153,728]" clickable="false" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[45,620][153,728]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[45,620][153,728]" clickable="false" enabled="true" selected="false" scrollable="false" />
+        </node>
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[183,620][1080,1332]" clickable="false" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[183,620][1080,681]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="一级评论者" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[183,620][519,681]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          </node>
+          <node text="样本评论正文" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[183,681][1035,754]" clickable="false" enabled="true" selected="false" scrollable="false" />
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[183,754][543,1252]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[183,772][543,1252]" clickable="false" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[183,772][543,1252]" clickable="true" enabled="true" selected="false" scrollable="false" />
+            </node>
+          </node>
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.RelativeLayout" package="com.xingin.xhs" bounds="[183,1270][1080,1332]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="08-15 浙江 回复" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[183,1271][718,1331]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[778,1270][921,1332]" clickable="true" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[778,1270][848,1332]" clickable="false" enabled="true" selected="false" scrollable="false" />
+              <node text="1546" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[838,1270][921,1332]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            </node>
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[951,1270][1080,1332]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          </node>
+        </node>
+      </node>
+    </node>
+    <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[153,1350][1080,1594]" clickable="true" enabled="true" selected="false" scrollable="false">
+      <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[153,1350][1080,1594]" clickable="false" enabled="true" selected="false" scrollable="false">
+        <node text="" content-desc="" resource-id="" class="android.view.ViewGroup" package="com.xingin.xhs" bounds="[153,1350][255,1440]" clickable="false" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[183,1368][255,1440]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[183,1368][255,1440]" clickable="false" enabled="true" selected="false" scrollable="false" />
+        </node>
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[270,1368][1080,1576]" clickable="false" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[270,1368][1080,1429]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="回复者甲" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[270,1368][354,1429]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          </node>
+          <node text="样本回复正文" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[270,1429][1035,1502]" clickable="false" enabled="true" selected="false" scrollable="false" />
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.RelativeLayout" package="com.xingin.xhs" bounds="[270,1514][1080,1576]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="08-16 四川 回复" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[270,1515][760,1575]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[820,1514][921,1576]" clickable="true" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[820,1514][890,1576]" clickable="false" enabled="true" selected="false" scrollable="false" />
+              <node text="16" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[880,1514][921,1576]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            </node>
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[951,1514][1080,1576]" clickable="true" enabled="true" selected="false" scrollable="false" />
+          </node>
+        </node>
+      </node>
+    </node>
+    <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[0,1594][1080,1692]" clickable="false" enabled="true" selected="false" scrollable="false">
+      <node text="" content-desc="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" bounds="[0,1594][1080,1692]" clickable="false" enabled="true" selected="false" scrollable="false">
+        <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[0,1594][1080,1692]" clickable="true" enabled="true" selected="false" scrollable="false">
+          <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[183,1594][563,1692]" clickable="false" enabled="true" selected="false" scrollable="false">
+            <node text="" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.LinearLayout" package="com.xingin.xhs" bounds="[183,1594][243,1692]" clickable="false" enabled="true" selected="false" scrollable="false">
+              <node text="" content-desc="" resource-id="" class="android.widget.ImageView" package="com.xingin.xhs" bounds="[183,1642][243,1643]" clickable="false" enabled="true" selected="false" scrollable="false" />
+            </node>
+            <node text="展开 192 条回复" content-desc="" resource-id="com.xingin.xhs:id/0_resource_name_obfuscated" class="android.widget.TextView" package="com.xingin.xhs" bounds="[258,1594][563,1692]" clickable="false" enabled="true" selected="false" scrollable="false" />
+          </node>
+        </node>
+      </node>
+    </node>
+  </node>
+</hierarchy>
