@@ -75,6 +75,16 @@ class LayoutTests(unittest.TestCase):
                 line("相关音乐·歌曲", 99, 900)]
         self.assertIn("我在福建8月1日记住这一天", parse_video(data, AUTHOR)["description"])
 
+    def test_single_character_commenter_bounds_description(self):
+        data = [*DETAILS[:4], line("神贵州8月16日", 99, 790),
+                line("1717", 591, 790, 98), line("我老是会把这两首歌唱串", 101, 832),
+                line("作者赞过", 99, 874), line("13条回复", 101, 925)]
+        self.assertEqual(parse_video(data, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
+        # Location/time and a number without a nickname are not a comment header.
+        data[4] = line("贵州8月16日", 99, 790)
+        with self.assertRaisesRegex(ValueError, "boundary"):
+            parse_video(data, AUTHOR)
+
     def test_a_date_only_row_is_not_a_comment_boundary(self):
         data = [*DETAILS[:4], line("2026年8月1日", 99, 800), line("我会记住这一天", 99, 842)]
         with self.assertRaisesRegex(ValueError, "boundary"):
@@ -149,6 +159,14 @@ class LayoutTests(unittest.TestCase):
     def test_vertical_metadata_separator_is_not_part_of_location(self):
         data = [DETAILS[0], line(AUTHOR + "作者四川I8月1日", 99, 568), *DETAILS[2:]]
         self.assertEqual(parse_video(data, AUTHOR)["publishLocation"], "四川")
+
+    def test_unlisted_avatar_column_badge_does_not_enter_biography(self):
+        data = [line("Zczy.", 188, 487, 88), line("音乐博主", 191, 534, 111),
+                line("广东男", 191, 571, 87), line("谢谢你的喜欢~", 35, 647, 165),
+                line("愿琴声能治愈你", 33, 685, 182), line("384条原创内容", 35, 740, 200),
+                line("关注", 170, 820), line("私信", 490, 820)]
+        result = parse_author(data, "Zczy.")
+        self.assertEqual(result["authorBio"], "谢谢你的喜欢~\n愿琴声能治愈你")
 
 
 if __name__ == "__main__":

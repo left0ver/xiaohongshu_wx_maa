@@ -36,7 +36,7 @@
     "recognition": "TemplateMatch",
     "template": "labels/channels-id",
     "method": 5,
-    "threshold": 0.88
+    "threshold": 0.84
   },
   "BatchDiscoverTab": {
     "recognition": "And",

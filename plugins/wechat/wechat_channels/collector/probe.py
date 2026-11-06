@@ -42,7 +42,10 @@ def template_labels(ui, image):
             return []
         box = detail.box
         lines.append({"text": text, "box": [2 * box.x, 2 * box.y, 2 * box.w, 2 * box.h], "source": "local-template"})
-    if lines[0]["box"][1] >= lines[1]["box"][1]:
+    title, channel = (line["box"] for line in lines)
+    if (title[1] >= channel[1]
+            or abs(title[0] - channel[0]) > max(title[3], channel[3])
+            or channel[1] - title[1] > max(title[3], channel[3]) * 12):
         return []
     return lines
 

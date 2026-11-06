@@ -64,7 +64,15 @@ def parse_author(lines, author):
     boundary = min((line["box"][1] for line in area
                     if re.fullmatch(r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗", line["text"].strip())),
                    default=follow["box"][1])
-    bio = [line["text"] for line in area if line["box"][1] < boundary
+    # Header badges/location sit beside the avatar; biography rows start in the
+    # full-width column below it. Do not depend on an exhaustive badge vocabulary.
+    body_start = min((line["box"][1] for line in area
+                      if (location or certification)
+                      and line["box"][0] < name["box"][0] - line_height(lines) * 2
+                      and line["box"][1] < boundary
+                      and line is not ip and line is not certification and line is not location),
+                     default=name["box"][1] + name["box"][3])
+    bio = [line["text"] for line in area if body_start <= line["box"][1] < boundary
            if line is not ip and line is not certification and line is not location]
     fields = {
         "authorNickname": name["text"].strip(),
