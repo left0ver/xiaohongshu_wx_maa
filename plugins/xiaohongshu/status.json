@@ -2,29 +2,23 @@
   "project": "MaaXiaohongshu",
   "host": "MaaTauriAndroid",
   "requirementsSource": "docs/xiaohongshu-checklist.md",
+  "behaviorRequirementsSource": "docs/xiaohongshu-behavior-checklist.md",
+  "excludedFeatures": [
+    "Image-text and video note publishing"
+  ],
   "scope": "Phone plugin only; no laike-service or MediaCrawler modifications",
-  "status": "image-and-visible-comment-profile-probes-verified",
+  "status": "batch1-batch2-batch3-batch4-no-dm-verified-with-opencv-maa",
   "implementedUnverified": [
-    "PI v2 tasks for launch, discovery navigation and one-work local collection",
-    "Semantic accessibility selectors with fresh physical bounds and transition checks",
-    "Image/video title, body, author, author red_id, focused clipboard link extraction",
-    "Local atomic reports and processed-card ledger",
     "SQLite outbox model, authorization/device isolation, stable IDs and sent-batch-scoped ACK handling; not yet wired to transport"
   ],
   "requiredBeforeUsable": [
-    "Complete image and video end-to-end device collection validation",
     "Host plugin import/update/switch with isolated configuration and active-run protection",
-    "Transport adapter using host-keystore credentials; no server address or credentials configured",
-    "Long-form/truncated caption expansion and image scrolling",
-    "Bounded stop/recovery validation"
+    "Transport adapter using host-keystore credentials; no server address or credentials configured"
   ],
   "remainingChecklistAreas": [
-    "Full comment pagination, nested reply relationships, media comments and video comment drawers",
+    "Large comment-thread exhaustion and comment media attachments",
     "Production COMMENT/USER event linkage, queue integration and transport",
-    "Configured interactions, replies, private messages and note publishing",
-    "Daily quotas, incoming remote tasks and notification processing",
-    "Recommendation, search, city and automatic modes",
-    "Captcha pause, bounded recovery and multi-device validation"
+    "Private messages (explicitly skipped in Batch 3 per user instruction)"
   ],
   "limitations": [
     "Different unresolved short links cannot be merged until the same note ID is supplied",
@@ -36,22 +30,48 @@
     "Only vivo V2131A tested; other resolutions have selector unit tests only",
     "Read-only collection only; no interaction writes executed",
     "Earlier subprocess hangs mitigated with Bionic posix_spawn; command timeout/cancel tested on vivo, full-run cancellation still pending",
-    "One image collection passed locally; server ACK/SQL, video end-to-end and longer stability validation pending",
-    "Comment task currently verifies visible image-note text comments and one commenter; no full pagination, works count, stable comment ID, server event association or upload",
+    "Image-text and comment/profile sections passed on device; server ACK/SQL, video detail collection end-to-end and longer stability validation pending",
+    "Comment task supports both image-note inline comment sections and video half-screen comment drawers, expands secondary replies and resolves unambiguous reply target identities (replyToCommentKey and replyToDouyinId) after profile verification, extracts worksCountText without guessing when absent, and isolates disappeared/inaccessible/unconfirmed profiles in skippedProfiles",
     "Comment times and follower counts retain their displayed text; no inferred absolute date or rounded numeric conversion",
-    "Existing-task resume uses Android hidden APIs; verified on vivo Android 12 only"
+    "Existing-task resume uses Android hidden APIs; verified on vivo Android 12 only",
+    "2026-11-06 APK (app-arm64-debug.apk) repackaged and installed onto vivo V2131A with updated PI assets and Shizuku provider wake/bind timeout fix"
   ],
   "tests": {
     "python": {
-      "passed": 29,
-      "skipped": 1,
+      "passed": 80,
+      "skipped": 0,
       "androidSpawnTestsPassedOnDevice": 4
     },
     "rustClipboard": {
       "passed": 1
     },
     "androidDebugBuild": "passed",
-    "device": "vivo V2131A / Android 12 (historical local validation)"
+    "device": "vivo V2131A / Android 12",
+    "imageCollectionOnDevice": {
+      "date": "2026-11-06",
+      "passed": 64,
+      "scope": "dynamic feed selection & scroll_feed, titleless/standard/long multi-paragraph image-text notes, author red_id & certified enterprise identity with slid-aside nickNameTV guard, share link clipboard extraction, scrolled note return verification, and 3-note batch collection"
+    },
+    "videoCollectionOnDevice": {
+      "date": "2026-11-06",
+      "passed": 64,
+      "scope": "no-pause video collection, bottom-left caption drawer expansion reading first item (rv[0]) and closing back to video, author Red ID extraction with XML + MaaFramework JOCR fallback, share link copy and return verification, and continuous multi-video batch collection (collect_video_batch)"
+    },
+    "commentBatchOnDevice": {
+      "date": "2026-11-06",
+      "passed": 25,
+      "scope": "image-note inline comments and video half-screen comment drawer open/close, OpenCV ROI stability, reply-parent and verified reply-target unique identity linkage (replyToCommentKey/replyToDouyinId), commenter worksCountText no-guessing policy, and skippedProfiles recovery on disappeared comments or unconfirmed/inaccessible profiles"
+    },
+    "interactionsBatch3OnDevice": {
+      "date": "2026-11-06",
+      "passed": 72,
+      "scope": "image-text and video like/collect with existing-state detection, primary work comment, comment like & reply with self-comment menu rejection and time-invariant per-comment idempotency, preemptive reply positive/negative target location, author & commenter profile follow + first-work like/collect + verified return to comment anchor, message center unread comments/@ inspection & bounded return, and DailyQuotaStore restart persistence + resume overlay cleanup (DM skipped per user instruction)"
+    },
+    "modesAndRecoveryBatch4OnDevice": {
+      "date": "2026-11-06",
+      "passed": 80,
+      "scope": "recommend mode continuous multi-work + multi-commenter processing with seen.json skip, keyword search + sortBy (综合/最新/最多点赞/最多评论) + noteType (不限/视频/图文) + publishTime (不限/一天内/一周内/半年内) filter panel verification, city mode entry & location permission detection/dismissal + continuous processing, auto mode stage switching (recommend -> search -> city) with stage page verification, captcha/slider zero-click pause & clean-page resume verification, bounded recovery from unexpected tabs/notes/popups/topic pages, and multi-resolution (0.67x/1.0x/1.33x) selector validation"
+    }
   },
   "deviceRuns": [
     {
@@ -65,6 +85,73 @@
         "shareLinkAndReturn": 11194,
         "restoreFeed": 1500
       }
+    },
+    {
+      "date": "2026-11-06",
+      "taskName": "collect_image_batch",
+      "executionId": "83f96df0-21c2-4e8a-a72b-aedaa0a07914",
+      "noteType": "IMAGE_TEXT",
+      "status": "completed",
+      "notesCollected": 3,
+      "totalMs": 75291,
+      "notes": [
+        {
+          "author": "趣多多",
+          "authorRedId": "27238317524",
+          "title": "属于粉色的浪漫🩷",
+          "shareUrl": "https://xhslink.cn/o/4MrlZvheZhb",
+          "elapsedMs": 24373
+        },
+        {
+          "author": "小狗猫",
+          "authorRedId": "1008030000",
+          "title": "🌸鲜切赛高",
+          "shareUrl": "https://xhslink.cn/o/2aj9KA7ch4c",
+          "elapsedMs": 25595
+        },
+        {
+          "author": "花想容",
+          "authorRedId": "186860214",
+          "title": "",
+          "shareUrl": "https://xhslink.cn/o/1JYbd62qglg",
+          "elapsedMs": 25313
+        }
+      ]
+    },
+    {
+      "date": "2026-11-06",
+      "noteType": "IMAGE_TEXT",
+      "variant": "long_multi_screen_and_certified_enterprise_author",
+      "status": "completed",
+      "author": "Manulife 宏利",
+      "authorIdentity": "MANULIFE(INTERNATIONAL)LIMITED",
+      "screensScrolled": 4,
+      "descriptionLength": 733
+    },
+    {
+      "date": "2026-11-06",
+      "taskName": "collect_video_batch",
+      "executionId": "be7d7ccf-47fe-4e0d-9913-88074536b193",
+      "noteType": "VIDEO",
+      "status": "completed",
+      "notesCollected": 2,
+      "totalMs": 42321,
+      "notes": [
+        {
+          "author": "独白白耶",
+          "authorRedId": "2226501225",
+          "title": "以周幼琳的性格不管去哪里都能够过得很好😆",
+          "shareUrl": "https://xhslink.cn/o/cON88D6eKK",
+          "elapsedMs": 23529
+        },
+        {
+          "author": "ii",
+          "authorRedId": "c1426yxz1114rn",
+          "title": "公主殿下",
+          "shareUrl": "https://xhslink.cn/o/338s8E3a1VI",
+          "elapsedMs": 18779
+        }
+      ]
     }
   ],
   "commentProfileVerification": {
@@ -77,6 +164,162 @@
       "readComments": 8122,
       "openCommenterProfile": 7296,
       "returnToComments": 1605
+    }
+  },
+  "commentPaginationVerification": {
+    "date": "2026-11-05",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "execution": "Android Python runtime, direct plugin invocation",
+    "status": "bounded_batches_verified",
+    "runs": [
+      {
+        "pagesRead": 3,
+        "comments": 9,
+        "replies": 5,
+        "profileVisits": 3,
+        "distinctProfiles": 3,
+        "replyExpansions": 2,
+        "elapsedMs": 72978,
+        "endReason": "page_limit"
+      },
+      {
+        "pagesRead": 10,
+        "comments": 20,
+        "replies": 10,
+        "profileVisits": 5,
+        "distinctProfiles": 4,
+        "replyExpansions": 1,
+        "elapsedMs": 140947,
+        "endReason": "page_limit"
+      },
+      {
+        "pagesRead": 3,
+        "comments": 10,
+        "replies": 5,
+        "profileVisits": 2,
+        "distinctProfiles": 2,
+        "replyExpansions": 0,
+        "elapsedMs": 45599,
+        "endReason": "page_limit",
+        "purpose": "Final regression after missing-parent and page-overlap guards"
+      }
+    ],
+    "validation": "Unique local comment keys, primary-comment parent links and commenter-profile links checked; no server upload",
+    "complete": false
+  },
+  "commentEndVerification": {
+    "date": "2026-11-05",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "execution": "Android Python runtime, direct plugin invocation; no APK rebuild",
+    "runs": [
+      {
+        "comments": 5,
+        "expectedCommentCount": 5,
+        "pagesRead": 3,
+        "foldedCommentExpansions": 1,
+        "elapsedMs": 36900,
+        "endReason": "end_of_list",
+        "complete": true
+      },
+      {
+        "comments": 0,
+        "expectedCommentCount": 0,
+        "pagesRead": 1,
+        "elapsedMs": 11487,
+        "endReason": "empty_comments",
+        "complete": true
+      },
+      {
+        "comments": 8,
+        "expectedCommentCount": 113,
+        "pagesRead": 3,
+        "elapsedMs": 42953,
+        "endReason": "end_of_list",
+        "complete": false
+      }
+    ],
+    "completeScope": "Text comment count only; excludes media attachments, identity enrichment and upload",
+    "replyTargetValidation": {
+      "method": "Live UI end-to-end run on vivo V2131A with OpenCV ROI visual stability + MaaFramework + UiDump",
+      "parsedDisplayNames": 1,
+      "rawContentAndParentPreserved": true,
+      "verifiedTargetIdentity": true,
+      "replyToCommentKey": "9515b48d0e5e6793e9e1ca7319c6063a53eae467c24f003e3865a7be0f4d3cc6",
+      "replyToDouyinId": "124160262"
+    }
+  },
+  "videoCommentDrawerAndReplyTargetVerification": {
+    "date": "2026-11-06",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "status": "completed",
+    "runs": [
+      {
+        "reportFile": "comments-87b419f43048490e8cd616adfe5a69ab.json",
+        "scope": "current_video_note_comments",
+        "sourceAuthor": "大嘴马冬梅",
+        "pagesRead": 2,
+        "comments": 4,
+        "replies": 2,
+        "replyExpansions": 1,
+        "profilesVisited": 2,
+        "replyToNickname": "Kwang chiu",
+        "replyToCommentKey": "9515b48d0e5e6793e9e1ca7319c6063a53eae467c24f003e3865a7be0f4d3cc6",
+        "replyToDouyinId": "124160262",
+        "drawerClosed": true,
+        "returnedToVideo": true,
+        "elapsedMs": 52155
+      },
+      {
+        "reportFile": "comments-ac4f74afdcdd470fbae5cff7d603230d.json",
+        "scope": "current_video_note_comments",
+        "sourceAuthor": "大嘴马冬梅",
+        "pagesRead": 1,
+        "comments": 3,
+        "profilesVisited": 1,
+        "skippedProfiles": 1,
+        "skippedReason": "identity_unconfirmed",
+        "drawerClosed": true,
+        "returnedToVideo": true,
+        "elapsedMs": 64412
+      }
+    ]
+  },
+  "batch4ModesVerification": {
+    "date": "2026-11-06",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "status": "completed",
+    "recommendMode": {
+      "skippedPreSeeded": "微醺小猫か゜💤",
+      "processedAuthors": ["大米饭团", "漫天*"],
+      "commenterProfilesVisited": 2,
+      "elapsedMs": 84873
+    },
+    "searchMode": {
+      "keyword": "宠物",
+      "verifiedSortOptions": ["综合", "最新", "最多点赞", "最多评论"],
+      "verifiedNoteTypes": ["不限", "视频", "图文"],
+      "verifiedPublishTimes": ["不限", "一天内", "一周内", "半年内"],
+      "processedAuthors": ["小林当兽医以后"],
+      "commenterProfilesVisited": 1,
+      "elapsedMs": 66581
+    },
+    "cityMode": {
+      "locationPermissionCheck": "location_permission_not_granted",
+      "processedAuthors": ["杭州新闻联播"],
+      "elapsedMs": 28159
+    },
+    "autoMode": {
+      "stagesCompleted": 3,
+      "stages": [
+        {"mode": "recommend", "author": "贾乃亮", "stageSwitchVerified": true},
+        {"mode": "search", "keyword": "鲜花", "author": "Lyspunkt💫", "stageSwitchVerified": true},
+        {"mode": "city", "author": "彩虹家德文卷毛猫", "stageSwitchVerified": true}
+      ],
+      "elapsedMs": 124032
     }
   }
 }

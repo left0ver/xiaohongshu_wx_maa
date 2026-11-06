@@ -45,6 +45,13 @@
       "default_check": false
     },
     {
+      "name": "collect_image_batch",
+      "label": "$collect_image_batch",
+      "description": "$collect_image_batch_description",
+      "entry": "XhsStartImageBatchCollection",
+      "default_check": false
+    },
+    {
       "name": "open_discover",
       "label": "$discover",
       "entry": "XhsDiscoverOnly",
@@ -57,10 +64,31 @@
       "default_check": false
     },
     {
+      "name": "collect_video_batch",
+      "label": "$collect_video_batch",
+      "description": "$collect_video_batch_description",
+      "entry": "XhsStartVideoBatchCollection",
+      "default_check": false
+    },
+    {
       "name": "inspect_comments",
       "label": "$inspect_comments",
       "description": "$inspect_comments_description",
       "entry": "XhsInspectComments",
+      "default_check": false
+    },
+    {
+      "name": "interact_note",
+      "label": "$interact_note",
+      "description": "$interact_note_description",
+      "entry": "XhsInteractNote",
+      "default_check": false
+    },
+    {
+      "name": "run_mode",
+      "label": "$run_mode",
+      "description": "$run_mode_description",
+      "entry": "XhsRunMode",
       "default_check": false
     }
   ],

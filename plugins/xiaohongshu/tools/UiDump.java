@@ -3,6 +3,7 @@ package xhs;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
 import android.graphics.Rect;
+import android.os.Bundle;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Xml;
@@ -10,6 +11,8 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
+import java.util.ArrayList;
+import java.util.List;
 import org.xmlpull.v1.XmlSerializer;
 
 /** Runs under the existing Shizuku shell identity; no idle wait on animated pages. */
@@ -18,6 +21,10 @@ public final class UiDump {
     private static int emitted;
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--set-text")) {
+            setText(args[1]);
+            return;
+        }
         if (args.length != 1) throw new IllegalArgumentException("output path required");
         if (args[0].equals("--resume-xhs")) {
             resumeXhs();
@@ -81,6 +88,79 @@ public final class UiDump {
         }
     }
 
+    private static void setText(String value) throws Exception {
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalArgumentException("non-empty text required");
+        }
+        HandlerThread thread = new HandlerThread("xhs-set-text");
+        thread.start();
+        UiAutomation automation = null;
+        boolean connected = false;
+        try {
+            Class<?> connection = Class.forName("android.app.UiAutomationConnection");
+            Class<?> binder = Class.forName("android.app.IUiAutomationConnection");
+            Constructor<UiAutomation> constructor = UiAutomation.class.getDeclaredConstructor(Looper.class, binder);
+            constructor.setAccessible(true);
+            automation = constructor.newInstance(thread.getLooper(), connection.getDeclaredConstructor().newInstance());
+            UiAutomation.class.getMethod("connect", int.class).invoke(automation, UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
+            connected = true;
+            AccessibilityServiceInfo info = automation.getServiceInfo();
+            info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+            automation.setServiceInfo(info);
+            AccessibilityNodeInfo root = null;
+            for (int attempt = 0; attempt < 10 && root == null; attempt++) {
+                root = automation.getRootInActiveWindow();
+                if (root == null) Thread.sleep(100);
+            }
+            if (root == null) throw new IllegalStateException("No active window");
+            List<AccessibilityNodeInfo> edits = new ArrayList<>();
+            try {
+                collectEdits(root, edits, 0);
+                if (edits.size() != 1) {
+                    throw new IllegalStateException("Expected exactly one visible EditText, found " + edits.size());
+                }
+                AccessibilityNodeInfo edit = edits.get(0);
+                Bundle arguments = new Bundle();
+                arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+                if (!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                    throw new IllegalStateException("Failed to set text on EditText");
+                }
+                System.out.println("text_set");
+            } finally {
+                for (AccessibilityNodeInfo edit : edits) {
+                    edit.recycle();
+                }
+                root.recycle();
+            }
+        } finally {
+            if (connected) UiAutomation.class.getMethod("disconnect").invoke(automation);
+            thread.quitSafely();
+        }
+    }
+
+    private static void collectEdits(AccessibilityNodeInfo node, List<AccessibilityNodeInfo> edits, int depth) {
+        if (depth > 80) return;
+        if (!node.isVisibleToUser()) return;
+        Rect box = new Rect();
+        node.getBoundsInScreen(box);
+        if (box.isEmpty()) return;
+        if ("com.xingin.xhs".equals(text(node.getPackageName()))
+                && "android.widget.EditText".equals(text(node.getClassName()))
+                && node.isEnabled()) {
+            edits.add(AccessibilityNodeInfo.obtain(node));
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child == null) continue;
+            try {
+                collectEdits(child, edits, depth + 1);
+            } finally {
+                child.recycle();
+            }
+        }
+    }
+
     private static void resumeXhs() throws Exception {
         Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
         java.lang.reflect.Method tasks = null;
@@ -123,6 +203,7 @@ public final class UiDump {
             emitted++;
             xml.startTag("", "node");
             xml.attribute("", "text", node.isPassword() ? "" : text(node.getText()));
+            xml.attribute("", "hint", node.isPassword() ? "" : text(node.getHintText()));
             xml.attribute("", "content-desc", node.isPassword() ? "" : text(node.getContentDescription()));
             xml.attribute("", "resource-id", text(node.getViewIdResourceName()));
             xml.attribute("", "class", text(node.getClassName()));

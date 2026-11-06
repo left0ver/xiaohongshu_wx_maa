@@ -6,8 +6,16 @@
   "collect_image": "Collect one visible note locally",
   "collect_image_description": "Collect a visible image or video note, verify its author, copy its link and restore the feed. Development preview; no server upload.",
   "collect_one": "Open Xiaohongshu and collect one note locally",
+  "collect_image_batch": "Open Xiaohongshu → collect multiple image notes locally",
+  "collect_image_batch_description": "Continuously select unprocessed image notes from Discover, adapt to titleless notes, expand and scroll long captions, verify author IDs, copy share links, and return to the waterfall feed before moving to the next note.",
   "discover": "Open Discover",
   "collect_video_one": "Open Xiaohongshu → collect one video (up to six screens, local)",
-  "inspect_comments": "Read comments → visit commenter → return",
-  "inspect_comments_description": "Open an image note first. Read visible text comments, verify one commenter profile and read its ID and follower count, then return to the same comment position. Local verification only; no interactions."
+  "collect_video_batch": "Open Xiaohongshu → collect multiple videos locally",
+  "collect_video_batch_description": "Continuously select unprocessed videos from Discover, expand the bottom-left caption drawer to read the first item as full video caption, verify author IDs with XML and MaaFramework OCR, copy share links, and return to the feed before moving to the next video.",
+  "inspect_comments": "Collect comment pages → visit commenters → return",
+  "inspect_comments_description": "Open an image note first. Read up to 10 overlapping text-comment views, expand replies and folded comments, and verify up to 5 profile round trips. Allow up to 90 seconds for loading. Mark text collection complete only at a verified end or empty state with matching totals; otherwise save partial results. Reply targets are display names only. Local only; no attachments, uploads or interactions.",
+  "interact_note": "Work & comment interactions (like / collect / comment / reply)",
+  "interact_note_description": "Verify and execute work likes and bookmarks (detecting existing state via XML and OpenCV to prevent toggling off), primary comments, comment likes, targeted replies, and preemptive replies with persistent daily quotas and stop/resume idempotency protection.",
+  "run_mode": "Multi-mode runner (Recommend / Search / City / Auto)",
+  "run_mode_description": "Run continuous recommend feed selection with seen-card deduplication, keyword search with sort/type/time filters, city/nearby feed with location permission checks, and automatic multi-stage switching with captcha pause/resume and bounded abnormal-page recovery."
 }
