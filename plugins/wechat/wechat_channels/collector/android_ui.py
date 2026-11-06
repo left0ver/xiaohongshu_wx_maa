@@ -260,7 +260,16 @@ class MaaUi:
             self.image = image
             self.height = image.shape[0]
             roi = navigation_roi(label, self.height) if roi is None else roi
-            result = self.tasker.post_recognition("OCR", JOCR(threshold=0.55, roi=roi), image).wait().get()
+            ocr_image = image
+            if label.startswith("comments"):
+                # Mask orange Channels butterfly badges next to nicknames so OCR
+                # does not misread the decorative icon as a trailing 'W'.
+                ocr_image = image.copy()
+                b, g, r = ocr_image[:, :, 0].astype("int16"), ocr_image[:, :, 1].astype("int16"), ocr_image[:, :, 2].astype("int16")
+                orange = (r > 195) & (g > 105) & (g < 210) & (b < 100) & ((r - b) > 110)
+                if orange.any():
+                    ocr_image[orange] = 255
+            result = self.tasker.post_recognition("OCR", JOCR(threshold=0.55, roi=roi), ocr_image).wait().get()
             detail = result.nodes[0].recognition if result and result.nodes else None
         if detail is None:
             raise RuntimeError("OCR returned no result")
@@ -365,7 +374,6 @@ class MaaUi:
         x, y, width, height = line["box"]
         if not self.controller.post_click(x + width // 2, y + height // 2).wait().succeeded:
             raise RuntimeError("Click failed")
-        self.hierarchy_unavailable = False
         self.navigation_stage = {"发现": "BatchChannelsEntry", "视频号": "BatchRecommended"}.get(line.get("text"))
         time.sleep(0.6)
 
@@ -375,9 +383,8 @@ class MaaUi:
         foreground()
         if not self.controller.post_click_key(4).wait().succeeded:
             raise RuntimeError("Back failed")
-        self.hierarchy_unavailable = False
         self.navigation_stage = None
-        time.sleep(0.6)
+        time.sleep(0.95)
 
     def restore_work_header(self, lines):
         heading = find(lines, r"^评论\s*\d*")
@@ -391,9 +398,23 @@ class MaaUi:
         foreground()
         if not self.controller.post_swipe(360, start, 360, end, 300).wait().succeeded:
             raise RuntimeError("Details header recovery failed")
-        self.hierarchy_unavailable = False
         self.navigation_stage = None
         time.sleep(0.6)
+
+    def scroll_comments(self, lines):
+        heading = find(lines, r"^评论\s*\d*")
+        if not heading:
+            raise ValueError("Cannot scroll an unclassified comment drawer")
+        height = line_height(lines)
+        end = max(int(heading["box"][1] + heading["box"][3] + height * 3), int(self.height * 0.42))
+        start = min(int(self.height - 140), int(self.height * 0.84))
+        if start <= end + int(height * 2):
+            raise ValueError("Comment drawer has no safe scroll region")
+        foreground()
+        if not self.controller.post_swipe(360, start, 360, end, 350).wait().succeeded:
+            raise RuntimeError("Comment drawer scroll failed")
+        self.navigation_stage = None
+        time.sleep(0.7)
 
     def start_wechat(self):
         self.hierarchy_unavailable = False

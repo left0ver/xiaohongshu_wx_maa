@@ -168,6 +168,12 @@ class LayoutTests(unittest.TestCase):
         result = parse_author(data, "Zczy.")
         self.assertEqual(result["authorBio"], "谢谢你的喜欢~\n愿琴声能治愈你")
 
+    def test_location_pin_row_and_same_row_music_expand_bound_work_description(self):
+        pinned = [*DETAILS[:4], line("●北京市", 98, 691, 115), line("原声", 127, 740, 50), *DETAILS[6:]]
+        self.assertEqual(parse_video(pinned, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
+        same_row_expand = [*DETAILS[:4], line("」原声", 127, 691, 68), line("展开", 201, 692, 48), *DETAILS[6:]]
+        self.assertEqual(work_region(same_row_expand)["expand"]["text"], "展开")
+
 
 if __name__ == "__main__":
     unittest.main()

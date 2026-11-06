@@ -77,11 +77,11 @@ def complete_for(lines, label, height, author=None):
             discover = find(lines, r"^发现$", lambda line: line["box"][1] < 250)
             return bool((home and find(lines, r"^通讯录$"))
                         or (discover and find(lines, r"^视频号$"))
-                        or (find(lines, r"^推荐$") and find(lines, r"^关注$") and find(lines, r"^朋友")))
+                        or (find(lines, r"^推荐$") and find(lines, r"^[<＜《‹«]?\s*关注$") and find(lines, r"^朋友")))
         if label in ("feed", "before-author"):
             author_in_feed(lines, height)
-            return label == "before-author" or bool(find(lines, r"^\d+(?:\.\d+)?[万wW]?$",
-                lambda line: line["box"][0] > 600 and line["box"][1] > height - 130))
+            return label == "before-author" or bool(find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?|评论)$",
+                lambda line: line["box"][0] > 590 and line["box"][1] > height - 130))
         if label in ("video-details", "expanded-description") and author:
             # Let the flow expand only a work-header control, never a comment.
             if work_region(lines)["expand"]:

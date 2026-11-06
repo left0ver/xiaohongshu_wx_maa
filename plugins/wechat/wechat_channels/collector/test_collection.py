@@ -159,6 +159,15 @@ class CollectionTests(unittest.TestCase):
         from collection import author_in_feed
         self.assertEqual(author_in_feed([*FEED, line("√", 220, 1459, 16, 13)], 1558)["text"], AUTHOR)
 
+    def test_wrapped_two_line_feed_author_and_merged_back_follow_tab(self):
+        from collection import author_in_feed, ensure_feed
+        wrapped = [*FEED[:3], line("月井羊一瘦至", 123, 1471, 152, 29), line("对象", 123, 1505, 53, 27), FEED[-1]]
+        self.assertEqual(author_in_feed(wrapped, 1605)["text"], "月井羊一瘦至对象")
+        top_merged = [line("<关注", 60, 92, 200, 32), line("朋友", 315, 92), line("推荐", 445, 92)]
+        ui = FakeUi([[], top_merged, FEED])
+        self.assertEqual(ensure_feed(ui, launch=False), FEED)
+        self.assertEqual(ui.clicks, ["推荐"])
+
     def test_split_author_header_and_music_boundary(self):
         lines = [line("评论1102", 27, 482), line("小憩memories W", 99, 563),
                  line("作者浙江6月27日", 101, 605),

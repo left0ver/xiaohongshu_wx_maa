@@ -37,7 +37,11 @@ class CollectVideo(CustomAction):
                     comments = collect_visible_comments(ui, root / "videos.sqlite3", event, timings)
                     (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
                     timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
-                                  "coverage": comments["coverage"], "complete": False})
+                                  "userCount": len(comments.get("userEvents", [])),
+                                  "profilesVisited": len(comments.get("profiles", [])),
+                                  "skippedProfiles": len(comments.get("skippedProfiles", [])),
+                                  "coverage": comments["coverage"], "complete": comments["complete"],
+                                  "endReason": comments.get("endReason")})
                 timings.emit({"kind": "runCompleted", "outcome": "succeeded", "eventId": event["event_id"]})
                 return True
         except Exception as error:

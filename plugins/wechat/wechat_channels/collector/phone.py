@@ -8,6 +8,7 @@ from pathlib import Path
 
 from android_ui import phone_ui
 from collection import LocalStore, Timings, collect
+from comments import collect_visible_comments
 
 
 def main():
@@ -24,10 +25,20 @@ def main():
     run_dir = root / "data/runs" / run_id
     run_dir.mkdir(parents=True)
     timings = Timings(run_dir / "timings.jsonl", run_id)
+    launch = "--no-launch" not in sys.argv
     try:
         ui = phone_ui(root, run_dir)
-        event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings)
+        event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
         (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
+        if "--comments" in sys.argv:
+            comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings)
+            (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+            timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
+                          "userCount": len(comments.get("userEvents", [])),
+                          "profilesVisited": len(comments.get("profiles", [])),
+                          "skippedProfiles": len(comments.get("skippedProfiles", [])),
+                          "coverage": comments["coverage"], "complete": comments["complete"],
+                          "endReason": comments.get("endReason")})
         timings.emit({"kind": "runCompleted", "outcome": "succeeded", "eventId": event["event_id"]})
     except Exception as error:
         timings.emit({"kind": "runCompleted", "outcome": "failed", "error": str(error)})

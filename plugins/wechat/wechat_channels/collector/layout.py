@@ -12,7 +12,7 @@ LABELS = {
     "ip": r"IP\s*(?:归)?属地",
     "location": r"资料所在地",
     "gender": r"性别",
-    "certification": r"认证信息",
+    "certification": r"(?:认证信息|企业全称)",
     "entity": r"主体类型",
     "account": r"(?:帐号|账号)实名",
 }
@@ -58,7 +58,8 @@ def reading_rows(lines):
 
 
 def music_row(row, previous, height):
-    text = compact(row["text"])
+    pieces = [item for item in row["items"] if not re.fullmatch(r"展开|全文|更多", item["text"].strip())]
+    text = compact("".join(item["text"] for item in pieces))
     # Keywords inside prose/hashtags are not controls. A separated control row
     # must have an exact label or a label followed by its song separator.
     label = re.fullmatch(r"[^#@\w\u4e00-\u9fff]*(?:(?:相关)?音乐|原声)(?:[·•:：].+)?", text)
@@ -74,7 +75,8 @@ def comment_row(row, previous, following, height):
     region = re.search(f"(?:{REGION})$", prefix)
     # A timestamp alone (often part of the work's prose) is insufficient.
     author_and_region = bool(region and prefix[:region.start()])
-    actions = any(item["box"][0] > 570 and re.fullmatch(r"[\d.万wW]+", item["text"])
+    actions = any(item["box"][0] > 570
+                  and re.fullmatch(r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+", item["text"].strip())
                   for item in row["items"])
     return author_and_region and actions and row["top"] - previous["bottom"] >= height * 0.5
 
@@ -132,6 +134,10 @@ def work_region(lines):
         following = content[index + 1] if index + 1 < len(content) else None
         if music_row(row, previous, height):
             boundary, boundary_kind = row, "music"
+        elif (re.fullmatch(rf"[●•·📍◎]+\s*(?:{REGION})(?:[省市县区]|[\s·•:：][\u4e00-\u9fffA-Za-z0-9]+)*",
+                           compact(row["text"]))
+              and row["top"] - previous["bottom"] >= height * 0.3):
+            boundary, boundary_kind = row, "location"
         elif comment_row(row, previous, following, height):
             boundary, boundary_kind = row, "comment"
         elif (re.fullmatch(r"暂无评论|还没有评论[,，]?快来抢沙发|抢沙发|帮[他她]上热门|上热门", compact(row["text"]))
@@ -141,7 +147,8 @@ def work_region(lines):
             break
         previous = row
     body = [row for row in content if boundary is None or row["top"] < boundary["top"]]
-    expand = next((item for row in body for item in row["items"]
+    expand_rows = [*body, *([boundary] if boundary_kind == "music" else [])]
+    expand = next((item for row in expand_rows for item in row["items"]
                    if re.fullmatch(r"展开|全文|更多", item["text"].strip())), None)
     return {"heading": heading, "header": header, "authorHeader": header_text,
             "metadata": metadata, "body": body, "boundary": boundary,
@@ -174,7 +181,7 @@ def video_values(lines, author):
 
 def profile_name(lines, hint):
     """Locate the current header without validating it against an earlier name."""
-    controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|关注|私信|客服)", item["text"])]
+    controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|申请关注|关注|私信|客服)", item["text"])]
     if len(controls) < 2:
         raise ValueError("Author profile controls are missing")
     end = min(item["box"][1] for item in controls)
@@ -264,7 +271,7 @@ def supplemental_roi(lines, label, height, author=None):
             name = profile_name(lines, author)
         except ValueError:
             return None
-        controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|关注|私信|客服)", item["text"])]
+        controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|申请关注|关注|私信|客服)", item["text"])]
         if name and len(controls) >= 2:
             top, end = bottom(name), min(item["box"][1] for item in controls)
             if end > top:

@@ -28,12 +28,13 @@ def template_labels(ui, image):
     lines = []
     for name, text in (("BatchBasicTitle", "基础信息"), ("BatchChannelsId", "视频号ID")):
         node = ui.nodes[name]
+        threshold = min(node["threshold"], 0.75 if name == "BatchBasicTitle" else 0.70)
         detail = None
         # Try the baseline scale first; the other sizes remain a fallback for
         # font/display scaling, rather than paying for all scales on every hit.
         for template in (node["template"] + "/100.png", node["template"]):
             result = ui.tasker.post_recognition("TemplateMatch", JTemplateMatch(
-                template=[template], threshold=[node["threshold"]], method=node["method"], roi=roi,
+                template=[template], threshold=[threshold], method=node["method"], roi=roi,
             ), image).wait().get()
             detail = result.nodes[-1].recognition if result and result.nodes else None
             if detail and detail.hit and detail.box is not None:
@@ -43,7 +44,8 @@ def template_labels(ui, image):
         box = detail.box
         lines.append({"text": text, "box": [2 * box.x, 2 * box.y, 2 * box.w, 2 * box.h], "source": "local-template"})
     title, channel = (line["box"] for line in lines)
-    if (title[1] >= channel[1]
+    if (title[0] >= 120
+            or title[1] >= channel[1]
             or abs(title[0] - channel[0]) > max(title[3], channel[3])
             or channel[1] - title[1] > max(title[3], channel[3]) * 12):
         return []
@@ -76,7 +78,8 @@ def main():
             time.sleep(0.025)
         deadline = time.monotonic() + float(request.read_text(encoding="utf-8"))
     # The foreground video is deliberately excluded. This reader never clicks.
-    roi = [0, ui.height // 4, 720, ui.height - ui.height // 4]
+    roi = [0, ui.height // 4, 240, ui.height // 2]
+    template_tries = 0
     while time.monotonic() < deadline:
         foreground()
         job = controller.post_screencap().wait()
@@ -85,7 +88,8 @@ def main():
         image = job.get()
         lines = template_labels(ui, image)
         source = "local-template"
-        if not lines:
+        template_tries += 1
+        if not lines and (template_tries >= 3 or deadline - time.monotonic() <= 2.4):
             lines = ui.ocr_snapshot("author-basic-info", roi)
             source = "local-ocr"
         if basic_info_ready(lines):
@@ -94,7 +98,7 @@ def main():
             staged.write_text(json.dumps({"lines": lines, "source": source}, ensure_ascii=False), encoding="utf-8")
             staged.replace(output)
             return
-        time.sleep(min(0.15, max(0, deadline - time.monotonic())))
+        time.sleep(min(0.12, max(0, deadline - time.monotonic())))
 
 
 if __name__ == "__main__":

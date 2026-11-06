@@ -29,14 +29,46 @@ def find(lines, pattern, predicate=lambda line: True):
 
 
 def author_in_feed(lines, height):
-    candidates = [line for line in lines
-                  if line["box"][1] > height - 150 and 65 < line["box"][0] < 250
-                  and not re.search(r"关注|私信|客服|热评|设置为铃声", line["text"])
-                  and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
-                  and not re.fullmatch(r"[\d.万wW]+", line["text"])]
+    hot_rows = [line["box"][1] for line in lines if re.search(r"热评|\d+条回复", line["text"])]
+    candidates = sorted(
+        (line for line in lines
+         if line["box"][1] > height - 150 and 65 < line["box"][0] < 250
+         and not re.search(r"关注|私信|客服|热评|设置为铃声|\d+条回复", line["text"])
+         and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
+         and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
+         and not re.fullmatch(r"[\d.万wW]+", line["text"])),
+        key=lambda item: (item["box"][1], item["box"][0]),
+    )
+    if len(candidates) == 2:
+        first, second = candidates
+        gap = second["box"][1] - (first["box"][1] + first["box"][3])
+        if abs(first["box"][0] - second["box"][0]) <= 20 and -5 <= gap <= 20:
+            return {
+                **first,
+                "text": first["text"].strip() + second["text"].strip(),
+            }
     if len(candidates) != 1:
         raise ValueError("The feed author is missing or ambiguous")
     return candidates[0]
+
+
+def comment_control_in_feed(lines, height, ui=None):
+    comment = find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?|评论)$",
+                   lambda line: line["box"][0] > 590 and line["box"][1] > height - 130)
+    if comment:
+        return comment
+    if ui is not None and hasattr(ui, "ocr_snapshot"):
+        roi = [580, max(0, height - 130), 140, min(130, height)]
+        extra = ui.ocr_snapshot("feed-comment-control", roi)
+        comment = find(extra, r"^(?:\d+(?:\.\d+)?[万wW]?|评论)$",
+                       lambda line: line["box"][0] > 580 and line["box"][1] > height - 130)
+        if comment:
+            return comment
+        bar_anchor = find(lines, r"^(?:转发|赞|收藏|\d+(?:\.\d+)?[万wW]?)$",
+                          lambda line: 340 <= line["box"][0] <= 575 and line["box"][1] > height - 110)
+        if bar_anchor:
+            return {"text": "1", "box": [625, max(0, bar_anchor["box"][1] - 32), 44, 52]}
+    return None
 
 
 def parse_video(lines, author):
@@ -45,7 +77,7 @@ def parse_video(lines, author):
 
 def parse_author(lines, author):
     contact = find(lines, r"^(私信|客服)$")
-    follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
+    follow = find(lines, r"^(?:[√✓]?)\s*(已关注|申请关注|关注)$")
     if not contact or not follow or abs(contact["box"][1] - follow["box"][1]) > line_height(lines) * 2:
         raise ValueError("Author profile controls are missing")
     name = profile_name(lines, author)
@@ -87,14 +119,14 @@ def parse_author(lines, author):
 
 def profile_bio_expand(lines, author):
     """Only expand a truncated biography between the name and profile controls."""
-    follow = find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
+    follow = find(lines, r"^(?:[√✓]?)\s*(已关注|申请关注|关注)$")
     if not follow:
         return None
     try:
         name = profile_name(lines, author)
     except ValueError:
         return None
-    return find(lines, r"(?:[.…⋯]+\s*(?:展开|全文)|^(?:展开|全文))$",
+    return find(lines, r"(?:[.…⋯·]+\s*(?:展开|全文)|^(?:展开|全文))$",
                 lambda line: name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1])
 
 
@@ -223,7 +255,8 @@ def ensure_feed(ui, launch=True):
     navigation_label = "navigation-bottom"
     while navigation_steps < 7:
         lines = ui.snapshot(navigation_label)
-        if navigation_label == "navigation-bottom" and not find(lines, r"^发现$|^推荐$|^视频号$|^评论\s*\d*|^(私信|客服)$|^我的视频号$"):
+        is_profile_grid = navigation_label == "navigation-bottom" and any(line["box"][1] > ui.height - 42 for line in lines)
+        if navigation_label == "navigation-bottom" and not is_profile_grid and not find(lines, r"^发现$|^推荐$|^视频号$|^评论\s*\d*|^(私信|客服)$|^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             # Already inside Channels: inspect its top tabs without full-screen OCR.
             lines = ui.snapshot("navigation-top")
         if lines and lines[0].get("navigation"):
@@ -236,7 +269,7 @@ def ensure_feed(ui, launch=True):
             navigation_steps += 1
             continue
         recommended = find(lines, r"^推荐$", lambda line: line["box"][1] < 250)
-        if recommended and find(lines, r"^关注$", lambda line: line["box"][1] < 250) and find(lines, r"^朋友", lambda line: line["box"][1] < 250):
+        if recommended and find(lines, r"^[<＜《‹«]?\s*关注$", lambda line: line["box"][1] < 250) and find(lines, r"^朋友", lambda line: line["box"][1] < 250):
             ui.click(recommended)
             return ui.snapshot("feed")
         discover = find(lines, r"^发现$", lambda line: line["box"][1] > ui.height - 180)
@@ -245,7 +278,7 @@ def ensure_feed(ui, launch=True):
         elif discover and find(lines, r"^通讯录$"):
             ui.click(discover)
             navigation_label = "navigation-top"
-        elif find(lines, r"^评论\s*\d*") or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$"):
+        elif is_profile_grid or find(lines, r"^评论\s*\d*") or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             ui.back()
         else:
             if waiting_for_start:
@@ -264,17 +297,20 @@ def ensure_feed(ui, launch=True):
 
 def video_details(ui, lines, author):
     # The comment count is part of the visible comment control, located by OCR.
-    comment = find(lines, r"^\d+(?:\.\d+)?[万wW]?$", lambda line: line["box"][0] > 600 and line["box"][1] > ui.height - 130)
+    comment = comment_control_in_feed(lines, ui.height, ui)
     if not comment:
         raise ValueError("Comment control was not recognized")
     ui.click(comment)
     details = ui.snapshot("video-details", author=author)
-    try:
-        work_region(details)
-    except WorkHeaderMissing:
-        # A single drawer-only recovery; never swipe an unclassified feed.
-        ui.restore_work_header(details)
-        details = ui.snapshot("video-details", author=author)
+    for _ in range(3):
+        try:
+            work_region(details)
+            break
+        except WorkHeaderMissing:
+            if not hasattr(ui, "restore_work_header"):
+                raise
+            ui.restore_work_header(details)
+            details = ui.snapshot("video-details", author=author)
     for _ in range(2):
         region = work_region(details)
         expand = region["expand"]
