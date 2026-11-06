@@ -19,6 +19,25 @@
       "XhsCollectVisibleNote"
     ]
   },
+  "XhsCollectImageBatch": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsCollectVisibleNote",
+    "next": [],
+    "custom_action_param": {
+      "noteType": "IMAGE_TEXT",
+      "count": 3,
+      "maxScreens": 6
+    }
+  },
+  "XhsStartImageBatchCollection": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsOpenDiscover",
+    "next": [
+      "XhsCollectImageBatch"
+    ]
+  },
   "XhsDiscoverOnly": {
     "recognition": "DirectHit",
     "action": "Custom",
@@ -40,6 +59,25 @@
     "custom_action": "XhsOpenDiscover",
     "next": [
       "XhsCollectVisibleVideo"
+    ]
+  },
+  "XhsCollectVideoBatch": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsCollectVisibleNote",
+    "next": [],
+    "custom_action_param": {
+      "noteType": "VIDEO",
+      "count": 2,
+      "maxScreens": 6
+    }
+  },
+  "XhsStartVideoBatchCollection": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsOpenDiscover",
+    "next": [
+      "XhsCollectVideoBatch"
     ]
   },
   "XhsInspectComments": {

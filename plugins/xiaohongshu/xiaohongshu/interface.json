@@ -45,6 +45,13 @@
       "default_check": false
     },
     {
+      "name": "collect_image_batch",
+      "label": "$collect_image_batch",
+      "description": "$collect_image_batch_description",
+      "entry": "XhsStartImageBatchCollection",
+      "default_check": false
+    },
+    {
       "name": "open_discover",
       "label": "$discover",
       "entry": "XhsDiscoverOnly",
@@ -54,6 +61,13 @@
       "name": "collect_video_one",
       "label": "$collect_video_one",
       "entry": "XhsStartVideoCollection",
+      "default_check": false
+    },
+    {
+      "name": "collect_video_batch",
+      "label": "$collect_video_batch",
+      "description": "$collect_video_batch_description",
+      "entry": "XhsStartVideoBatchCollection",
       "default_check": false
     },
     {
