@@ -71,8 +71,7 @@ jobs:
       - name: Test plugin logic
         run: python3 -m unittest discover -s plugins/${{ matrix.plugin }}/tests
       - name: Build Java helper
-        if: matrix.plugin == 'xiaohongshu'
-        run: bash plugins/xiaohongshu/tools/build-ui-helper.sh
+        run: bash plugins/${{ matrix.plugin }}/tools/build-ui-helper.sh
       - name: Set increasing APK version
         run: |
           python3 - <<'PY'

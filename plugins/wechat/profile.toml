@@ -11,7 +11,7 @@ timeout_ms = 600000
 bundle = "dist/wechat-channels-agent-runtime-{abi}.zip"
 exec = "bin/python3"
 executables = ["bin/python3"]
-args = ["-u", "collector/main.py", "{identifier}"]
+args = ["-u", "agent/main.py", "{identifier}"]
 working_dir = "{pi}"
 
 [agent.runtimes.env]

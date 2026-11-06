@@ -8,10 +8,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from collection import LocalStore, Timings, collect, identity, parse_author, parse_basic_info, parse_video
+from collection import LocalStore, Timings, collect, identity, open_basic_info, parse_author, parse_basic_info, parse_video
 
 
 def line(text, x, y, width=160, height=28):
@@ -42,15 +42,29 @@ class FakeUi:
         self.backs = 0
         self.labels = []
 
-    def snapshot(self, label):
+    def snapshot(self, label, author=None):
         self.labels.append(label)
         return next(self.snapshots)
+
+    @contextlib.contextmanager
+    def prepare_basic_info(self):
+        yield None
+
+    def wait_basic_info(self, timeout=5, reader=None):
+        from layout import basic_info_ready
+        lines = self.snapshot("author-basic-info-ready")
+        if not basic_info_ready(lines):
+            raise ValueError("Author basic information was not ready within 5 seconds")
+        return lines
 
     def click(self, target):
         self.clicks.append(target["text"])
 
     def back(self):
         self.backs += 1
+
+    def read_profile_bio(self, lines, profile):
+        return profile["authorBio"]
 
     def profile_more(self, name):
         self.clicks.append("profile-menu")
@@ -60,6 +74,54 @@ class FakeUi:
 
 
 class CollectionTests(unittest.TestCase):
+    def test_already_in_channels_can_use_top_template_after_bottom_miss(self):
+        target = {"text": "推荐", "navigation": "recommend", "box": [440, 90, 50, 30]}
+        ui = FakeUi([[], [target], FEED])
+        from collection import ensure_feed
+        self.assertEqual(ensure_feed(ui), FEED)
+        self.assertEqual(ui.clicks, ["推荐"])
+
+    def test_template_navigation_does_not_need_synthetic_ocr_labels(self):
+        targets = [{"text": text, "navigation": role, "box": [100, 100, 50, 30]}
+                   for text, role in [("发现", "discover"), ("视频号", "channels"), ("推荐", "recommend")]]
+        ui = FakeUi([[target] for target in targets] + [FEED])
+        from collection import ensure_feed
+        self.assertEqual(ensure_feed(ui), FEED)
+        self.assertEqual(ui.clicks, ["发现", "视频号", "推荐"])
+        self.assertEqual(ui.labels, ["navigation-bottom", "navigation-top", "navigation-top", "feed"])
+
+    def test_basic_info_ready_reuses_values_without_another_ocr(self):
+        ui = FakeUi([INFO])
+        self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        self.assertEqual(ui.labels, ["author-basic-info-ready"])
+        self.assertEqual(ui.clicks, ["更多信息"])
+
+    def test_click_settling_consumes_the_same_readiness_budget(self):
+        ui = FakeUi([])
+        ui.wait_basic_info = Mock(return_value=INFO)
+        with patch("collection.time.monotonic", side_effect=[100, 100.8]):
+            open_basic_info(ui, line("更多信息", 280, 1400))
+        self.assertAlmostEqual(ui.wait_basic_info.call_args.kwargs["timeout"], 4.2)
+
+    def test_basic_info_readiness_does_not_certify_missing_id(self):
+        ui = FakeUi([INFO[:-1], INFO])
+        self.assertEqual(open_basic_info(ui, line("更多信息", 280, 1400)), parse_basic_info(INFO))
+        self.assertEqual(ui.labels, ["author-basic-info-ready", "author-basic-info"])
+        self.assertEqual(ui.clicks, ["更多信息"])
+
+    def test_basic_info_timeout_keeps_flow_unsaved_and_records_failure(self):
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)], []])
+            store = LocalStore(Path(root) / "videos.sqlite3")
+            timings = Timings(Path(root) / "timings.jsonl", "info-timeout")
+            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+                collect(ui, store, timings)
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
+            self.assertEqual([(row["taskName"], row["outcome"]) for row in timings.rows[-2:]],
+                             [("collect_author_profile", "failed"), ("collect_video_total", "failed")])
+            self.assertNotIn("returned-feed", ui.labels)
+
     def test_navigation_uses_bottom_then_top_quarter(self):
         from collection import ensure_feed, navigation_roi
         home = [line("发现", 426, 1522), line("通讯录", 220, 1522)]
@@ -77,25 +139,21 @@ class CollectionTests(unittest.TestCase):
             details[4] = line(music, 102, 691)
             self.assertEqual(parse_video(details, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
 
-    def test_punctuation_mismatch_requires_exact_confirmation(self):
-        for recovered in (True, False):
-            with self.subTest(recovered=recovered), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
-                dotted = list(DETAILS)
-                dotted[3] = line("们俩.", 99, 643, 58)
-                ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)],
-                             INFO, FEED, dotted, DETAILS if recovered else dotted])
-                store = LocalStore(Path(root) / "drafts.sqlite3")
-                timing = Timings(Path(root) / "timings.jsonl", "confirmation")
-                if recovered:
-                    self.assertTrue(collect(ui, store, timing)["payload"]["returnVerified"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "different work"):
-                        collect(ui, store, timing)
-                with store.connect() as db:
-                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], int(recovered))
-                retry = [row for row in timing.rows if row["taskName"] == "verify_description_retry"]
-                self.assertEqual(len(retry), 1)
-                self.assertEqual(retry[0]["outcome"], "succeeded" if recovered else "failed")
+    def test_first_description_is_saved_without_return_read_or_punctuation_retry(self):
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            dotted = list(DETAILS)
+            dotted[3] = line("们俩.", 99, 643, 58)
+            # No returned-page snapshots are provided: a second read would fail.
+            ui = FakeUi([FEED, FEED, dotted, FEED, PROFILE, [line("更多信息", 280, 1400)], INFO])
+            store = LocalStore(Path(root) / "drafts.sqlite3")
+            timing = Timings(Path(root) / "timings.jsonl", "first-reading")
+            event = collect(ui, store, timing)
+            self.assertEqual(event["payload"]["description"], "完整的作品文案#音乐#我们俩.")
+            self.assertIs(event["payload"]["returnVerified"], False)
+            self.assertEqual(ui.labels.count("video-details"), 1)
+            self.assertNotIn("returned-feed", ui.labels)
+            self.assertFalse(any(row["taskName"].startswith("verify_") for row in timing.rows))
+            self.assertEqual(ui.backs, 3)
 
     def test_feed_certification_checkmark_is_not_another_author(self):
         from collection import author_in_feed
@@ -106,14 +164,11 @@ class CollectionTests(unittest.TestCase):
                  line("作者浙江6月27日", 101, 605),
                  line("去看更多视频#钢琴", 99, 652), line("音乐·Luvsic", 104, 701),
                  line("帮他上热门", 120, 776), line("其他评论", 99, 880)]
-        result = parse_video(lines, "小憩memories", include_author_evidence=True)
+        result = parse_video(lines, "小憩memories")
         self.assertEqual(result["publishLocation"], "浙江")
         self.assertEqual(result["publishTimeText"], "6月27日")
         self.assertEqual(result["description"], "去看更多视频#钢琴")
-        from collection import work_author_matches
-        self.assertTrue(work_author_matches(result["_authorHeader"], "小憩memories"))
-        with self.assertRaises(ValueError):
-            parse_video(lines, "其他作者")
+        self.assertEqual(parse_video(lines, "首次昵称")["authorNickname"], "首次昵称")
 
     def test_startup_waits_for_ready_page_and_continues_early(self):
         from collection import ensure_feed
@@ -141,8 +196,8 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(value["publishTimeText"], "8月1日")
         self.assertEqual(value["publishLocation"], "福建")
 
-    def test_reject_different_author_and_missing_work_header(self):
-        for lines, author in ((DETAILS, "其他作者"), (DETAILS[1:], AUTHOR), (DETAILS[3:], AUTHOR)):
+    def test_reject_missing_work_header(self):
+        for lines, author in ((DETAILS[1:], AUTHOR), (DETAILS[3:], AUTHOR)):
             with self.subTest(author=author, count=len(lines)), self.assertRaises(ValueError):
                 parse_video(lines, author)
 
@@ -158,9 +213,21 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(profile["authorBio"], "作者简介")
         self.assertIsNone(profile["authorCertification"])
 
-    def test_profile_mismatch_fails(self):
-        with self.assertRaises(ValueError):
-            parse_author(PROFILE, "其他作者")
+    def test_profile_feature_section_is_outside_biography(self):
+        profile = [*PROFILE[:4], line("音乐电台", 35, 720), line("播放", 570, 720), *PROFILE[4:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "作者简介")
+
+    def test_biography_fan_sentence_is_not_a_statistic(self):
+        profile = [*PROFILE[:2], line("欢迎大家关注呀！", 35, 610),
+                   line("不辜负任何一位粉丝。", 35, 644), *PROFILE[3:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "欢迎大家关注呀！\n不辜负任何一位粉丝。")
+
+    def test_biography_music_words_are_preserved(self):
+        profile = [*PROFILE[:2], line("喜欢音乐电台，也喜欢播放唱片", 35, 644), *PROFILE[3:]]
+        self.assertEqual(parse_author(profile, AUTHOR)["authorBio"], "喜欢音乐电台，也喜欢播放唱片")
+
+    def test_profile_name_difference_does_not_require_another_read(self):
+        self.assertEqual(parse_author(PROFILE, "其他作者")["authorBio"], "作者简介")
 
     def test_certification_and_music_controls_are_not_bio(self):
         profile = [*PROFILE[:1], line("音乐人", 192, 550), line("江苏女", 192, 590),
@@ -206,24 +273,52 @@ class CollectionTests(unittest.TestCase):
             with store.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
 
-    def test_full_flow_and_return_mismatch(self):
-        for changed in (False, True):
-            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
-                returned = list(DETAILS)
-                if changed:
-                    returned[2] = line("另一条作品", 98, 604, 594)
-                ui = FakeUi([FEED, FEED, DETAILS, FEED, PROFILE, [line("更多信息", 280, 1400)], INFO, FEED, returned, returned])
-                store = LocalStore(Path(root) / "videos.sqlite3")
-                timings = Timings(Path(root) / "timings.jsonl", "test-run")
-                if changed:
-                    with self.assertRaisesRegex(ValueError, "different work"):
-                        collect(ui, store, timings)
-                else:
-                    self.assertTrue(collect(ui, store, timings)["payload"]["returnVerified"])
-                with store.connect() as db:
-                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0 if changed else 1)
-                self.assertEqual(timings.rows[-1]["outcome"], "failed" if changed else "succeeded")
-                self.assertTrue(all(row["durationMs"] >= 0 for row in timings.rows))
+    def test_acceptance_sql_accepts_explicitly_unverified_and_historical_records(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = LocalStore(Path(root) / "drafts.sqlite3")
+            invalid = set()
+            for index, flag in enumerate((False, True, None, "false")):
+                event, _ = store.save({**self.payload(), "description": f"work {index}", "returnVerified": flag})
+                if type(flag) is not bool:
+                    invalid.add(event["event_id"])
+            statements, current = [], ""
+            for line in Path(__file__).with_name("acceptance.sql").read_text(encoding="utf-8").splitlines(keepends=True):
+                current += line
+                if sqlite3.complete_statement(current):
+                    statements.append(current)
+                    current = ""
+            with store.connect() as db:
+                results = [db.execute(statement).fetchall() for statement in statements]
+            self.assertEqual(len(results), 3)
+            self.assertEqual(results[1], [])
+            self.assertEqual({row[0] for row in results[2]}, invalid)
+
+    def test_differing_names_on_later_pages_keep_first_nickname(self):
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            first = [*FEED[:3], line("李可q", 122, 1455), FEED[-1]]
+            later = [*FEED[:3], line("李可g", 122, 1455), FEED[-1]]
+            details = [DETAILS[0], line("李可gW作者福建8月1日", 99, 568), *DETAILS[2:]]
+            profile = [line("李可g", 192, 509), *PROFILE[1:]]
+            ui = FakeUi([first, first, details, later, profile, [line("更多信息", 280, 1400)], INFO])
+            store = LocalStore(Path(root) / "videos.sqlite3")
+            timings = Timings(Path(root) / "timings.jsonl", "names")
+            event = collect(ui, store, timings)
+            self.assertEqual(event["payload"]["authorNickname"], "李可q")
+            self.assertEqual(event["dedupe_key"], "wxch-video:" + identity("李可q", event["payload"]["description"]))
+            self.assertIs(event["payload"]["returnVerified"], False)
+            with store.connect() as db:
+                self.assertEqual(json.loads(db.execute("SELECT event_json FROM video_drafts").fetchone()[0]), event)
+            self.assertEqual(timings.rows[-1]["outcome"], "succeeded")
+
+    def test_profile_expansion_is_bounded_and_never_saves_truncated_bio(self):
+        collapsed = [*PROFILE[:2], line("简介...展开", 35, 644), *PROFILE[3:]]
+        for expanded in (PROFILE, collapsed):
+            with self.subTest(expanded=expanded is PROFILE), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                ui = FakeUi([FEED, FEED, DETAILS, FEED, collapsed, expanded,
+                             [line("更多信息", 280, 1400)], INFO])
+                result = collect(ui, LocalStore(Path(root) / "db.sqlite3"), Timings(Path(root) / "timings.jsonl", "bio"))
+                self.assertEqual(ui.clicks.count("简介...展开"), 1)
+                self.assertEqual(result["payload"]["authorBio"], "作者简介" if expanded is PROFILE else None)
 
     def test_discover_page_opens_channels_instead_of_clicking_discover_again(self):
         from collection import ensure_feed
@@ -233,7 +328,7 @@ class CollectionTests(unittest.TestCase):
         ensure_feed(ui, launch=False)
         self.assertEqual(ui.clicks, ["视频号", "推荐"])
 
-    def test_faded_feed_name_requires_full_profile_and_work_header_agreement(self):
+    def test_first_nickname_is_not_replaced_by_a_longer_profile_name(self):
         for wrong_header in (False, True, "longer-name"):
             with self.subTest(wrong_header=wrong_header), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
                 initial = [*FEED[:3], line("示例作", 122, 1455), FEED[-1]]
@@ -243,18 +338,14 @@ class CollectionTests(unittest.TestCase):
                     header_author = AUTHOR + "乙" if wrong_header == "longer-name" else "示例作品乙"
                     details[1] = line(header_author + "W作者福建8月1日", 99, 568, 362)
                 ui = FakeUi([initial, initial, details, after, PROFILE,
-                             [line("更多信息", 280, 1400)], INFO, after, DETAILS])
+                             [line("更多信息", 280, 1400)], INFO])
                 store = LocalStore(Path(root) / "videos.sqlite3")
                 timings = Timings(Path(root) / "timings.jsonl", "faded-name")
-                if wrong_header:
-                    with self.assertRaisesRegex(ValueError, "Full profile name"):
-                        collect(ui, store, timings)
-                else:
-                    event = collect(ui, store, timings)
-                    self.assertEqual(event["payload"]["authorNickname"], AUTHOR)
-                    self.assertNotIn("_authorHeader", event["payload"])
+                event = collect(ui, store, timings)
+                self.assertEqual(event["payload"]["authorNickname"], "示例作")
+                self.assertNotIn("_authorHeader", event["payload"])
                 with store.connect() as db:
-                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0 if wrong_header else 1)
+                    self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 1)
 
     def test_timing_is_written_on_exception(self):
         with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):

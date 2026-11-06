@@ -7,6 +7,14 @@
     "post_delay": 0,
     "next": []
   },
+  "CollectWechatComments": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "CollectWechatComments",
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
   "BatchText": {
     "recognition": "OCR",
     "threshold": 0.55
@@ -15,5 +23,138 @@
     "recognition": "TemplateMatch",
     "template": "profile-more.png",
     "threshold": 0.88
+  },
+  "BatchBasicTitle": {
+    "$comment": "Read-only readiness helper matches these labels on a 360px-wide frame.",
+    "recognition": "TemplateMatch",
+    "template": "labels/basic-info-title",
+    "method": 5,
+    "threshold": 0.88
+  },
+  "BatchChannelsId": {
+    "$comment": "Read-only readiness helper matches these labels on a 360px-wide frame.",
+    "recognition": "TemplateMatch",
+    "template": "labels/channels-id",
+    "method": 5,
+    "threshold": 0.84
+  },
+  "BatchDiscoverTab": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/discover-tab",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": [
+          0,
+          -480,
+          0,
+          480
+        ],
+        "sub_name": "fastDiscoverTab"
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/contacts-tab",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": "fastDiscoverTab",
+        "roi_offset": [
+          -270,
+          -16,
+          220,
+          32
+        ]
+      }
+    ],
+    "box_index": 0,
+    "action": "DoNothing",
+    "next": [],
+    "timeout": 1,
+    "rate_limit": 0,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "BatchChannelsEntry": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/channels-label",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": [
+          0,
+          120,
+          480,
+          600
+        ],
+        "sub_name": "fastChannelsLabel"
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/discover-title",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": [
+          0,
+          0,
+          720,
+          240
+        ]
+      }
+    ],
+    "box_index": 0,
+    "action": "DoNothing",
+    "next": [],
+    "timeout": 1,
+    "rate_limit": 0,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
+  "BatchRecommended": {
+    "recognition": "And",
+    "all_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/recommended",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": [
+          120,
+          0,
+          480,
+          300
+        ],
+        "sub_name": "fastRecommended"
+      },
+      {
+        "recognition": "TemplateMatch",
+        "template": "labels/following",
+        "method": 5,
+        "threshold": 0.88,
+        "order_by": "Score",
+        "roi": "fastRecommended",
+        "roi_offset": [
+          -300,
+          -14,
+          260,
+          28
+        ]
+      }
+    ],
+    "box_index": 0,
+    "action": "DoNothing",
+    "next": [],
+    "timeout": 1,
+    "rate_limit": 0,
+    "pre_delay": 0,
+    "post_delay": 0
   }
 }

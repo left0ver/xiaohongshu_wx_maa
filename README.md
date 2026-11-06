@@ -1,6 +1,6 @@
 # 微信视频号与小红书 Maa 插件
 
-基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，主要通过实时控件、图像模板与 OCR 识别页面。微信原组合的点赞步骤按已识别的视频页面连续点击视频区域三次，使用短边 720 归一化坐标，仍有布局适配限制。
+基于 MaaFramework / MaaTauriAndroid 的手机端自动化代码。两个插件独立维护，通过实时控件、图像模板与 OCR 识别页面。微信采集优先读取控件树，导航在控件信息不完整时先匹配模板、失败才调用 OCR；点赞只点击识别到的拇指图标并验证状态。
 
 ## 仓库结构
 
@@ -17,7 +17,7 @@
 
 | 插件 | 已有行为 | 验证边界 |
 | --- | --- | --- |
-| 微信视频号 | 保留原有操作组合；新增视频、作者资料采集、返回身份校验、本地去重保存及阶段计时 | 采集代码的应用内三轮实测：两轮失败、一轮成功（243.122 秒）；本次整合后的 APK 尚未重新构建验收 |
+| 微信视频号 | 采集视频及作者资料，保留首次昵称和文案，生成作品伪链接并本地去重保存；第二批可见一级评论默认不开启 | 2026-11-06 同一策略三个视频完整手机端流程通过，平均 245.985 秒；修复单字评论边界、简介头部混入和基础信息模板误拒绝。首次昵称、标点及表情仍有 OCR 差异；评论翻页、二级回复和上报未完成 |
 | 小红书图文 | 发现页选作品、`seen.json` 去重、无独立标题与长文多段落（4 屏滑动）展开补采、作者主页红薯号/蓝 V 认证主体提取、分享短链提取、返回列表连续采集 | 真机连续多篇批次（75.3 秒 / 3 篇）及长文企业号实测通过 |
 | 小红书视频 | 免暂停采集、左下角折叠文案抽屉展开（含误触 `#话题` 自动返回改点边缘重展、底部快捷表情条过滤）、XML + MaaFramework `JOCR` 红薯号核验、右侧分享短链与多篇连续采集 | 真机连续多篇视频批次（42.3 秒 / 2 篇）实测通过 |
 | 小红书评论与主页 | 图文内联评论区与视频半屏评论抽屉、翻页去重与到底/空态判定、二级回复展开与回复对象唯一身份（`replyToCommentKey`/`replyToDouyinId`）关联、评论者主页字段提取（缺失不猜测）与异常隔离（`skippedProfiles`） | 真机图文/视频多轮翻页、多位评论者主页往返与异常回退实测通过 |
@@ -89,6 +89,7 @@ host_root="$(cd ../MaaTauriAndroid-host && pwd)"
 微信视频号采集需要 Python Agent runtime；Maa 和 NumPy 由宿主匹配版本的 Agent core 提供：
 
 ```bash
+bash plugins/wechat/tools/build-ui-helper.sh
 python3 "$host_root/scripts/build_apk.py" \
   --profile "$plugin_root/plugins/wechat/profile.toml" --debug --use-prebuilt-core
 ```
@@ -103,7 +104,7 @@ python3 "$host_root/scripts/build_apk.py" \
 
 `build_apk.py` 使用上游的依赖准备和运行时构建流程；会修改宿主 Android 工程的本地 profile 配置，并执行编译。当前固定宿主 commit 没有 tag，因此这里明确使用 debug 签名。APK 位于宿主 Gradle 输出目录；本仓库不提交生成的 APK、runtime ZIP、签名密钥或 SDK。
 
-`ui-dump.dex` 与 Java 源码一起保留，修改 `UiDump.java` 后必须重新生成。模型、图标和助手资源位于打包目录，不依赖开发机的 `/tmp` 或本地截图目录。
+两个插件复用 `plugins/xiaohongshu/tools/UiDump.java` 的通用控件树导出实现，各自打包 `ui-dump.dex`；修改 Java 源码后需运行两个插件的 `build-ui-helper.sh` 重新生成。微信只使用其 XML 导出入口，不调用小红书专用的恢复任务入口。模型、图标和助手资源位于打包目录，不依赖开发机的 `/tmp` 或本地截图目录。
 
 ## 手机测试
 
