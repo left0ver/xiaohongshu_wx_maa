@@ -7,7 +7,7 @@
     "Image-text and video note publishing"
   ],
   "scope": "Phone plugin only; no laike-service or MediaCrawler modifications",
-  "status": "batch1-and-batch2-verified-with-opencv-maa",
+  "status": "batch1-batch2-batch3-no-dm-verified-with-opencv-maa",
   "implementedUnverified": [
     "SQLite outbox model, authorization/device isolation, stable IDs and sent-batch-scoped ACK handling; not yet wired to transport"
   ],
@@ -19,8 +19,7 @@
   "remainingChecklistAreas": [
     "Large comment-thread exhaustion and comment media attachments",
     "Production COMMENT/USER event linkage, queue integration and transport",
-    "Configured interactions, replies and private messages",
-    "Daily quotas, incoming remote tasks and notification processing",
+    "Private messages (explicitly skipped in Batch 3 per user instruction)",
     "Recommendation, search, city and automatic modes",
     "Captcha pause, bounded recovery and multi-device validation"
   ],
@@ -42,7 +41,7 @@
   ],
   "tests": {
     "python": {
-      "passed": 64,
+      "passed": 72,
       "skipped": 0,
       "androidSpawnTestsPassedOnDevice": 4
     },
@@ -65,6 +64,11 @@
       "date": "2026-11-06",
       "passed": 25,
       "scope": "image-note inline comments and video half-screen comment drawer open/close, OpenCV ROI stability, reply-parent and verified reply-target unique identity linkage (replyToCommentKey/replyToDouyinId), commenter worksCountText no-guessing policy, and skippedProfiles recovery on disappeared comments or unconfirmed/inaccessible profiles"
+    },
+    "interactionsBatch3OnDevice": {
+      "date": "2026-11-06",
+      "passed": 72,
+      "scope": "image-text and video like/collect with existing-state detection, primary work comment, comment like & reply with self-comment menu rejection and time-invariant per-comment idempotency, preemptive reply positive/negative target location, author & commenter profile follow + first-work like/collect + verified return to comment anchor, message center unread comments/@ inspection & bounded return, and DailyQuotaStore restart persistence + resume overlay cleanup (DM skipped per user instruction)"
     }
   },
   "deviceRuns": [

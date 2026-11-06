@@ -12,6 +12,7 @@ from maa.toolkit import Toolkit
 from collector import Device, collect_note, collect_notes, open_discover
 from discovery import clipboard_value
 from comments import inspect_comments
+from interactions import interact_work_and_comments
 from vision import capture_raw_frame
 
 faulthandler.enable()
@@ -103,6 +104,24 @@ class InspectComments(CustomAction):
             return True
         except Exception as error:
             print(f"Xiaohongshu comment inspection stopped: {type(error).__name__}: {error}", flush=True)
+            return False
+
+
+@AgentServer.custom_action("XhsInteractNote")
+class InteractNote(CustomAction):
+    def run(self, context, argv):
+        try:
+            require_physical_display(context)
+            options = json.loads(argv.custom_action_param or "null") or {}
+            report = interact_work_and_comments(
+                make_device(context),
+                Path.cwd().parent.parent / "xiaohongshu-data",
+                options=options,
+            )
+            print(json.dumps({"status": report["status"], "elapsedMs": report["elapsedMs"]}), flush=True)
+            return True
+        except Exception as error:
+            print(f"Xiaohongshu interaction stopped: {type(error).__name__}: {error}", flush=True)
             return False
 
 

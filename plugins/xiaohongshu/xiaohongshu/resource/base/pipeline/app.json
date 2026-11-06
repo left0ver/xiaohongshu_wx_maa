@@ -85,5 +85,15 @@
     "action": "Custom",
     "custom_action": "XhsInspectComments",
     "next": []
+  },
+  "XhsInteractNote": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsInteractNote",
+    "next": [],
+    "custom_action_param": {
+      "likeWork": true,
+      "collectWork": true
+    }
   }
 }

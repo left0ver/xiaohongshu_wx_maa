@@ -13,5 +13,7 @@
   "collect_video_batch": "Open Xiaohongshu → collect multiple videos locally",
   "collect_video_batch_description": "Continuously select unprocessed videos from Discover, expand the bottom-left caption drawer to read the first item as full video caption, verify author IDs with XML and MaaFramework OCR, copy share links, and return to the feed before moving to the next video.",
   "inspect_comments": "Collect comment pages → visit commenters → return",
-  "inspect_comments_description": "Open an image note first. Read up to 10 overlapping text-comment views, expand replies and folded comments, and verify up to 5 profile round trips. Allow up to 90 seconds for loading. Mark text collection complete only at a verified end or empty state with matching totals; otherwise save partial results. Reply targets are display names only. Local only; no attachments, uploads or interactions."
+  "inspect_comments_description": "Open an image note first. Read up to 10 overlapping text-comment views, expand replies and folded comments, and verify up to 5 profile round trips. Allow up to 90 seconds for loading. Mark text collection complete only at a verified end or empty state with matching totals; otherwise save partial results. Reply targets are display names only. Local only; no attachments, uploads or interactions.",
+  "interact_note": "Work & comment interactions (like / collect / comment / reply)",
+  "interact_note_description": "Verify and execute work likes and bookmarks (detecting existing state via XML and OpenCV to prevent toggling off), primary comments, comment likes, targeted replies, and preemptive replies with persistent daily quotas and stop/resume idempotency protection."
 }

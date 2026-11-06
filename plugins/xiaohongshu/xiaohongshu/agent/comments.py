@@ -18,6 +18,11 @@ class Comment:
     box: tuple
     is_reply: bool = False
     requires_parent_match: bool = False
+    body_node: object = None
+    like_node: object = None
+    like_icon_node: object = None
+    like_count_text: str = ""
+    liked: bool = False
 
     @property
     def key(self):
@@ -76,9 +81,18 @@ def comment_section(page):
             pass
     author = page.unique(resource="nickNameTV").get("text", "").strip()
     share = page.unique(resource="moreOperateIV")
-    bottom = bounds(page.unique(description="评论框"))[1]
+    comment_bar = page.unique(description="评论框")
+    bottom = bounds(comment_bar)[1]
+    max_bottom = bounds(comment_bar)[3] + 40
+    picture_nodes = {
+        sub
+        for n in page.nodes
+        if re.match(r"图片,第\d+张,共\d+张", n.get("content-desc", ""))
+        for sub in n.iter("node")
+    }
     lists = [n for n in page.nodes if n.get("class") == "androidx.recyclerview.widget.RecyclerView"
-             and bounds(n)[1] >= bounds(share)[3] and bounds(n)[3] <= bottom]
+             and n not in picture_nodes
+             and bounds(n)[1] >= bounds(share)[3] and bounds(n)[1] < bottom and bounds(n)[3] <= max_bottom]
     if not author or len(lists) != 1:
         raise PageMismatch("Not a loaded image-note comment section")
     return author, lists[0]
@@ -88,6 +102,8 @@ def visible_comments(page):
     author, listing = comment_section(page)
     headers = [n for n in page.nodes if re.fullmatch(r"共\s*\d+\s*条评论", n.get("text", ""))]
     _, top, _, bottom = bounds(listing)
+    if author:
+        bottom = min(bottom, bounds(page.unique(description="评论框"))[1])
     if len(headers) == 1:
         top = max(top, bounds(headers[0])[3])
     parents = {child: parent for parent in page.root.iter() for child in parent}
@@ -118,10 +134,41 @@ def visible_comments(page):
             if not is_reply:
                 unknown_parent = True
             continue
+        like_boxes = [
+            n for n in footer
+            if n.get("class") == "android.widget.LinearLayout"
+            and n.get("clickable") == "true"
+            and bounds(n)[0] >= bounds(meta)[2] - 20
+        ]
+        like_node = like_boxes[0] if len(like_boxes) == 1 else None
+        like_icons = (
+            [n for n in like_node if n.get("class") == "android.widget.ImageView"]
+            if like_node is not None else []
+        )
+        like_icon_node = like_icons[0] if len(like_icons) == 1 else None
+        like_texts = (
+            [n.get("text", "").strip() for n in like_node if n.get("class") == "android.widget.TextView"]
+            if like_node is not None else []
+        )
+        like_count_text = like_texts[0] if like_texts else ""
+        liked = bool(
+            (like_node is not None and like_node.get("selected") == "true")
+            or (like_icon_node is not None and like_icon_node.get("selected") == "true")
+        )
         # shortcut: collect the text portion only; media attachments need a separate collector.
-        comments.append(Comment(dict(nickname=names[0].get("text").strip(), content=body,
-                                     commentTime=match[1], ipLocation=match[2] or ""), names[0], box,
-                                is_reply, is_reply and unknown_parent))
+        comments.append(Comment(
+            dict(nickname=names[0].get("text").strip(), content=body,
+                 commentTime=match[1], ipLocation=match[2] or ""),
+            names[0],
+            box,
+            is_reply,
+            is_reply and unknown_parent,
+            body_node=bodies[0],
+            like_node=like_node,
+            like_icon_node=like_icon_node,
+            like_count_text=like_count_text,
+            liked=liked,
+        ))
         unknown_parent = False
     if not comments and not empty_comments(page):
         raise PageMismatch("No complete visible text comments")

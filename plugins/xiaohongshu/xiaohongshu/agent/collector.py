@@ -91,6 +91,7 @@ class Device:
             and args[0] == "env"
             and any("xhs.UiDump" in str(a) for a in args)
             and "--resume-xhs" not in args
+            and "--set-text" not in args
         )
         if not is_uidump:
             if self.has_vision and args and args[0] in ("input", "am"):
@@ -177,6 +178,24 @@ class Device:
 
     def back(self):
         self.command("input", "keyevent", "4")
+
+    def set_text(self, text):
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Interaction text must be a non-empty string")
+        helper = Path(__file__).with_name("ui-dump.dex")
+        if not helper.is_file():
+            raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
+        output = self.command(
+            "env",
+            "CLASSPATH=" + str(helper),
+            "app_process",
+            "/system/bin",
+            "xhs.UiDump",
+            "--set-text",
+            text,
+        )
+        if "text_set" not in (output or ""):
+            raise PageMismatch("Could not set text in active EditText")
 
 
 def open_discover(device):

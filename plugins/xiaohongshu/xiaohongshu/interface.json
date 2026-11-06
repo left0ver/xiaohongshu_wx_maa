@@ -76,6 +76,13 @@
       "description": "$inspect_comments_description",
       "entry": "XhsInspectComments",
       "default_check": false
+    },
+    {
+      "name": "interact_note",
+      "label": "$interact_note",
+      "description": "$interact_note_description",
+      "entry": "XhsInteractNote",
+      "default_check": false
     }
   ],
   "agent": {
