@@ -13,6 +13,7 @@ from collector import Device, collect_note, collect_notes, open_discover
 from discovery import clipboard_value
 from comments import inspect_comments
 from interactions import interact_work_and_comments
+from modes import run_auto_mode, run_city_mode, run_recommend_mode, run_search_mode
 from vision import capture_raw_frame
 
 faulthandler.enable()
@@ -122,6 +123,65 @@ class InteractNote(CustomAction):
             return True
         except Exception as error:
             print(f"Xiaohongshu interaction stopped: {type(error).__name__}: {error}", flush=True)
+            return False
+
+
+@AgentServer.custom_action("XhsRunMode")
+class RunMode(CustomAction):
+    def run(self, context, argv):
+        try:
+            require_physical_display(context)
+            options = json.loads(argv.custom_action_param or "null") or {}
+            data_dir = Path.cwd().parent.parent / "xiaohongshu-data"
+            device = make_device(context)
+            mode = (options.get("mode") or "auto").strip().lower()
+            if mode in ("recommend", "discover"):
+                report = run_recommend_mode(
+                    device,
+                    data_dir,
+                    count=int(options.get("count", 2)),
+                    note_type=options.get("noteType"),
+                    max_screens=int(options.get("maxScreens", 6)),
+                    inspect_note_comments=bool(options.get("inspectComments", False)),
+                    comment_options=options.get("commentOptions"),
+                    interaction_options=options.get("interactionOptions"),
+                )
+            elif mode == "search":
+                report = run_search_mode(
+                    device,
+                    data_dir,
+                    keyword=options.get("keyword") or "宠物",
+                    sort_by=options.get("sortBy", "综合"),
+                    filter_note_type=options.get("noteType", "不限"),
+                    publish_time=options.get("publishTime", "不限"),
+                    count=int(options.get("count", 1)),
+                    max_screens=int(options.get("maxScreens", 6)),
+                    inspect_note_comments=bool(options.get("inspectComments", False)),
+                    comment_options=options.get("commentOptions"),
+                    interaction_options=options.get("interactionOptions"),
+                )
+            elif mode == "city":
+                report = run_city_mode(
+                    device,
+                    data_dir,
+                    count=int(options.get("count", 1)),
+                    note_type=options.get("noteType"),
+                    max_screens=int(options.get("maxScreens", 6)),
+                    require_location_permission=bool(options.get("requireLocationPermission", False)),
+                    inspect_note_comments=bool(options.get("inspectComments", False)),
+                    comment_options=options.get("commentOptions"),
+                    interaction_options=options.get("interactionOptions"),
+                )
+            else:
+                report = run_auto_mode(
+                    device,
+                    data_dir,
+                    stages=options.get("stages"),
+                )
+            print(json.dumps({"status": report["status"], "elapsedMs": report["elapsedMs"]}), flush=True)
+            return True
+        except Exception as error:
+            print(f"Xiaohongshu mode run stopped: {type(error).__name__}: {error}", flush=True)
             return False
 
 

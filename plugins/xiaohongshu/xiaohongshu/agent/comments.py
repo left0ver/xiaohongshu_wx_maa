@@ -42,7 +42,7 @@ def video_comment_drawer(page):
     hbox = bounds(header)
     composers = [n for n in page.nodes
                  if n.get("resource-id", "").endswith("/commentLayout")
-                 or n.get("text") == "留下你的想法吧"
+                 or n.get("text") in ("留下你的想法吧", "有话要说，快来评论")
                  or n.get("content-desc") == "评论框"]
     if not composers:
         raise PageMismatch("Not a loaded video comment drawer")
@@ -50,6 +50,11 @@ def video_comment_drawer(page):
     lists = [n for n in page.nodes
              if n.get("class") == "androidx.recyclerview.widget.RecyclerView"
              and bounds(n)[1] >= hbox[3] and bounds(n)[3] <= bottom]
+    if len(lists) > 1:
+        lists = [
+            rv for rv in lists
+            if bounds(rv)[1] <= hbox[3] + max(120, hbox[3] - hbox[1])
+        ]
     if len(lists) != 1:
         raise PageMismatch("Not a loaded video comment drawer")
     listing_nodes = set(lists[0].iter("node"))
@@ -324,6 +329,13 @@ def empty_comments(page):
         buttons = [n for n in panel.iter("node") if n.get("text") == "抢首评"]
         if (len(buttons) == 1 and bounds(label)[1] >= top and bounds(label)[3] <= bottom
                 and bounds(buttons[0])[1] >= bounds(label)[3] and bounds(buttons[0])[3] <= bottom):
+            return True
+    for label in page.nodes:
+        if label.get("text") != "有话要说，快来评论":
+            continue
+        group = parents.get(label)
+        if (group is not None and bounds(label)[1] >= top and bounds(label)[3] <= bottom + 60
+                and any(c.get("class") == "android.widget.LinearLayout" for c in group)):
             return True
     return False
 

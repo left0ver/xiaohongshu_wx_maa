@@ -68,17 +68,17 @@ class Page:
         bounds(nodes[0])
         return nodes[0]
 
-    def cards(self):
-        self.unique(description="首页")
-        tab = self.unique(description="发现")
-        if tab.get("selected") != "true":
-            raise PageMismatch("Discovery tab is not selected")
-        top = bounds(tab)[3]
-        bottom = bounds(self.unique(description="首页"))[1]
+    def _parse_waterfall_cards(self, top, bottom):
         cards = []
         for node in self.nodes:
-            match = re.fullmatch(r"(视频|笔记)\s+(.+) 来自(.+) ([\d.万亿]+)赞", node.get("content-desc", ""), re.DOTALL)
+            match = re.fullmatch(
+                r"(视频|笔记)\s+(?:(?:热点|你的关注|常看|好友赞过|置顶)\s+)?(.+) 来自(.+) ([\d.万亿]*赞)",
+                node.get("content-desc", ""),
+                re.DOTALL,
+            )
             if not match:
+                continue
+            if any(n.get("text", "").strip() in ("广告", "赞助") for n in node.iter("node")):
                 continue
             box = bounds(node)
             # A clipped last row exposes a title but is not a safe card target.
@@ -95,6 +95,161 @@ class Page:
                 continue
             cards.append(Card("VIDEO" if match[1] == "视频" else "IMAGE_TEXT",
                               match[2].strip(), match[3].strip(), box, max(covers, key=lambda b: b[3] - b[1])))
+        return sorted(cards, key=lambda card: (card.box[1], card.box[0]))
+
+    def cards(self):
+        self.unique(description="首页")
+        tab = self.unique(description="发现")
+        if tab.get("selected") != "true":
+            raise PageMismatch("Discovery tab is not selected")
+        top = bounds(tab)[3]
+        bottom = bounds(self.unique(description="首页"))[1]
+        return self._parse_waterfall_cards(top, bottom)
+
+    def city_tab(self):
+        tabs = [n for n in self.nodes if n.get("class", "").endswith("ActionBar$Tab")]
+        for tab in tabs:
+            desc = tab.get("content-desc", "").strip()
+            texts = [c.get("text", "").strip() for c in tab.iter("node") if c.get("text", "").strip()]
+            if desc in ("同城", "附近") or any(t in ("同城", "附近") for t in texts):
+                bounds(tab)
+                return tab
+        discover_nodes = [n for n in self.nodes if n.get("content-desc") == "发现"]
+        if len(discover_nodes) == 1:
+            d_box = bounds(discover_nodes[0])
+            right_tabs = [
+                tab for tab in tabs
+                if bounds(tab)[0] >= d_box[2] - 8 and abs(bounds(tab)[1] - d_box[1]) <= 24
+            ]
+            if right_tabs:
+                return min(right_tabs, key=lambda t: bounds(t)[0])
+        for node in self.nodes:
+            if node.get("content-desc") in ("同城", "附近") or node.get("text") in ("同城", "附近"):
+                bounds(node)
+                return node
+        raise PageMismatch("City tab is not visible")
+
+    def city_cards(self):
+        home = self.unique(description="首页")
+        tab = self.city_tab()
+        selected = tab.get("selected") == "true" or any(
+            c.get("selected") == "true" for c in tab.iter("node")
+        )
+        if not selected:
+            raise PageMismatch("City tab is not selected")
+        top = bounds(tab)[3]
+        bottom = bounds(home)[1]
+        return self._parse_waterfall_cards(top, bottom)
+
+    def search_cards(self, expected_keyword=None):
+        if any(n.get("text", "").strip() == "排序依据" for n in self.nodes):
+            raise PageMismatch("Search filter panel still covers results")
+        back_nodes = [n for n in self.nodes if n.get("content-desc") == "返回"]
+        search_btns = [
+            n for n in self.nodes
+            if n.get("text", "").strip() == "搜索" or n.get("content-desc") == "全部删除"
+        ]
+        all_tabs = [
+            n for n in self.nodes
+            if n.get("text", "").strip() == "全部" and bounds(n)[1] < 600
+        ]
+        if not back_nodes or not search_btns or not all_tabs:
+            raise PageMismatch("Not on search results page")
+        all_tab = min(all_tabs, key=lambda n: bounds(n)[1])
+        all_box = bounds(all_tab)
+        if expected_keyword is not None:
+            kw = expected_keyword.strip()
+            kw_nodes = [
+                n for n in self.nodes
+                if n.get("text", "").strip() == kw and bounds(n)[3] <= all_box[1] + 24
+            ]
+            if not kw_nodes:
+                raise PageMismatch("Search keyword in top bar does not match expected keyword")
+        header_bottom = all_box[3]
+        for node in self.nodes:
+            if node.get("text", "").strip() in ("综合", "最新") and bounds(node)[1] >= all_box[1]:
+                if bounds(node)[3] <= all_box[3] + 220:
+                    header_bottom = max(header_bottom, bounds(node)[3])
+        rvs = [
+            n for n in self.nodes
+            if n.get("class") == "androidx.recyclerview.widget.RecyclerView"
+            and bounds(n)[3] - bounds(n)[1] > 300
+        ]
+        if not rvs:
+            raise PageMismatch("Search results list is not visible")
+        rv = max(rvs, key=lambda n: bounds(n)[3] - bounds(n)[1])
+        rv_box = bounds(rv)
+        desc_cards = self._parse_waterfall_cards(header_bottom, rv_box[3])
+        if desc_cards:
+            return desc_cards
+        cards = []
+        rv_width = rv_box[2] - rv_box[0]
+        for item in rv:
+            try:
+                box = bounds(item)
+            except PageMismatch:
+                continue
+            if box[2] - box[0] > rv_width * 3 // 4:
+                continue
+            if box[1] < header_bottom - 12 or box[3] >= rv_box[3] - 2:
+                continue
+            imgs = [
+                bounds(n) for n in item.iter("node")
+                if n.get("class") == "android.widget.ImageView"
+            ]
+            covers = [
+                b for b in imgs
+                if b[2] - b[0] >= (box[2] - box[0]) * 4 // 5 and abs(b[1] - box[1]) <= 12
+            ]
+            if not covers:
+                continue
+            cover_box = max(covers, key=lambda b: b[3] - b[1])
+            texts = [
+                (bounds(n), n.get("text", "").strip())
+                for n in item.iter("node")
+                if n.get("class") == "android.widget.TextView" and n.get("text", "").strip()
+            ]
+            if any(t in ("广告", "赞助") for _, t in texts):
+                continue
+            has_duration = any(
+                re.fullmatch(r"\d+:\d{2}(?::\d{2})?", t)
+                and b[1] >= cover_box[1] and b[3] <= cover_box[3] + 8
+                for b, t in texts
+            )
+            avatars = [
+                b for b in imgs
+                if b[1] >= cover_box[3] - 4 and b[0] < box[0] + (box[2] - box[0]) // 3
+            ]
+            if not avatars:
+                continue
+            avatar_box = min(avatars, key=lambda b: b[0])
+            if avatar_box[3] >= rv_box[3] - 2:
+                continue
+            title_candidates = [
+                t for b, t in texts
+                if b[1] >= cover_box[3] - 8 and b[3] <= avatar_box[1] + 16
+            ]
+            author_candidates = [
+                (b, t) for b, t in texts
+                if b[1] >= avatar_box[1] - 24
+                and b[0] >= avatar_box[2] - 6
+                and b[2] <= box[0] + (box[2] - box[0]) * 4 // 5
+                and not _VIDEO_DRAWER_META_RE.fullmatch(t)
+                and not re.fullmatch(r"[\d.万亿]+|赞", t)
+            ]
+            if not author_candidates:
+                continue
+            author_box, author = min(author_candidates, key=lambda pair: (pair[0][1], pair[0][0]))
+            if author_box[3] >= rv_box[3] - 2:
+                continue
+            title = title_candidates[0].strip() if title_candidates else author
+            cards.append(Card(
+                "VIDEO" if has_duration else "IMAGE_TEXT",
+                title,
+                author.strip(),
+                box,
+                cover_box,
+            ))
         return sorted(cards, key=lambda card: (card.box[1], card.box[0]))
 
     def image_note_viewport(self):
@@ -120,7 +275,7 @@ class Page:
             if box[1] <= lower or box[1] >= upper:
                 continue
             if (re.fullmatch(r"共\s*\d+\s*条评论", text)
-                    or text in {"还没有评论哦", "抢首评", "暂无人评论", "让大家听到你的声音", "地点"}
+                    or text in {"还没有评论哦", "抢首评", "暂无人评论", "让大家听到你的声音", "有话要说，快来评论", "地点"}
                     or re.fullmatch(r"((?:刚刚|今天|昨天|前天|\d)[^\n]*?)(?:\s+(\S+))?\s+回复(?:\s+翻译)?", text)):
                 upper = min(upper, box[1])
         return upper
@@ -276,6 +431,13 @@ class Page:
         rvs = [n for n in self.nodes
                if n.get("class") == "androidx.recyclerview.widget.RecyclerView"
                and bounds(n)[1] >= hbox[3] - 4 and len(n) >= 1]
+        if len(rvs) > 1:
+            nested = {sub for rv in rvs for sub in list(rv)[0].iter("node") if sub is not rv}
+            for rv in rvs:
+                for child in rv:
+                    for sub in child.iter("node"):
+                        nested.add(sub)
+            rvs = [rv for rv in rvs if rv not in nested and bounds(rv)[1] <= hbox[3] + max(120, hbox[3] - hbox[1])]
         if len(rvs) != 1:
             raise PageMismatch("Video drawer list is not ready")
         first_item = rvs[0][0]
@@ -436,13 +598,34 @@ def verify_card(card, detail):
     title_norm = _clean_topic_text(title)
     first_norm = _clean_topic_text(first_line)
     desc_norm = _clean_topic_text(detail.get("description", ""))
+    desc_lines = [line.strip() for line in (detail.get("description") or "").splitlines() if line.strip()]
+    desc_first_norm = _clean_topic_text(desc_lines[0]) if desc_lines else ""
+    title_and_first = _clean_topic_text(f"{title_norm} {desc_first_norm}".strip())
+    combined_norm = _clean_topic_text(f"{detail.get('title', '')} {detail.get('description', '')}".strip())
     prefix = strip_truncation_suffix(card_norm)
     if (card.title in {title, first_line, detail.get("description", "")}
-            or card_norm in {title_norm, first_norm, desc_norm}
+            or card_norm in {title_norm, first_norm, desc_norm, combined_norm}
             or (len(prefix) >= 6 and (title_norm.startswith(prefix)
                                       or first_norm.startswith(prefix)
-                                      or desc_norm.startswith(prefix)))):
+                                      or desc_norm.startswith(prefix)
+                                      or combined_norm.startswith(prefix)))
+            or (len(title_norm) >= 4 and (card_norm.startswith(title_norm) or title_norm in card_norm))
+            or (len(first_norm) >= 4 and (card_norm.startswith(first_norm) or first_norm in card_norm))
+            or (len(title_and_first) >= 3 and card_norm.startswith(title_and_first))
+            or (title_norm and card_norm.startswith(title_norm + " "))):
         return
+    if desc_first_norm and len(desc_first_norm) >= 4 and desc_first_norm in card_norm:
+        head = strip_truncation_suffix(card_norm.split(desc_first_norm, 1)[0]).strip()
+        if not head or title_norm.startswith(head) or first_norm.startswith(head):
+            return
+    for sep in ("…", "..."):
+        if sep in card_norm:
+            head, tail = card_norm.split(sep, 1)
+            head = head.strip()
+            tail = strip_truncation_suffix(tail).strip()
+            if head and (title_norm.startswith(head) or first_norm.startswith(head)):
+                if not tail or tail in desc_norm or desc_norm.startswith(tail):
+                    return
     raise PageMismatch("Feed changed or opened work does not match the selected card")
 
 

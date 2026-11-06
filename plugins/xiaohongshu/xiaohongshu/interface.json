@@ -83,6 +83,13 @@
       "description": "$interact_note_description",
       "entry": "XhsInteractNote",
       "default_check": false
+    },
+    {
+      "name": "run_mode",
+      "label": "$run_mode",
+      "description": "$run_mode_description",
+      "entry": "XhsRunMode",
+      "default_check": false
     }
   ],
   "agent": {

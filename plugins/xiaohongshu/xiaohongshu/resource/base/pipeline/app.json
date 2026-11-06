@@ -95,5 +95,14 @@
       "likeWork": true,
       "collectWork": true
     }
+  },
+  "XhsRunMode": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "XhsRunMode",
+    "next": [],
+    "custom_action_param": {
+      "mode": "auto"
+    }
   }
 }

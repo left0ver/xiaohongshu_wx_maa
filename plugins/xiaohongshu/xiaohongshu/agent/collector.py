@@ -207,6 +207,19 @@ def open_discover(device):
             return
         except PageMismatch:
             pass
+        if any(n.get("text", "").strip() == "暂时不了" for n in page.nodes) and any(
+            "定位权限" in n.get("text", "").strip() or n.get("text", "").strip() == "一键开启"
+            for n in page.nodes
+        ):
+            device.click(lambda current: current.unique(text="暂时不了"))
+            time.sleep(0.4)
+            continue
+        if any(n.get("text", "").strip() == "不再提醒" for n in page.nodes) and any(
+            n.get("text", "").strip() == "开启通知" for n in page.nodes
+        ):
+            device.click(lambda current: current.unique(text="不再提醒"))
+            time.sleep(0.4)
+            continue
         if any(n.get("content-desc") == "首页" for n in page.nodes):
             if any(n.get("content-desc") == "发现" for n in page.nodes):
                 device.click(lambda current: current.unique(description="发现"))
@@ -229,7 +242,12 @@ def open_discover(device):
                     page.unique(description="分享")
                     page.unique(description="返回")
                 else:
-                    page.note()
+                    try:
+                        page.note()
+                    except PageMismatch:
+                        if not isinstance(page, Page):
+                            raise
+                        page.image_note_viewport()
             except PageMismatch:
                 if not any(n.get("text", "").startswith("小红书号：") for n in page.nodes):
                     raise PageMismatch("Unknown screen; refusing an unverified back action")
@@ -257,32 +275,33 @@ def _current_page(device):
     return device.page()
 
 
-def select_feed_card(device, seen, note_type=None, max_screens=None):
+def select_feed_card(device, seen, note_type=None, max_screens=None, cards_fn=None):
     if note_type not in (None, "VIDEO", "IMAGE_TEXT"):
         raise ValueError("Unsupported note type")
     screens = (1 if note_type is None else 6) if max_screens is None else max_screens
     if type(screens) is not int or not 1 <= screens <= 50:
         raise ValueError("Screen search limit must be between 1 and 50")
+    read_cards = (lambda page: page.cards()) if cards_fn is None else cards_fn
     for screen in range(screens):
         if (screen == 0 and getattr(device, "has_vision", False) is True
                 and getattr(device, "_last_page", None) is not None
                 and not getattr(device, "_transition_pending", False)):
             try:
-                cards = device._last_page.cards()
+                cards = read_cards(device._last_page)
             except PageMismatch:
-                cards = device.wait(lambda page: page.cards())
+                cards = device.wait(read_cards)
         else:
-            cards = device.wait(lambda page: page.cards())
+            cards = device.wait(read_cards)
         card = next((item for item in cards if item.key not in seen
                      and (note_type is None or item.note_type == note_type)), None)
         if card is not None:
             if getattr(device, "has_vision", False) is True and device.verify_roi_stable(card.box):
                 return cards, card
-            current = device.page().cards()
+            current = read_cards(device.page())
             if screen > 0 and card not in current:
                 for _ in range(3):
                     time.sleep(0.2)
-                    settled = device.page().cards()
+                    settled = read_cards(device.page())
                     if settled == current:
                         cards = settled
                         card = next((item for item in cards if item.key not in seen
@@ -344,7 +363,25 @@ def read_note_detail(device, expected_card=None, max_scrolls=8):
     if detail.get("noteType") == "VIDEO":
         author = detail["authorNickname"]
         device.click(lambda page: page.note_expand_control())
-        expanded = dict(device.wait(lambda page: page.expanded_video_note(author)))
+        try:
+            expanded = dict(device.wait(lambda page: page.expanded_video_note(author), timeout=4))
+        except PageMismatch:
+            expanded = None
+            for ratio in (10, 90):
+                device.back()
+                device.wait(lambda page: page.note(allow_incomplete=True), timeout=5)
+                node = _current_page(device).note_expand_control()
+                box = bounds(node)
+                x = box[0] + max(24, (box[2] - box[0]) * ratio // 100)
+                y = (box[1] + box[3]) // 2
+                device.command("input", "tap", str(x), str(y))
+                try:
+                    expanded = dict(device.wait(lambda page: page.expanded_video_note(author), timeout=4))
+                    break
+                except PageMismatch:
+                    continue
+            if expanded is None:
+                raise PageMismatch("Video drawer did not open after tapping expand control")
         close_node = expanded.pop("_drawer_close", None)
         if close_node is not None:
             device.click(lambda page: page.video_drawer_close_button())
@@ -453,14 +490,17 @@ def copy_note_share_link(device, detail, read_clipboard):
     return url, note_id
 
 
-def restore_feed(device, expected_cards=None):
+def restore_feed(device, expected_cards=None, cards_fn=None):
+    read_cards = (lambda page: page.cards()) if cards_fn is None else cards_fn
     device.back()
-    restored = device.wait(lambda page: page.cards())
+    restored = device.wait(read_cards)
     if expected_cards is not None and [(c.key, c.box) for c in expected_cards] != [(c.key, c.box) for c in restored]:
         if getattr(device, "has_vision", False) is True:
             device.wait_visual_settle(timeout=0.6)
-            restored = device.wait(lambda page: page.cards())
+            restored = device.wait(read_cards)
         if [(c.key, c.box) for c in expected_cards] != [(c.key, c.box) for c in restored]:
+            if cards_fn is not None and restored and {c.key for c in expected_cards} & {c.key for c in restored}:
+                return restored
             raise PageMismatch("Feed position changed; collection not committed")
     return restored
 

@@ -376,7 +376,17 @@ def _has_notification_prompt_modal(page):
     return "不再提醒" in texts and "开启通知" in texts
 
 
+def _has_location_permission_modal(page):
+    texts = {n.get("text", "").strip() for n in page.nodes}
+    return (
+        "定位权限未开启" in texts
+        or ("暂时不了" in texts and ("一键开启" in texts or any("定位权限" in t for t in texts)))
+    )
+
+
 def classify_page_state(page, fallback_work=None):
+    if _has_location_permission_modal(page):
+        return {"pageType": "location_permission_modal", "page": page, "work": None}
     if _has_notification_prompt_modal(page):
         return {"pageType": "notification_prompt_modal", "page": page, "work": None}
     if _has_active_composer(page):
@@ -399,6 +409,16 @@ def classify_page_state(page, fallback_work=None):
         return {"pageType": "discover_feed", "page": page, "work": None, "cards": cards}
     except PageMismatch:
         pass
+    try:
+        cards = page.city_cards()
+        return {"pageType": "city_feed", "page": page, "work": None, "cards": cards}
+    except (PageMismatch, AttributeError):
+        pass
+    try:
+        cards = page.search_cards()
+        return {"pageType": "search_feed", "page": page, "work": None, "cards": cards}
+    except (PageMismatch, AttributeError):
+        pass
     if any(n.get("text", "").startswith("小红书号：") for n in page.nodes):
         return {"pageType": "author_profile", "page": page, "work": None}
     if any(n.get("text", "").strip() == "收到的评论和@" for n in page.nodes):
@@ -409,9 +429,10 @@ def classify_page_state(page, fallback_work=None):
 
 
 def ensure_clean_page_on_resume(device, fallback_work=None, max_dismiss=3):
-    """Dismiss any leftover input composer, comment menu, notification prompt, or share sheet on resume."""
+    """Dismiss any leftover input composer, comment menu, notification/location prompt, or share sheet on resume."""
     check_stopped(device)
     transient_types = (
+        "location_permission_modal",
         "notification_prompt_modal",
         "composer_overlay",
         "comment_action_sheet",
@@ -419,11 +440,33 @@ def ensure_clean_page_on_resume(device, fallback_work=None, max_dismiss=3):
     )
     for _ in range(max_dismiss):
         check_stopped(device)
-        page = device.page()
+        try:
+            page = device.page()
+        except PageMismatch as error:
+            if "Xiaohongshu is not visible" in str(error):
+                device.command(
+                    "am",
+                    "start",
+                    "--display",
+                    "0",
+                    "-n",
+                    "com.xingin.xhs/.index.v2.IndexActivityV2",
+                )
+                time.sleep(1.0)
+                page = device.page()
+            else:
+                raise
         state = classify_page_state(page, fallback_work=fallback_work)
         if state["pageType"] not in transient_types:
             return state
-        if state["pageType"] == "notification_prompt_modal":
+        if state["pageType"] == "location_permission_modal":
+            if any(n.get("text", "").strip() == "暂时不了" for n in page.nodes):
+                device.click(lambda current: current.unique(text="暂时不了"))
+            elif any(n.get("content-desc", "").strip() == "关闭" for n in page.nodes):
+                device.click(lambda current: current.unique(description="关闭"))
+            else:
+                device.back()
+        elif state["pageType"] == "notification_prompt_modal":
             device.click(lambda current: current.unique(text="不再提醒"))
         else:
             device.back()

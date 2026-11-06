@@ -7,21 +7,18 @@
     "Image-text and video note publishing"
   ],
   "scope": "Phone plugin only; no laike-service or MediaCrawler modifications",
-  "status": "batch1-batch2-batch3-no-dm-verified-with-opencv-maa",
+  "status": "batch1-batch2-batch3-batch4-no-dm-verified-with-opencv-maa",
   "implementedUnverified": [
     "SQLite outbox model, authorization/device isolation, stable IDs and sent-batch-scoped ACK handling; not yet wired to transport"
   ],
   "requiredBeforeUsable": [
     "Host plugin import/update/switch with isolated configuration and active-run protection",
-    "Transport adapter using host-keystore credentials; no server address or credentials configured",
-    "Bounded stop/recovery validation"
+    "Transport adapter using host-keystore credentials; no server address or credentials configured"
   ],
   "remainingChecklistAreas": [
     "Large comment-thread exhaustion and comment media attachments",
     "Production COMMENT/USER event linkage, queue integration and transport",
-    "Private messages (explicitly skipped in Batch 3 per user instruction)",
-    "Recommendation, search, city and automatic modes",
-    "Captcha pause, bounded recovery and multi-device validation"
+    "Private messages (explicitly skipped in Batch 3 per user instruction)"
   ],
   "limitations": [
     "Different unresolved short links cannot be merged until the same note ID is supplied",
@@ -41,7 +38,7 @@
   ],
   "tests": {
     "python": {
-      "passed": 72,
+      "passed": 80,
       "skipped": 0,
       "androidSpawnTestsPassedOnDevice": 4
     },
@@ -69,6 +66,11 @@
       "date": "2026-11-06",
       "passed": 72,
       "scope": "image-text and video like/collect with existing-state detection, primary work comment, comment like & reply with self-comment menu rejection and time-invariant per-comment idempotency, preemptive reply positive/negative target location, author & commenter profile follow + first-work like/collect + verified return to comment anchor, message center unread comments/@ inspection & bounded return, and DailyQuotaStore restart persistence + resume overlay cleanup (DM skipped per user instruction)"
+    },
+    "modesAndRecoveryBatch4OnDevice": {
+      "date": "2026-11-06",
+      "passed": 80,
+      "scope": "recommend mode continuous multi-work + multi-commenter processing with seen.json skip, keyword search + sortBy (综合/最新/最多点赞/最多评论) + noteType (不限/视频/图文) + publishTime (不限/一天内/一周内/半年内) filter panel verification, city mode entry & location permission detection/dismissal + continuous processing, auto mode stage switching (recommend -> search -> city) with stage page verification, captcha/slider zero-click pause & clean-page resume verification, bounded recovery from unexpected tabs/notes/popups/topic pages, and multi-resolution (0.67x/1.0x/1.33x) selector validation"
     }
   },
   "deviceRuns": [
@@ -284,5 +286,40 @@
         "elapsedMs": 64412
       }
     ]
+  },
+  "batch4ModesVerification": {
+    "date": "2026-11-06",
+    "device": "vivo V2131A / Android 12",
+    "appVersion": "9.52.1",
+    "status": "completed",
+    "recommendMode": {
+      "skippedPreSeeded": "微醺小猫か゜💤",
+      "processedAuthors": ["大米饭团", "漫天*"],
+      "commenterProfilesVisited": 2,
+      "elapsedMs": 84873
+    },
+    "searchMode": {
+      "keyword": "宠物",
+      "verifiedSortOptions": ["综合", "最新", "最多点赞", "最多评论"],
+      "verifiedNoteTypes": ["不限", "视频", "图文"],
+      "verifiedPublishTimes": ["不限", "一天内", "一周内", "半年内"],
+      "processedAuthors": ["小林当兽医以后"],
+      "commenterProfilesVisited": 1,
+      "elapsedMs": 66581
+    },
+    "cityMode": {
+      "locationPermissionCheck": "location_permission_not_granted",
+      "processedAuthors": ["杭州新闻联播"],
+      "elapsedMs": 28159
+    },
+    "autoMode": {
+      "stagesCompleted": 3,
+      "stages": [
+        {"mode": "recommend", "author": "贾乃亮", "stageSwitchVerified": true},
+        {"mode": "search", "keyword": "鲜花", "author": "Lyspunkt💫", "stageSwitchVerified": true},
+        {"mode": "city", "author": "彩虹家德文卷毛猫", "stageSwitchVerified": true}
+      ],
+      "elapsedMs": 124032
+    }
   }
 }
