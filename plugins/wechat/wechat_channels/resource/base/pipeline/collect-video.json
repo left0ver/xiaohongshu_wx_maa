@@ -21,7 +21,7 @@
   },
   "BatchProfileMore": {
     "recognition": "TemplateMatch",
-    "template": "profile-more.png",
+    "template": ["profile-more.png", "profile-more-dark.png"],
     "threshold": 0.88
   },
   "BatchBasicTitle": {
@@ -37,6 +37,21 @@
     "template": "labels/channels-id",
     "method": 5,
     "threshold": 0.84
+  },
+  "BatchMessagesLikeTab": {
+    "recognition": "And",
+    "all_of": [{
+      "recognition": "TemplateMatch",
+      "template": ["messages-like.png", "messages-like-inactive.png"],
+      "threshold": 0.88,
+      "roi": [120, 60, 400, 100]
+    }],
+    "box_index": 0,
+    "action": "DoNothing",
+    "next": [],
+    "timeout": 1,
+    "pre_delay": 0,
+    "post_delay": 0
   },
   "BatchDiscoverTab": {
     "recognition": "And",

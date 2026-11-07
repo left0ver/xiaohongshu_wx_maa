@@ -27,7 +27,7 @@ from comments import (
     parse_comment_drawer,
     parse_wechat_user_card,
 )
-from layout import DATE, REGION, compact, line_height, profile_name, reading_rows, work_region
+from layout import DATE, REGION, WorkHeaderMissing, compact, line_height, profile_name, reading_rows, work_region
 
 DEFAULT_DAILY_LIMITS = {
     "like": 50,
@@ -336,7 +336,6 @@ def classify_page_state(lines, height=1605):
     if (
         find(lines, r"^点赞$", lambda l: l["box"][1] < 160)
         and find(lines, r"^评论$", lambda l: l["box"][1] < 160)
-        and find(lines, r"^关注$", lambda l: l["box"][1] < 160)
     ):
         return "channels_message_center"
 
@@ -901,6 +900,7 @@ def reply_to_comment(
     target_comment=None,
     self_nickname="",
     lines=None,
+    max_comment_pages=3,
 ):
     """Reply to a target comment with 3-layer self-comment protection."""
     check_stopped(ui)
@@ -916,6 +916,7 @@ def reply_to_comment(
         work_key=work_key,
         exclude_self=True,
         lines=lines,
+        max_pages=max_comment_pages,
     )
     if located.get("rejectedSelf"):
         self_c = located.get("comment") or {}
@@ -964,7 +965,10 @@ def reply_to_comment(
         32,
     ]
     check_stopped(ui)
-    ui.click({"text": comment["content"], "box": body_box})
+    # The middle of a comment can contain a tappable search term. Target its
+    # leading text instead of the center of the full OCR row.
+    reply_box = [body_box[0], body_box[1], min(32, body_box[2]), body_box[3]]
+    ui.click({"text": comment["content"], "box": reply_box})
     composer_lines = ui.snapshot("comments-reply-composer")
 
     # Layer 3 self-comment defense: tapping our own comment in WeChat Channels
@@ -980,6 +984,8 @@ def reply_to_comment(
         lambda line: line["box"][0] > 530 and 160 < line["box"][1] < ui.height - 110,
     )
     if not reply_prompt and not reply_btn:
+        if classify_page_state(composer_lines, ui.height) != "comment_drawer":
+            raise RuntimeError("Reply composer did not open; unexpected page is not evidence of a self-comment")
         quota_store.mark_action("self_comment", c_key)
         return {
             "action": "comment_reply",
@@ -1058,34 +1064,43 @@ def _work_matches_spec(ui, lines, target_work):
     if want_author and observed_author and not nickname_matches(want_author, observed_author):
         return False, "", lines
 
-    # Check title/description in drawer if needed
-    opened_drawer = False
-    check_lines = lines
-    if want_title or want_key or not observed_author:
-        if not drawer_open:
-            check_lines, opened_drawer = _open_comment_drawer_if_needed(ui, lines)
+    # Every candidate starts at the original work header, even when WeChat
+    # remembers a previously scrolled comment position.
+    check_lines, opened_drawer = _open_comment_drawer_if_needed(ui, lines)
+    for attempt in range(4):
+        check_stopped(ui)
         try:
-            region = work_region(check_lines, author=observed_author or want_author or None)
-            observed_author = observed_author or region["author"]["text"].strip()
-            body_text = "\n".join(item["text"] for item in region["body"]).strip()
-        except Exception:
-            body_text = "\n".join(line["text"] for line in check_lines)
-        if want_author and observed_author and not nickname_matches(want_author, observed_author):
-            if opened_drawer:
-                ui.back()
-            return False, "", lines
-        if want_title and compact(want_title) not in compact(body_text):
-            if opened_drawer:
-                ui.back()
-            return False, "", lines
-        computed = compute_work_key(author=observed_author, title=body_text)
-        if want_key and want_key != computed:
-            if opened_drawer:
-                ui.back()
-            return False, "", lines
-        return True, want_key or computed, check_lines
+            region = work_region(check_lines)
+            break
+        except WorkHeaderMissing:
+            if attempt == 3:
+                # Without the header we cannot establish the work's identity.
+                if opened_drawer:
+                    ui.back()
+                return False, "", lines
+            ui.restore_work_header(check_lines)
+            check_lines = ui.snapshot("comments-preemptive-work-header", author=observed_author or want_author)
 
-    computed = want_key or compute_work_key(author=observed_author, title=observed_author)
+    for _ in range(2):
+        if not region["expand"]:
+            break
+        check_stopped(ui)
+        ui.click(region["expand"])
+        check_lines = ui.snapshot("comments-preemptive-work-expanded", author=observed_author or want_author)
+        region = work_region(check_lines)
+
+    observed_author = region["authorHeader"].rsplit("作者", 1)[0].strip()
+    body_text = "".join(item["text"].strip() for row in region["body"] for item in row["items"]
+                        if not re.search(r"已声明原创|发表评论", item["text"])
+                        and not re.fullmatch(r"收起", item["text"].strip()))
+    computed = compute_work_key(author=observed_author, title=body_text)
+    if (not observed_author
+            or (want_author and not nickname_matches(want_author, observed_author))
+            or (want_title and compact(want_title) not in compact(body_text))
+            or (want_key and want_key != computed)):
+        if opened_drawer:
+            ui.back()
+        return False, "", lines
     return True, computed, check_lines
 
 
@@ -1116,7 +1131,7 @@ def preemptive_reply_comment(
             "restoredToOriginalTask": True,
         }
 
-    initial_lines = ui.snapshot("preemptive-start")
+    initial_lines = ui.snapshot("comments-preemptive-start")
     initial_state = classify_page_state(initial_lines, ui.height)
     if initial_state not in ("channels_feed", "comment_drawer"):
         initial_lines = _ensure_on_feed_for_work_bar(ui, initial_lines)
@@ -1164,6 +1179,7 @@ def preemptive_reply_comment(
         target_comment=target_comment,
         self_nickname=self_nickname,
         lines=active_lines,
+        max_comment_pages=max_comment_pages,
     )
 
     # Restore original task position
@@ -1563,7 +1579,7 @@ def open_personal_messages(ui, lines=None):
         state = classify_page_state(lines, ui.height)
 
     if state == "personal_page":
-        msg_entry = find(lines, r"^视频号消息$")
+        msg_entry = find(lines, r"^(?:视频号消息|消息)$")
         if not msg_entry:
             raise ValueError("视频号消息 entry was not found on personal page")
         check_stopped(ui)

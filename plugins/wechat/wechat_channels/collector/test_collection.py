@@ -63,9 +63,6 @@ class FakeUi:
     def back(self):
         self.backs += 1
 
-    def read_profile_bio(self, lines, profile):
-        return profile["authorBio"]
-
     def profile_more(self, name):
         self.clicks.append("profile-menu")
 

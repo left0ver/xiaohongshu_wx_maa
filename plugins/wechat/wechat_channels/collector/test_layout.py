@@ -160,13 +160,13 @@ class LayoutTests(unittest.TestCase):
         data = [DETAILS[0], line(AUTHOR + "作者四川I8月1日", 99, 568), *DETAILS[2:]]
         self.assertEqual(parse_video(data, AUTHOR)["publishLocation"], "四川")
 
-    def test_unlisted_avatar_column_badge_does_not_enter_biography(self):
+    def test_biography_starts_below_nickname_without_location_offset(self):
         data = [line("Zczy.", 188, 487, 88), line("音乐博主", 191, 534, 111),
                 line("广东男", 191, 571, 87), line("谢谢你的喜欢~", 35, 647, 165),
                 line("愿琴声能治愈你", 33, 685, 182), line("384条原创内容", 35, 740, 200),
                 line("关注", 170, 820), line("私信", 490, 820)]
         result = parse_author(data, "Zczy.")
-        self.assertEqual(result["authorBio"], "谢谢你的喜欢~\n愿琴声能治愈你")
+        self.assertEqual(result["authorBio"], "音乐博主\n谢谢你的喜欢~\n愿琴声能治愈你")
 
     def test_location_pin_row_and_same_row_music_expand_bound_work_description(self):
         pinned = [*DETAILS[:4], line("●北京市", 98, 691, 115), line("原声", 127, 740, 50), *DETAILS[6:]]

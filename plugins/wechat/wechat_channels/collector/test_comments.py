@@ -51,9 +51,6 @@ class FakeCommentUi:
     def profile_more(self, name):
         self.clicks.append("profile-more")
 
-    def read_profile_bio(self, lines, profile):
-        return profile["authorBio"]
-
     @contextlib.contextmanager
     def prepare_basic_info(self):
         yield None
@@ -96,6 +93,16 @@ class CommentTests(unittest.TestCase):
                 save_comments(path, {"event_type": "VIDEO", "event_id": "missing"}, [comment])
             with self.assertRaises(ValueError):
                 save_comments(path, first, [{"nickname": "甲"}])
+
+    def test_recorded_comment_with_literal_ellipsis_is_not_discarded(self):
+        fixture = json.loads((Path(__file__).parent / "testdata/preemptive-scrolled-drawer.json").read_text(encoding="utf-8"))
+        comments = parse_comments(fixture["top"], fixture["height"])
+        target = next(c for c in comments if c["nickname"] == "恒萌琪铭")
+        self.assertEqual(target["content"], "两位无人岛还去吗....")
+        lines = [line("评论12", 400), line("甲广东昨天", 630),
+                 line("尚未展开...展开", 680), line("乙广东昨天", 750),
+                 line("另一条完整评论", 790), line("发表评论", 1460)]
+        self.assertNotIn("甲", [c["nickname"] for c in parse_comments(lines, 1559)])
 
     def test_first_comment_tag_and_in_drawer_ad_are_excluded(self):
         lines = [
