@@ -264,9 +264,6 @@ class FakeModeUi:
     def scroll_feed_prev(self):
         self.swipes_prev += 1
 
-    def read_profile_bio(self, lines, profile):
-        return profile.get("authorBio")
-
     def profile_more(self, name):
         self.clicks.append({"text": "profile_more", "box": name["box"]})
 

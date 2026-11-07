@@ -94,17 +94,9 @@ def parse_author(lines, author):
     # Profile statistics and feature rows follow the biography. Stop at their
     # structural boundary, rather than collecting everything above Follow.
     boundary = min((line["box"][1] for line in area
-                    if re.fullmatch(r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗", line["text"].strip())),
+                    if re.fullmatch(r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗", line["text"].strip())),
                    default=follow["box"][1])
-    # Header badges/location sit beside the avatar; biography rows start in the
-    # full-width column below it. Do not depend on an exhaustive badge vocabulary.
-    body_start = min((line["box"][1] for line in area
-                      if (location or certification)
-                      and line["box"][0] < name["box"][0] - line_height(lines) * 2
-                      and line["box"][1] < boundary
-                      and line is not ip and line is not certification and line is not location),
-                     default=name["box"][1] + name["box"][3])
-    bio = [line["text"] for line in area if body_start <= line["box"][1] < boundary
+    bio = [line["text"] for line in area if line["box"][1] < boundary
            if line is not ip and line is not certification and line is not location]
     fields = {
         "authorNickname": name["text"].strip(),
@@ -339,7 +331,6 @@ def collect_current_video(ui, store, timings, lines, source_mode="RECOMMEND"):
             ui.click(expand)
             author_lines = ui.snapshot("author-profile", author=author)
             profile = parse_author(author_lines, author)
-        profile["authorBio"] = ui.read_profile_bio(author_lines, profile)
         name = profile_name(author_lines, author)
         ui.profile_more(name)
         menu = ui.snapshot("profile-menu")

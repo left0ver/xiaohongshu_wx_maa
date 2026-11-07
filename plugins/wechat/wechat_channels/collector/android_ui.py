@@ -180,6 +180,8 @@ class MaaUi:
         node = json.loads(json.dumps(self.nodes[name]))
         quarter = (self.height + 3) // 4
         roi = [0, self.height - quarter, 720, quarter] if name == "BatchDiscoverTab" else [0, 0, 720, quarter]
+        if name == "BatchMessagesLikeTab":
+            roi = [120, 60, 400, 100]
         for child in node["all_of"]:
             if isinstance(child.get("roi"), list):
                 child["roi"] = roi
@@ -199,7 +201,8 @@ class MaaUi:
         box = detail.box
         role, text = {"BatchDiscoverTab": ("discover", "发现"),
                       "BatchChannelsEntry": ("channels", "视频号"),
-                      "BatchRecommended": ("recommend", "推荐")}[name]
+                      "BatchRecommended": ("recommend", "推荐"),
+                      "BatchMessagesLikeTab": ("message_like", "点赞")}[name]
         return {"text": text, "box": [box.x, box.y, box.w, box.h],
                 "navigation": role, "templateNode": name}
 
@@ -224,6 +227,12 @@ class MaaUi:
             lambda: measured("ocr", lambda: self.ocr_snapshot(label)),
             regional_ocr=lambda roi: measured("ocr-region", lambda: self.ocr_snapshot(label, roi)),
             refresh=lambda: measured("hierarchy-confirm", lambda: self.hierarchy(force=True)))
+        if (find(lines, r"^评论$", lambda line: line["box"][1] < 160)
+                and not find(lines, r"^点赞$", lambda line: line["box"][1] < 160)):
+            like_tab = measured("template", lambda: self.match_navigation("BatchMessagesLikeTab"))
+            if like_tab:
+                lines = [*lines, *self.annotate([like_tab], "template")]
+                source = "mixed"
         self.record_snapshot(label, lines, source, attempts, author)
         return lines
 
@@ -278,38 +287,6 @@ class MaaUi:
         lines = [line for line in lines if line.get("score", 0) >= 0.55 and line.get("text", "").strip()]
         return self.annotate(lines, "ocr")
 
-    def read_profile_bio(self, lines, profile):
-        """Read only the biography text, masking colored decorative symbols."""
-        text = profile.get("authorBio")
-        if not text:
-            return text
-        parts = text.splitlines()
-        selected = [line for line in lines if line["text"] in parts]
-        if not selected:
-            raise ValueError("Biography region is missing")
-        top = max(0, min(line["box"][1] for line in selected) - 3)
-        bottom = max(line["box"][1] + line["box"][3] for line in selected) + 3
-        foreground()
-        job = self.controller.post_screencap().wait()
-        if not job.succeeded:
-            raise RuntimeError("Biography screenshot failed")
-        pixels = job.get().copy()
-        spread = pixels.max(axis=2).astype("int16") - pixels.min(axis=2).astype("int16")
-        pixels[(spread > 24) | (pixels.min(axis=2) > 160)] = 255
-        roi = [0, top, 720, bottom - top]
-        if self.context:
-            detail = self.context.run_recognition("BatchText", pixels, {
-                "BatchText": {"recognition": "OCR", "threshold": 0.55, "roi": roi, "only_rec": False}})
-        else:
-            result = self.tasker.post_recognition("OCR", JOCR(threshold=0.55, roi=roi), pixels).wait().get()
-            detail = result.nodes[0].recognition if result and result.nodes else None
-        values = detail.raw_detail.get("all", []) if detail else []
-        values = [line for line in values if line.get("score", 0) >= 0.55 and line.get("text", "").strip()]
-        if not values:
-            raise ValueError("Biography text was not recognized")
-        self.record_snapshot("author-biography", self.annotate(values, "ocr-bio"), "ocr-bio", [])
-        return "\n".join(line["text"] for line in sorted(values, key=lambda line: (line["box"][1], line["box"][0])))
-
     @contextmanager
     def prepare_basic_info(self):
         started = time.monotonic_ns()
@@ -341,7 +318,7 @@ class MaaUi:
         roi = [540, max(0, name["box"][1] - 15), 180, name["box"][3] + 80]
         if self.context:
             result = self.context.run_task("BatchProfileMore", {
-                "BatchProfileMore": {"recognition": "TemplateMatch", "template": "profile-more.png",
+                "BatchProfileMore": {"recognition": "TemplateMatch", "template": ["profile-more.png", "profile-more-dark.png"],
                                      "roi": roi, "threshold": 0.88, "action": "DoNothing",
                                      "next": [], "pre_delay": 0, "post_delay": 0},
             })
@@ -352,7 +329,7 @@ class MaaUi:
                 raise RuntimeError("Screenshot failed")
             self.image = job.get()
             result = self.tasker.post_recognition("TemplateMatch", JTemplateMatch(
-                template=["profile-more.png"], roi=roi, threshold=[0.88],
+                template=["profile-more.png", "profile-more-dark.png"], roi=roi, threshold=[0.88, 0.88],
             ), self.image).wait().get()
             detail = result.nodes[0].recognition if result and result.nodes else None
         if detail is None or not detail.hit or detail.box is None:

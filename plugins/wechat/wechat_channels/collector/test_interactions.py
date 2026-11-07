@@ -1,10 +1,12 @@
 """Unit tests for WeChat Channels Batch 3 interactions, profile touch, message handling, and quotas."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from interactions import (
+    _work_matches_spec,
      DailyQuotaStore,
     QuotaExceededError,
     classify_page_state,
@@ -17,6 +19,7 @@ from interactions import (
     is_red_active,
     like_comment,
     like_work,
+    open_personal_messages,
     parse_comment_messages,
     post_work_comment,
     preemptive_reply_comment,
@@ -148,6 +151,7 @@ class FakeUi:
         self.feed_next_scrolls = 0
         self.feed_prev_scrolls = 0
         self.comment_scrolls = 0
+        self.header_scrolls = 0
         self.is_stopped = False
 
     def stopped(self):
@@ -188,6 +192,11 @@ class FakeUi:
         if self.is_stopped:
             raise InterruptedError("Interaction was stopped")
         self.comment_scrolls += 1
+
+    def restore_work_header(self, lines):
+        if self.is_stopped:
+            raise InterruptedError("Interaction was stopped")
+        self.header_scrolls += 1
 
     def scroll_feed_next(self):
         if self.is_stopped:
@@ -410,6 +419,18 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(ok_res["status"], "performed")
         self.assertTrue(ok_res["submitted"])
         self.assertEqual(ui_normal.typed, ["这是在新疆喀纳斯拍的"])
+        self.assertEqual(ui_normal.clicks[0]["box"][2], 32)
+
+        ui_search = FakeUi([drawer_lines(), [
+            {"text": "无人岛", "box": [75, 480, 100, 41]},
+            {"text": "搜索", "box": [610, 482, 63, 37]},
+        ]])
+        before = store.state["actions"]["self_comment"].copy()
+        with self.assertRaisesRegex(RuntimeError, "unexpected page"):
+            reply_to_comment(ui_search, store, "wxch-video:search-link", "不会发送",
+                             target_comment={"nickname": "林间微风"})
+        self.assertEqual(store.state["actions"]["self_comment"], before)
+        self.assertEqual(ui_search.typed, [])
 
     def test_preemptive_reply_positive_and_negative_restoration(self):
         store = DailyQuotaStore(self.quota_path)
@@ -457,6 +478,62 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(ui_neg.feed_next_scrolls, 1)
         self.assertEqual(ui_neg.feed_prev_scrolls, 1)
         self.assertEqual(ui_neg.typed, [])
+
+    def test_preemptive_recovers_recorded_scrolled_work_header(self):
+        fixture = json.loads((Path(__file__).parent / "testdata/preemptive-scrolled-drawer.json").read_text(encoding="utf-8"))
+        ui = FakeUi([fixture["scrolled"], fixture["top"]], height=fixture["height"])
+        matched, _, lines = _work_matches_spec(
+            ui, fixture["scrolled"], {"author": "郁WT", "title": "爱一个人要学会放下"},
+        )
+        self.assertTrue(matched)
+        self.assertEqual(ui.header_scrolls, 2)
+        self.assertEqual(lines, fixture["top"])
+        self.assertEqual(ui.feed_next_scrolls, 0)
+
+    def test_preemptive_recovers_top_then_scrolls_down_to_reply(self):
+        # Start deep in comments; the target is below the restored first page.
+        top = drawer_lines()
+        target_page = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
+        scrolled = [line for line in target_page if "林间微风" not in line["text"]]
+        first_page = [line for line in top if not 690 <= line["box"][1] <= 758]
+        ui = FakeUi([
+            scrolled, first_page, target_page,
+            composer_lines("AI吕哥说 回复 林间微风：", "回复"),
+            composer_lines("感谢支持", "回复"),
+            drawer_lines(with_reply_Text="感谢支持"), drawer_lines(),
+        ])
+        result = preemptive_reply_comment(
+            ui, DailyQuotaStore(self.quota_path),
+            {"author": "新华社", "title": "春日航拍"},
+            {"nickname": "林间微风", "content": "太美了"}, "感谢支持",
+        )
+        self.assertEqual(result["status"], "performed")
+        self.assertEqual(ui.header_scrolls, 1)
+        self.assertEqual(ui.comment_scrolls, 1)
+        self.assertEqual(ui.feed_next_scrolls, 0)
+        self.assertEqual(ui.typed, ["感谢支持"])
+
+    def test_preemptive_recovers_header_for_each_candidate_work(self):
+        top = drawer_lines()
+        scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
+        wrong_top = [{**line, "text": "另一条作品"} if line["text"] == "春日航拍美景合集" else line for line in top]
+        ui = FakeUi([wrong_top, top])
+        target = {"author": "新华社", "title": "春日航拍"}
+        self.assertFalse(_work_matches_spec(ui, scrolled, target)[0])
+        self.assertTrue(_work_matches_spec(ui, scrolled, target)[0])
+        self.assertEqual(ui.header_scrolls, 2)
+
+    def test_preemptive_never_uses_comment_text_as_work_title(self):
+        top = drawer_lines()
+        top = [{**line, "text": "另一条作品"} if line["text"] == "春日航拍美景合集" else line for line in top]
+        top = [{**line, "text": "春日航拍美景合集"} if line["text"] == "太美了，请问这是哪里拍的？" else line for line in top]
+        ui = FakeUi([])
+        self.assertFalse(_work_matches_spec(ui, top, {"author": "新华社", "title": "春日航拍"})[0])
+        scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
+        ui = FakeUi([scrolled, scrolled, scrolled])
+        self.assertFalse(_work_matches_spec(ui, scrolled, {"author": "新华社", "title": "春日航拍"})[0])
+        self.assertEqual(ui.header_scrolls, 3)
+        self.assertEqual(ui.typed, [])
 
     def test_profile_follow_first_work_touch_and_comment_drawer_return(self):
         store = DailyQuotaStore(self.quota_path)
@@ -519,6 +596,21 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(empty_res["status"], "no_work_found")
         self.assertFalse(empty_res["opened"])
         self.assertTrue(empty_res["returnedToProfile"])
+
+    def test_message_center_does_not_require_follow_tab(self):
+        lines = [{"text": "点赞", "box": [270, 98, 55, 30]},
+                 {"text": "评论", "box": [410, 98, 55, 30]}]
+        self.assertEqual(classify_page_state(lines), "channels_message_center")
+        self.assertNotEqual(classify_page_state(lines[1:]), "channels_message_center")
+
+    def test_recorded_message_center_with_heart_template_opens_comments(self):
+        lines = json.loads((Path(__file__).parent / "testdata/message-center-heart.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(classify_page_state(lines), "channels_message_center")
+        lines.append({"text": "点赞", "box": [276, 96, 32, 29], "source": "template",
+                      "templateNode": "BatchMessagesLikeTab"})
+        ui = FakeUi(snapshots=[lines, lines])
+        self.assertEqual(open_personal_messages(ui), lines)
+        self.assertEqual([target["text"] for target in ui.clicks], ["评论"])
 
     def test_message_center_inspection_like_reply_and_return(self):
         store = DailyQuotaStore(self.quota_path)

@@ -306,9 +306,10 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
 
         is_truncated = (
             has_expand_control
-            or content.endswith(("...", "…", "⋯"))
             or bool(re.search(r"[.…⋯·]+\s*(?:展开|全文)$", content))
         )
+        # Ellipses can be literal punctuation in a complete comment. The next
+        # header/footer establishes its boundary; actual folding has a control.
         if not bounded or not content or is_truncated:
             if level == 1:
                 current_parent = {
@@ -556,11 +557,6 @@ def inspect_commenter_profile(ui, comment):
                 ui.click(_expand_click_target(expand))
                 profile_lines = ui.snapshot("commenter-profile", author=nickname)
                 profile = parse_author(profile_lines, nickname)
-            if hasattr(ui, "read_profile_bio"):
-                try:
-                    profile["authorBio"] = ui.read_profile_bio(profile_lines, profile)
-                except ValueError:
-                    pass
             name = profile_name(profile_lines, profile["authorNickname"])
             ui.profile_more(name)
             menu = ui.snapshot("commenter-profile-menu")

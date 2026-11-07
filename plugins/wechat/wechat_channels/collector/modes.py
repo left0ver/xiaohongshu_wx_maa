@@ -1475,7 +1475,6 @@ def collect_video_in_mode(
                 ui.click(expand)
                 author_lines = ui.snapshot("author-profile", author=author)
                 profile = parse_author(author_lines, author)
-            profile["authorBio"] = ui.read_profile_bio(author_lines, profile)
             name = profile_name(author_lines, author)
             ui.profile_more(name)
             menu = ui.snapshot("profile-menu")
