@@ -434,18 +434,21 @@ class MaaUi:
         self.height = image.shape[0]
         return image
 
-    def set_text(self, text, timeout=5):
+    def set_text(self, text, timeout=10):
         if self.stopped():
             raise InterruptedError("Collection was stopped")
         foreground()
         helper = Path(__file__).with_name("ui-dump.dex")
         if not helper.is_file():
             raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
-        run(
-            ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)],
-            timeout=timeout,
-            stopped=self.stopped,
-        )
+        cmd = ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)]
+        try:
+            run(cmd, timeout=timeout, stopped=self.stopped)
+        except Exception:
+            if self.stopped():
+                raise InterruptedError("Collection was stopped")
+            time.sleep(0.4)
+            run(cmd, timeout=timeout, stopped=self.stopped)
         time.sleep(0.5)
 
     def scroll_feed_next(self):

@@ -64,7 +64,7 @@ def comment_control_in_feed(lines, height, ui=None):
                        lambda line: line["box"][0] > 580 and line["box"][1] > height - 130)
         if comment:
             return comment
-        bar_anchor = find(lines, r"^(?:转发|赞|收藏|\d+(?:\.\d+)?[万wW]?)$",
+        bar_anchor = find(lines, r"^(?:转发|赞|喜欢|收藏|推荐|\d+(?:\.\d+)?[万wW]?)$",
                           lambda line: 340 <= line["box"][0] <= 575 and line["box"][1] > height - 110)
         if bar_anchor:
             return {"text": "1", "box": [625, max(0, bar_anchor["box"][1] - 32), 44, 52]}
@@ -180,7 +180,7 @@ class LocalStore:
         finally:
             db.close()
 
-    def save(self, payload):
+    def save(self, payload, source_mode="RECOMMEND"):
         if not payload.get("authorNickname") or not payload.get("description") or not payload.get("authorDouyinId"):
             raise ValueError("Cannot save an incomplete VIDEO")
         key = "wxch-video:" + identity(payload["authorNickname"], payload["description"])
@@ -196,7 +196,7 @@ class LocalStore:
             device = db.execute("SELECT value FROM metadata WHERE key='deviceId'").fetchone()[0]
             event = {
                 "event_id": str(uuid.uuid4()), "event_type": "VIDEO", "dedupe_key": key,
-                "device_id": device, "source_mode": "RECOMMEND",
+                "device_id": device, "source_mode": source_mode or "RECOMMEND",
                 "collected_at": datetime.now(timezone.utc).isoformat(),
                 "upload_status": "local_only",
                 "payload": {**payload, "videoUrl": "wechat-channels://video/" + key.split(":", 1)[1]},
@@ -256,7 +256,8 @@ def ensure_feed(ui, launch=True):
     while navigation_steps < 7:
         lines = ui.snapshot(navigation_label)
         is_profile_grid = navigation_label == "navigation-bottom" and any(line["box"][1] > ui.height - 42 for line in lines)
-        if navigation_label == "navigation-bottom" and not is_profile_grid and not find(lines, r"^发现$|^推荐$|^视频号$|^评论\s*\d*|^(私信|客服)$|^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
+        is_comment_drawer = bool(find(lines, r"^评论\s*\d*", lambda line: not (line["box"][0] > 580 and line["box"][1] > ui.height - 130)))
+        if navigation_label == "navigation-bottom" and not is_profile_grid and not is_comment_drawer and not find(lines, r"^发现$|^推荐$|^视频号$|^(私信|客服)$|^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             # Already inside Channels: inspect its top tabs without full-screen OCR.
             lines = ui.snapshot("navigation-top")
         if lines and lines[0].get("navigation"):
@@ -278,7 +279,7 @@ def ensure_feed(ui, launch=True):
         elif discover and find(lines, r"^通讯录$"):
             ui.click(discover)
             navigation_label = "navigation-top"
-        elif is_profile_grid or find(lines, r"^评论\s*\d*") or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
+        elif is_profile_grid or is_comment_drawer or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             ui.back()
         else:
             if waiting_for_start:
@@ -321,44 +322,48 @@ def video_details(ui, lines, author):
     return parse_video(details, author)
 
 
-def collect(ui, store, timings, launch=True):
+def collect_current_video(ui, store, timings, lines, source_mode="RECOMMEND"):
+    with timings.phase("collect_author_nickname"):
+        author = author_in_feed(lines, ui.height)["text"].strip()
+    with timings.phase("collect_description_time_location"):
+        video = video_details(ui, lines, author)
+        ui.back()
+    with timings.phase("collect_author_profile"):
+        feed = ui.snapshot("before-author")
+        target = author_in_feed(feed, ui.height)
+        ui.click(target)
+        author_lines = ui.snapshot("author-profile", author=author)
+        profile = parse_author(author_lines, author)
+        expand = profile_bio_expand(author_lines, author)
+        if expand:
+            ui.click(expand)
+            author_lines = ui.snapshot("author-profile", author=author)
+            profile = parse_author(author_lines, author)
+        profile["authorBio"] = ui.read_profile_bio(author_lines, profile)
+        name = profile_name(author_lines, author)
+        ui.profile_more(name)
+        menu = ui.snapshot("profile-menu")
+        more = find(menu, r"^更多信息$")
+        if not more:
+            raise ValueError("More information menu item is missing")
+        profile.update(open_basic_info(ui, more))
+        profile["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if profile[key] is None]
+        ui.back()
+        ui.back()
+    with timings.phase("persist_video_draft"):
+        # Keep the first feed nickname and first complete work description;
+        # later pages supply profile fields, not corrections to those values.
+        payload = {**profile, **video, "returnVerified": False}
+        payload["missingFields"] += [key for key in ("publishTimeText", "publishLocation") if not payload[key]]
+        event, duplicate = store.save(payload, source_mode=source_mode)
+        timings.emit({"kind": "videoCollected", "eventId": event["event_id"],
+                      "dedupeKey": event["dedupe_key"], "duplicate": duplicate,
+                      "missingFields": payload["missingFields"], "uploadStatus": "local_only"})
+    return event
+
+
+def collect(ui, store, timings, launch=True, source_mode="RECOMMEND"):
     with timings.phase("collect_video_total"):
         with timings.phase("enter_recommendations"):
             lines = ensure_feed(ui, launch)
-        with timings.phase("collect_author_nickname"):
-            author = author_in_feed(lines, ui.height)["text"].strip()
-        with timings.phase("collect_description_time_location"):
-            video = video_details(ui, lines, author)
-            ui.back()
-        with timings.phase("collect_author_profile"):
-            feed = ui.snapshot("before-author")
-            target = author_in_feed(feed, ui.height)
-            ui.click(target)
-            author_lines = ui.snapshot("author-profile", author=author)
-            profile = parse_author(author_lines, author)
-            expand = profile_bio_expand(author_lines, author)
-            if expand:
-                ui.click(expand)
-                author_lines = ui.snapshot("author-profile", author=author)
-                profile = parse_author(author_lines, author)
-            profile["authorBio"] = ui.read_profile_bio(author_lines, profile)
-            name = profile_name(author_lines, author)
-            ui.profile_more(name)
-            menu = ui.snapshot("profile-menu")
-            more = find(menu, r"^更多信息$")
-            if not more:
-                raise ValueError("More information menu item is missing")
-            profile.update(open_basic_info(ui, more))
-            profile["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if profile[key] is None]
-            ui.back()
-            ui.back()
-        with timings.phase("persist_video_draft"):
-            # Keep the first feed nickname and first complete work description;
-            # later pages supply profile fields, not corrections to those values.
-            payload = {**profile, **video, "returnVerified": False}
-            payload["missingFields"] += [key for key in ("publishTimeText", "publishLocation") if not payload[key]]
-            event, duplicate = store.save(payload)
-            timings.emit({"kind": "videoCollected", "eventId": event["event_id"],
-                          "dedupeKey": event["dedupe_key"], "duplicate": duplicate,
-                          "missingFields": payload["missingFields"], "uploadStatus": "local_only"})
-    return event
+        return collect_current_video(ui, store, timings, lines, source_mode=source_mode)

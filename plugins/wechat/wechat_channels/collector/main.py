@@ -15,6 +15,7 @@ from android_ui import MaaUi
 from collection import LocalStore, Timings, collect
 from comments import collect_visible_comments
 from interactions import DailyQuotaStore, interact_work_and_comments
+from modes import run_mode
 
 
 @AgentServer.custom_action("CollectWechatVideo")
@@ -79,6 +80,39 @@ class InteractWork(CustomAction):
                 return True
         except Exception as error:
             timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})
+            return False
+
+
+@AgentServer.custom_action("RunWechatMode")
+class RunModeAction(CustomAction):
+    def run(self, context, argv):
+        root = Path(os.environ["WECHAT_DATA_DIR"])
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run_id = str(uuid.uuid4())
+        run_dir = root / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        timings = Timings(run_dir / "timings.jsonl", run_id)
+        raw_param = getattr(argv, "custom_action_param", None)
+        config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
+        try:
+            with (root / "collection.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                ui = MaaUi(context.tasker, run_dir, context)
+                result = run_mode(ui, root, config, timings=timings)
+                (run_dir / "mode.json").write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                timings.emit(
+                    {
+                        "kind": "modeCompleted",
+                        "outcome": "succeeded",
+                        "mode": result.get("mode"),
+                        "status": result.get("status"),
+                    }
+                )
+                return True
+        except Exception as error:
+            timings.emit({"kind": "modeCompleted", "outcome": "failed", "error": str(error)})
             return False
 
 

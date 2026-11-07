@@ -10,17 +10,26 @@ from android_ui import phone_ui
 from collection import LocalStore, Timings, collect, ensure_feed
 from comments import collect_visible_comments
 from interactions import DailyQuotaStore, interact_work_and_comments
+from modes import run_mode
 
 
-def _load_interact_config(argv):
-    idx = argv.index("--interact")
+def _load_flag_config(argv, flag):
+    idx = argv.index(flag)
     if idx + 1 >= len(argv) or argv[idx + 1].startswith("--"):
         return {}
     raw = argv[idx + 1]
-    candidate = Path(raw)
-    if candidate.is_file():
-        return json.loads(candidate.read_text(encoding="utf-8"))
+    if not raw.lstrip().startswith("{"):
+        try:
+            candidate = Path(raw)
+            if candidate.is_file():
+                return json.loads(candidate.read_text(encoding="utf-8"))
+        except OSError:
+            pass
     return json.loads(raw)
+
+
+def _load_interact_config(argv):
+    return _load_flag_config(argv, "--interact")
 
 
 def main():
@@ -38,6 +47,33 @@ def main():
     run_dir.mkdir(parents=True)
     timings = Timings(run_dir / "timings.jsonl", run_id)
     launch = "--no-launch" not in sys.argv
+    if "--mode" in sys.argv:
+        config = _load_flag_config(sys.argv, "--mode")
+        try:
+            ui = phone_ui(root, run_dir)
+            if config.get("ensureFeed"):
+                ensure_feed(ui, launch=launch)
+            with timings.phase("run_mode"):
+                result = run_mode(ui, root, config, timings=timings)
+            (run_dir / "mode.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            timings.emit(
+                {
+                    "kind": "modeCompleted",
+                    "outcome": "succeeded",
+                    "mode": result.get("mode"),
+                    "status": result.get("status"),
+                }
+            )
+            print(
+                json.dumps({"kind": "modeResult", "runId": run_id, "result": result}, ensure_ascii=False),
+                flush=True,
+            )
+            return
+        except Exception as error:
+            timings.emit({"kind": "modeCompleted", "outcome": "failed", "error": str(error)})
+            raise
     if "--interact" in sys.argv:
         config = _load_interact_config(sys.argv)
         try:

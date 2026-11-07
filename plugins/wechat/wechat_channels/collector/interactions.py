@@ -207,11 +207,11 @@ class DailyQuotaStore:
 
 
 def parse_metric_number(text):
-    """Parse Chinese metric count strings ('4521', '1.2万', '赞') into integers."""
+    """Parse Chinese metric count strings ('4521', '1.2万', '赞', '喜欢') into integers."""
     raw = compact(str(text or ""))
-    if not raw or re.fullmatch(r"[赞收藏评论转发推荐凸👍♡♥]+", raw):
+    if not raw or re.fullmatch(r"[赞喜欢收藏评论转发推荐凸👍♡♥]+", raw):
         return 0
-    raw = re.sub(r"[赞收藏评论转发推荐凸👍♡♥]+$", "", raw)
+    raw = re.sub(r"[赞喜欢收藏评论转发推荐凸👍♡♥]+$", "", raw)
     match = re.search(r"(\d+(?:\.\d+)?)\s*([万wW])?", raw)
     if not match:
         return 0
@@ -349,7 +349,11 @@ def classify_page_state(lines, height=1605):
     if find(lines, r"^设置$", lambda l: l["box"][0] > 520 and l["box"][1] > height * 0.55):
         return "user_card_overlay"
 
-    if find(lines, r"^评论\s*[\d.万wW]*") or find(
+    if find(
+        lines,
+        r"^评论\s*[\d.万wW]*",
+        lambda l: not (l["box"][0] > 560 and l["box"][1] > height - 140),
+    ) or find(
         lines,
         r"发表评论|说点什么|写评论",
         lambda l: l["box"][1] >= height - 120,
@@ -414,7 +418,7 @@ def ensure_clean_page_on_resume(ui, max_steps=3):
 def _feed_like_geometry(lines, height):
     count_line = find(
         lines,
-        r"^(?:\d+(?:\.\d+)?[万wW]?|赞)$",
+        r"^(?:\d+(?:\.\d+)?[万wW]?|赞|喜欢)$",
         lambda line: 325 <= line["box"][0] <= 415 and line["box"][1] > height - 115,
     )
     if count_line:
