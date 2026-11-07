@@ -7,8 +7,20 @@ import unittest
 from pathlib import Path
 
 from android_ui import phone_ui
-from collection import LocalStore, Timings, collect
+from collection import LocalStore, Timings, collect, ensure_feed
 from comments import collect_visible_comments
+from interactions import DailyQuotaStore, interact_work_and_comments
+
+
+def _load_interact_config(argv):
+    idx = argv.index("--interact")
+    if idx + 1 >= len(argv) or argv[idx + 1].startswith("--"):
+        return {}
+    raw = argv[idx + 1]
+    candidate = Path(raw)
+    if candidate.is_file():
+        return json.loads(candidate.read_text(encoding="utf-8"))
+    return json.loads(raw)
 
 
 def main():
@@ -26,6 +38,25 @@ def main():
     run_dir.mkdir(parents=True)
     timings = Timings(run_dir / "timings.jsonl", run_id)
     launch = "--no-launch" not in sys.argv
+    if "--interact" in sys.argv:
+        config = _load_interact_config(sys.argv)
+        try:
+            ui = phone_ui(root, run_dir)
+            if config.get("ensureFeed"):
+                ensure_feed(ui, launch=launch)
+            quota_path = Path(config.get("quotaPath") or (root / "data/daily_quotas.json"))
+            quota_store = DailyQuotaStore(quota_path, limits=config.get("limits"))
+            with timings.phase("interact_work_and_comments"):
+                result = interact_work_and_comments(ui, quota_store, config)
+            (run_dir / "interactions.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            timings.emit({"kind": "interactionsCompleted", "outcome": "succeeded", "workKey": result.get("workKey")})
+            print(json.dumps({"kind": "interactionResult", "runId": run_id, "result": result}, ensure_ascii=False), flush=True)
+            return
+        except Exception as error:
+            timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})
+            raise
     try:
         ui = phone_ui(root, run_dir)
         event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)

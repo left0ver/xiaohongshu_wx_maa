@@ -14,6 +14,7 @@ from maa.custom_action import CustomAction
 from android_ui import MaaUi
 from collection import LocalStore, Timings, collect
 from comments import collect_visible_comments
+from interactions import DailyQuotaStore, interact_work_and_comments
 
 
 @AgentServer.custom_action("CollectWechatVideo")
@@ -52,6 +53,33 @@ class CollectVideo(CustomAction):
 @AgentServer.custom_action("CollectWechatComments")
 class CollectComments(CollectVideo):
     include_comments = True
+
+
+@AgentServer.custom_action("InteractWechatWork")
+class InteractWork(CustomAction):
+    def run(self, context, argv):
+        root = Path(os.environ["WECHAT_DATA_DIR"])
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        run_id = str(uuid.uuid4())
+        run_dir = root / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        timings = Timings(run_dir / "timings.jsonl", run_id)
+        raw_param = getattr(argv, "custom_action_param", None)
+        config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
+        try:
+            with (root / "collection.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                ui = MaaUi(context.tasker, run_dir, context)
+                quota_store = DailyQuotaStore(root / "daily_quotas.json", limits=config.get("limits"))
+                result = interact_work_and_comments(ui, quota_store, config)
+                (run_dir / "interactions.json").write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                timings.emit({"kind": "interactionsCompleted", "outcome": "succeeded", "workKey": result.get("workKey")})
+                return True
+        except Exception as error:
+            timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})
+            return False
 
 
 if __name__ == "__main__":

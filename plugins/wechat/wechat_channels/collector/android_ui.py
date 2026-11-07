@@ -261,7 +261,7 @@ class MaaUi:
             self.height = image.shape[0]
             roi = navigation_roi(label, self.height) if roi is None else roi
             ocr_image = image
-            if label.startswith("comments"):
+            if label.startswith(("comments", "messages")):
                 # Mask orange Channels butterfly badges next to nicknames so OCR
                 # does not misread the decorative icon as a trailing 'W'.
                 ocr_image = image.copy()
@@ -367,9 +367,12 @@ class MaaUi:
             line = refresh_target(self.hierarchy(force=True), line)
         elif line.get("templateNode"):
             current = self.match_navigation(line["templateNode"])
-            if not current or current["box"] != line["box"]:
+            if current:
+                if max(abs(a - b) for a, b in zip(current["box"], line["box"])) > 16:
+                    raise RuntimeError("Navigation control changed before click; no input was sent")
+                line = current
+            elif line["templateNode"] != "BatchRecommended":
                 raise RuntimeError("Navigation control changed before click; no input was sent")
-            line = current
         foreground()
         x, y, width, height = line["box"]
         if not self.controller.post_click(x + width // 2, y + height // 2).wait().succeeded:
@@ -415,6 +418,57 @@ class MaaUi:
             raise RuntimeError("Comment drawer scroll failed")
         self.navigation_stage = None
         time.sleep(0.7)
+
+    def stopped(self):
+        return bool(getattr(self.tasker, "stopping", False))
+
+    def capture_frame(self):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        job = self.controller.post_screencap().wait()
+        if not job.succeeded:
+            raise RuntimeError("Screenshot failed")
+        image = job.get()
+        self.image = image
+        self.height = image.shape[0]
+        return image
+
+    def set_text(self, text, timeout=5):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        helper = Path(__file__).with_name("ui-dump.dex")
+        if not helper.is_file():
+            raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
+        run(
+            ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)],
+            timeout=timeout,
+            stopped=self.stopped,
+        )
+        time.sleep(0.5)
+
+    def scroll_feed_next(self):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        start = int(self.height * 0.78)
+        end = int(self.height * 0.22)
+        if not self.controller.post_swipe(360, start, 360, end, 320).wait().succeeded:
+            raise RuntimeError("Feed scroll next failed")
+        self.navigation_stage = None
+        time.sleep(0.9)
+
+    def scroll_feed_prev(self):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        start = int(self.height * 0.22)
+        end = int(self.height * 0.78)
+        if not self.controller.post_swipe(360, start, 360, end, 320).wait().succeeded:
+            raise RuntimeError("Feed scroll prev failed")
+        self.navigation_stage = None
+        time.sleep(0.9)
 
     def start_wechat(self):
         self.hierarchy_unavailable = False

@@ -1,6 +1,6 @@
 # 微信视频号上传与操作主任务清单
 
-更新时间：2026-11-06
+更新时间：2026-11-07
 
 范围：向 `content_discovery_event` 表写入视频号作品（`VIDEO`）、评论（`COMMENT`）、用户（`USER`）三类事件，建立 `作品 → 评论 → 用户` 的父子关联，并覆盖批量采集、互动触达与多运行模式。
 
@@ -10,7 +10,7 @@
 
 ## 当前进度与清单分工
 
-本清单共 **42 项**，当前完成端到端勾选 **0 项**（服务端上报、ACK 与远端 SQL 联调暂缓）。手机端本地实现进展如下：
+本清单共 **42 项**，当前完成端到端勾选 **6 项**（批量互动、主页触达、消息中心巡检与每日配额限制已在真机完成端到端闭环验证；服务端上报、ACK 与远端 SQL 联调暂缓）。手机端本地实现进展如下：
 
 - **第一批 `VIDEO` 本地草稿已跑通并完成耗时优化（2026-11-06）**：
   - 已在 `plugins/wechat/wechat_channels/collector/collection.py` 实现 `VIDEO` 事件本地草稿构建与 SQLite 持久化（`video_drafts` 表，`status='local_only'`）；
@@ -21,7 +21,11 @@
   - 已在 `collector/comments.py` 完整实现一/二级评论抽屉解析、橙色视频号蝴蝶徽章（`🦋`）掩码清理、折叠长评展开、多页滚动翻页与重叠去重、到底/空态核验（`complete=true, endReason="end_of_list"`）及「`N条回复`」二级回复展开；
   - 已实现点击评论者昵称左侧字符区访问评论者身份（兼容已开通视频号的公开/`申请关注` 私密主页提取 `douyinId`，以及普通微信用户底部资料卡标记 `identityMethod="wechat-user-card"`），支持主页折叠简介（`··展开`）展开、多人往返锚点校验（`returnVerified=true`）与异常隔离（`skippedProfiles`）；
   - 已实现 `comment_drafts` 与 `user_drafts` 表持久化（去重键分别为 `wxch-comment:<hash>` 与 `wxch-user:<hash>`），自动将评论者 `douyinId` 回填至评论的 `authorDouyinId` 与二级回复的 `replyToDouyinId`，并在 `vivo V2131A` 真机通过 `VIDEO → COMMENT → USER` 三表关联验证（1 条 `VIDEO`、17 条唯一 `COMMENT`、3 条唯一 `USER`）。
-- **批量互动、多运行模式与服务端上报队列**：待接入。
+- **第三批批量操作（作品与评论互动、主页触达、个人页消息中心巡检、每日配额与恢复保护）已全部完成真机验证（2026-11-07，`vivo V2131A / Android 12`，跳过私信）**：
+  - 已在 `collector/interactions.py` 与 `UiDump.java`（新增 `--set-text` 剪贴板粘贴回退）完整实现作品点赞（`like_work`）、作品红心推荐/收藏（`collect_work_action`）、发表一级评论（`post_work_comment`）、评论点赞（`like_comment`）、评论回复与三层自评防死循环保护（`reply_to_comment`）、指定作品与评论插队抢先回复（`preemptive_reply_comment`）；
+  - 已实现作者/评论者主页关注（`follow_profile_user`）、主页首篇视频打开并执行点赞+推荐收藏后返回主页（`interact_profile_first_work`）、记录 `profileActionsPerformed`（`["FOLLOW", "LIKE_FIRST_WORK", "COLLECT_FIRST_WORK"]`）及返回评论锚点/推荐流校验（显式跳过私信 `dmSkipped=true`）；
+  - 已实现从推荐页右上角进入 `个人页` → `视频号消息` → `评论` 列表解析通知并就地点赞/回复后返回推荐流（`inspect_and_handle_messages`），以及 `DailyQuotaStore`（`daily_quotas.json`）跨重启配额与幂等账本持久化和残留浮层恢复清理（`ensure_clean_page_on_resume`）。
+- **多运行模式与服务端上报队列**：待接入。
 
 ---
 
@@ -64,12 +68,12 @@
 
 ## 批量操作（互动与触达）
 
-- [ ] 作品级互动：按配置执行视频点赞（拇指）、推荐（红心）或收藏、发表一级评论，并校验 UI 状态生效。
-- [ ] 评论区触达：对目标评论执行点赞（`payload.commentLiked`）与回复（`payload.commentReplied`，含自评防循环保护）。
-- [ ] 插队评论回复：支持接收指定作品与目标评论任务，定位并完成回复后恢复原采集流。
-- [ ] 主页触达：按条件执行作者/评论者主页关注、主页首篇视频点赞/收藏、发送私信，记录并上报 `payload.profileActionsPerformed`。
-- [ ] 通知巡检与回复：进入视频号个人页消息通知列表，巡检未读评论、回复与 `@`，支持就地回复与点赞去重。
-- [ ] 接入每日互动配额限制（点赞、收藏/推荐、评论、关注、私信独立计数，跨重启持久化）。
+- [x] 作品级互动：按配置执行视频点赞（拇指）、推荐（红心）或收藏、发表一级评论，并校验 UI 状态生效与防重复取消。（2026-11-07，`vivo V2131A` Run `275c6fad` & `f372139f` 真机验证通过）
+- [x] 评论区触达：对目标评论执行点赞（`comment_like`）与回复（`comment_reply`，含三层自评防循环保护）。（2026-11-07，`vivo V2131A` Run `275c6fad` & `f372139f` 真机验证通过）
+- [x] 插队评论回复：支持接收指定作品与目标评论任务（`preemptive_reply_comment`），定位并完成回复后恢复原采集流（`restoredToOriginalTask=true`），未命中目标时拒绝误回。（2026-11-07，`vivo V2131A` Run `df9d071c` & `3166bf33` 真机验证通过）
+- [x] 主页触达：按条件执行作者/评论者主页关注、主页首篇视频点赞/收藏（跳过私信 `dmSkipped=true`），记录 `profileActionsPerformed`（`["FOLLOW", "LIKE_FIRST_WORK", "COLLECT_FIRST_WORK"]`）并校验返回原位置。（2026-11-07，`vivo V2131A` Run `f372139f` & `61716eb1` 真机验证通过）
+- [x] 通知巡检与回复：进入视频号 `个人页` → `视频号消息` → `评论` 通知列表，巡检评论与回复通知，支持就地点赞与回复去重并返回推荐流（`returnedToTask=true`）。（2026-11-07，`vivo V2131A` Run `61716eb1` 真机验证通过）
+- [x] 接入每日互动配额限制（点赞、收藏/推荐、评论、关注、私信独立计数，`daily_quotas.json` 跨重启持久化与幂等防重账本）。（2026-11-07，`vivo V2131A` 跨 4 轮实机运行与单元测试验证通过）
 
 ## 模式接入
 

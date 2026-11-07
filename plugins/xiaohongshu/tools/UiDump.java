@@ -27,7 +27,11 @@ public final class UiDump {
         }
         if (args.length != 1) throw new IllegalArgumentException("output path required");
         if (args[0].equals("--resume-xhs")) {
-            resumeXhs();
+            resumeApp("com.xingin.xhs", "Open a Xiaohongshu work before starting this task");
+            return;
+        }
+        if (args[0].equals("--resume-wechat")) {
+            resumeApp("com.tencent.mm", "Open WeChat before starting this task");
             return;
         }
         HandlerThread thread = new HandlerThread("xhs-hierarchy");
@@ -106,36 +110,102 @@ public final class UiDump {
             connected = true;
             AccessibilityServiceInfo info = automation.getServiceInfo();
             info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+                | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+                | AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
             automation.setServiceInfo(info);
             AccessibilityNodeInfo root = null;
             for (int attempt = 0; attempt < 10 && root == null; attempt++) {
                 root = automation.getRootInActiveWindow();
                 if (root == null) Thread.sleep(100);
             }
-            if (root == null) throw new IllegalStateException("No active window");
             List<AccessibilityNodeInfo> edits = new ArrayList<>();
             try {
-                collectEdits(root, edits, 0);
-                if (edits.size() != 1) {
-                    throw new IllegalStateException("Expected exactly one visible EditText, found " + edits.size());
+                if (root != null) {
+                    collectEdits(root, edits, 0);
                 }
-                AccessibilityNodeInfo edit = edits.get(0);
-                Bundle arguments = new Bundle();
-                arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
-                if (!edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
-                    throw new IllegalStateException("Failed to set text on EditText");
+                if (edits.isEmpty()) {
+                    AccessibilityNodeInfo focused = automation.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                    if (focused != null) {
+                        if (focused.isEditable() || "android.widget.EditText".equals(text(focused.getClassName()))) {
+                            edits.add(focused);
+                        } else {
+                            focused.recycle();
+                        }
+                    }
                 }
+                if (edits.isEmpty()) {
+                    for (AccessibilityWindowInfo window : automation.getWindows()) {
+                        try {
+                            if (!window.isActive()) continue;
+                            AccessibilityNodeInfo windowRoot = window.getRoot();
+                            if (windowRoot != null) {
+                                try { collectEdits(windowRoot, edits, 0); } finally { windowRoot.recycle(); }
+                            }
+                        } finally { window.recycle(); }
+                    }
+                }
+                if (edits.size() == 1) {
+                    AccessibilityNodeInfo edit = edits.get(0);
+                    Bundle arguments = new Bundle();
+                    arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+                    if (edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                        System.out.println("text_set");
+                        return;
+                    }
+                } else if (edits.size() > 1) {
+                    throw new IllegalStateException("Expected at most one visible EditText, found " + edits.size());
+                }
+                pasteViaClipboard(value);
                 System.out.println("text_set");
             } finally {
                 for (AccessibilityNodeInfo edit : edits) {
                     edit.recycle();
                 }
-                root.recycle();
+                if (root != null) root.recycle();
             }
         } finally {
             if (connected) UiAutomation.class.getMethod("disconnect").invoke(automation);
             thread.quitSafely();
+        }
+    }
+
+    private static void pasteViaClipboard(String value) throws Exception {
+        android.content.ClipData clip = android.content.ClipData.newPlainText("text", value);
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        android.os.IBinder binder = (android.os.IBinder) sm.getMethod("getService", String.class).invoke(null, "clipboard");
+        Object clipboard = Class.forName("android.content.IClipboard$Stub")
+            .getMethod("asInterface", android.os.IBinder.class).invoke(null, binder);
+        boolean clipSet = false;
+        for (java.lang.reflect.Method m : clipboard.getClass().getMethods()) {
+            if (!m.getName().equals("setPrimaryClip")) continue;
+            Class<?>[] p = m.getParameterTypes();
+            try {
+                if (p.length == 2 && p[0] == android.content.ClipData.class && p[1] == String.class) {
+                    m.invoke(clipboard, clip, "com.android.shell");
+                    clipSet = true;
+                    break;
+                } else if (p.length == 3 && p[0] == android.content.ClipData.class && p[1] == String.class && p[2] == int.class) {
+                    m.invoke(clipboard, clip, "com.android.shell", 0);
+                    clipSet = true;
+                    break;
+                } else if (p.length == 4 && p[0] == android.content.ClipData.class && p[1] == String.class && p[2] == String.class && p[3] == int.class) {
+                    m.invoke(clipboard, clip, "com.android.shell", null, 0);
+                    clipSet = true;
+                    break;
+                } else if (p.length == 5 && p[0] == android.content.ClipData.class && p[1] == String.class && p[2] == String.class && p[3] == int.class && p[4] == int.class) {
+                    m.invoke(clipboard, clip, "com.android.shell", null, 0, 0);
+                    clipSet = true;
+                    break;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (!clipSet) {
+            throw new IllegalStateException("Could not set system clipboard for paste fallback");
+        }
+        Process proc = new ProcessBuilder("input", "keyevent", "279").start();
+        if (proc.waitFor() != 0) {
+            throw new IllegalStateException("KEYCODE_PASTE command failed");
         }
     }
 
@@ -145,7 +215,8 @@ public final class UiDump {
         Rect box = new Rect();
         node.getBoundsInScreen(box);
         if (box.isEmpty()) return;
-        if ("com.xingin.xhs".equals(text(node.getPackageName()))
+        String pkg = text(node.getPackageName());
+        if (("com.xingin.xhs".equals(pkg) || "com.tencent.mm".equals(pkg))
                 && "android.widget.EditText".equals(text(node.getClassName()))
                 && node.isEnabled()) {
             edits.add(AccessibilityNodeInfo.obtain(node));
@@ -161,7 +232,7 @@ public final class UiDump {
         }
     }
 
-    private static void resumeXhs() throws Exception {
+    private static void resumeApp(String packageName, String missingMessage) throws Exception {
         Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
         java.lang.reflect.Method tasks = null;
         for (java.lang.reflect.Method method : service.getClass().getMethods()) {
@@ -177,7 +248,7 @@ public final class UiDump {
         }
         for (Object item : (java.util.List<?>) tasks.invoke(service, args)) {
             android.app.ActivityManager.RunningTaskInfo task = (android.app.ActivityManager.RunningTaskInfo) item;
-            if (task.topActivity == null || !"com.xingin.xhs".equals(task.topActivity.getPackageName())
+            if (task.topActivity == null || !packageName.equals(task.topActivity.getPackageName())
                     || task.getClass().getField("displayId").getInt(task) != 0) continue;
             service.getClass().getMethod("moveTaskToFront", Class.forName("android.app.IApplicationThread"),
                     String.class, int.class, int.class, android.os.Bundle.class)
@@ -185,7 +256,7 @@ public final class UiDump {
             System.out.println("resumed");
             return;
         }
-        throw new IllegalStateException("Open a Xiaohongshu work before starting this task");
+        throw new IllegalStateException(missingMessage);
     }
 
     private static String text(CharSequence value) {

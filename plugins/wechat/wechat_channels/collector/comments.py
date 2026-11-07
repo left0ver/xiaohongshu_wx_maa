@@ -38,6 +38,9 @@ def clean_comment_nickname(raw):
     if re.search(r"[.…⋯·]{2,}\s*[Ww]$", text):
         text = re.sub(r"[.…⋯·]{2,}\s*[Ww]$", "...", text).strip()
         has_badge = True
+    elif re.search(r"\s+[Ww]$", text):
+        text = re.sub(r"\s+[Ww]$", "", text).strip()
+        has_badge = True
     elif re.search(r"(?<=[\u4e00-\u9fff）】》\s])W$", text):
         text = re.sub(r"(?<=[\u4e00-\u9fff）】》\s])W$", "", text).strip()
         has_badge = True
@@ -136,22 +139,43 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
     empty = bool(find(lines, EMPTY_COMMENTS_RE)) or declared_total == 0
     footer_reached = bool(find(lines, FOOTER_END_RE))
 
+    input_bar = find(
+        lines,
+        r"发表评论|说点什么|写评论",
+        lambda line: line["box"][1] >= height - 260 and line["box"][0] < 480,
+    )
+    self_nickname = None
+    if input_bar:
+        bar_match = re.match(r"^(.+?)(?:发表评论|说点什么|写评论)[:：]?$", compact(input_bar["text"]))
+        if bar_match:
+            self_nickname = clean_comment_nickname(bar_match[1])[0] or None
+
     headers = []
     for index, row in enumerate(rows):
         if row["top"] <= heading["bottom"] or row["top"] >= height - 80:
             continue
         if _is_ad_row(row):
             continue
-        has_like_action = any(
-            item["box"][0] > 550 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip())
+        like_item = next(
+            (
+                item
+                for item in row["items"]
+                if item["box"][0] > 480 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip())
+            ),
+            None,
+        )
+        has_recommend_badge = any(
+            item["box"][0] > 500 and re.fullmatch(r"推荐[♡♥]?", item["text"].strip())
             for item in row["items"]
         )
+        has_like_action = like_item is not None or has_recommend_badge
         pieces = [
             item
             for item in row["items"]
             if item["box"][0] < 570
             and not re.search(r"已声明原创|都在搜", item["text"])
             and not (item["box"][0] > 400 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
+            and not (item["box"][0] > 500 and re.fullmatch(r"推荐[♡♥]?", item["text"].strip()))
         ]
         if not pieces:
             continue
@@ -159,12 +183,12 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
         if left > 220:
             continue
         text = compact("".join(item["text"] for item in pieces))
-        match = re.fullmatch(rf"(.+?)({REGION})({DATE})", text)
+        match = re.fullmatch(rf"(.+?)({REGION}|我)({DATE})", text)
         raw_nick, region, date = None, None, None
         if match:
             raw_nick, region, date = match[1], match[2], match[3]
         elif has_like_action and 90 <= left <= 215:
-            bare = re.fullmatch(rf"({REGION})({DATE})", text)
+            bare = re.fullmatch(rf"({REGION}|我)({DATE})", text)
             prev_row = rows[index - 1] if index > 0 else None
             is_work_meta = bool(
                 prev_row
@@ -179,6 +203,20 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
         if not nickname:
             continue
         level = 1 if left <= 140 else 2
+        like_count_text = (
+            re.sub(r"[凸👍♡赞]+$", "", like_item["text"].strip())
+            if like_item is not None
+            else ""
+        )
+        row_h = max(24, row["bottom"] - row["top"])
+        if has_recommend_badge:
+            like_box = [590, row["top"], 36, row_h]
+        elif like_item is not None:
+            lx, ly, lw, lbh = like_item["box"]
+            like_box = [lx + max(0, lw - 36), ly, min(max(lw, 32), 40), max(24, lbh)]
+        else:
+            like_box = [656, row["top"], 36, row_h]
+        is_self = (region == "我") or bool(self_nickname and nickname == self_nickname)
         headers.append(
             {
                 "index": index,
@@ -189,6 +227,10 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
                 "level": level,
                 "hasChannelsBadge": has_badge,
                 "nameBox": _header_name_box(row, nickname),
+                "likeBox": like_box,
+                "liked": has_recommend_badge,
+                "likeCountText": like_count_text,
+                "isSelf": is_self,
                 "hasAuthorTag": "作者" in row["text"],
             }
         )
@@ -212,6 +254,7 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
         reply_expand_box = None
         has_expand_control = False
         bounded = position + 1 < len(headers)
+        body_box = None
 
         for r in rows[index + 1 : end]:
             text = r["text"].strip()
@@ -220,7 +263,7 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
                 bounded = True
                 break
             reply_match = re.fullmatch(r"(?:展开)?(\d+)条回复(?:[⌄∨vV>＞])?", comp)
-            more_replies = re.fullmatch(r"展开更多回复(?:[⌄∨vV>＞])?", comp)
+            more_replies = re.fullmatch(r"(?:展开)?更多回复(?:[⌄∨vV>＞])?", comp)
             if reply_match or more_replies:
                 if reply_match:
                     reply_count = int(reply_match[1])
@@ -247,6 +290,13 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
                 if re.search(r"(?:[.…⋯·]+\s*(?:展开|全文)|^(?:展开|全文))$", item["text"].strip()):
                     comment_expands.append(_expand_click_target(item))
                     has_expand_control = True
+            if body_box is None:
+                body_box = [
+                    r["left"],
+                    r["top"],
+                    min(280, max(60, max(item["box"][0] + item["box"][2] for item in r["items"]) - r["left"])),
+                    max(24, r["bottom"] - r["top"]),
+                ]
             body.append(text)
 
         content = "\n".join(body).strip()
@@ -292,6 +342,11 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             "replyToDouyinId": None,
             "_hasChannelsBadge": header["hasChannelsBadge"],
             "_nameBox": header["nameBox"],
+            "_bodyBox": body_box,
+            "_likeBox": header["likeBox"],
+            "_liked": header["liked"],
+            "_likeCountText": header["likeCountText"],
+            "_isSelf": header["isSelf"],
             "_headerTop": row["top"],
         }
         entry["key"] = comment_key(
@@ -340,6 +395,8 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
         "declaredTotal": declared_total,
         "empty": empty,
         "footerReached": footer_reached,
+        "selfNickname": self_nickname,
+        "inputBar": input_bar,
         "comments": comments,
         "commentExpands": comment_expands,
         "replyExpands": reply_expands,

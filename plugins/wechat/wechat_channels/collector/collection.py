@@ -33,7 +33,7 @@ def author_in_feed(lines, height):
     candidates = sorted(
         (line for line in lines
          if line["box"][1] > height - 150 and 65 < line["box"][0] < 250
-         and not re.search(r"关注|私信|客服|热评|设置为铃声|\d+条回复", line["text"])
+         and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
          and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
          and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
          and not re.fullmatch(r"[\d.万wW]+", line["text"])),
