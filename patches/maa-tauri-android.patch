@@ -1,3 +1,23 @@
+diff --git a/src-tauri/gen/android/app/proguard-rules.pro b/src-tauri/gen/android/app/proguard-rules.pro
+index c1065dd..ae2df1c 100644
+--- a/src-tauri/gen/android/app/proguard-rules.pro
++++ b/src-tauri/gen/android/app/proguard-rules.pro
+@@ -29,6 +29,15 @@
+ -keep class top.natsuu.mta.SecretBridge { public *; }
+ -keep class top.natsuu.mta.control.ControlHost { public *; }
+ 
++# The app calls the privileged service through the AIDL Stub.Proxy. Release
++# minification otherwise strips proxy methods (startVirtualDisplay,
++# prepareAgentRuntime, captureFrame, dispatchInput, ...), which surfaces as
++# AbstractMethodError or a rejected virtual display at run time.
++-keep class top.natsuu.mta.IMaaTauriAndroidControlService { *; }
++-keep class top.natsuu.mta.IMaaTauriAndroidControlService$** { *; }
++-keep class top.natsuu.mta.AgentLaunch { *; }
++-keep class top.natsuu.mta.InputResult { *; }
++
+ # If you keep the line number information, uncomment this to
+ # hide the original source file name.
+ #-renamesourcefileattribute SourceFile
 diff --git a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt
 index a7dbafc..f4936c1 100644
 --- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/AppPreparationManager.kt
