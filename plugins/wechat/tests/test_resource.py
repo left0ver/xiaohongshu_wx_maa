@@ -51,8 +51,10 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertIn("{abi}", runtime["env"]["MAAFW_BINARY_PATH"])
         self.assertTrue((PROJECT / "requirements.txt").is_file())
         self.assertTrue((PROJECT / "collector/ui-dump.dex").read_bytes().startswith(b"dex\n"))
-        template = NODES["BatchProfileMore"]["template"]
-        self.assertTrue((BASE / "image" / template).is_file())
+        templates = NODES["BatchProfileMore"]["template"]
+        self.assertTrue(templates)
+        for template in [templates] if isinstance(templates, str) else templates:
+            self.assertTrue((BASE / "image" / template).is_file(), template)
 
     def test_each_composed_task_is_acyclic_and_likes_at_most_once(self):
         for task in INTERFACE["task"]:
@@ -139,8 +141,11 @@ class ResourceFlowTests(unittest.TestCase):
                 self.assertNotIn("target_offset", node)
                 self.assertEqual(node["max_hit"], 1)
             if node.get("recognition") == "TemplateMatch":
-                path = BASE / "image" / node["template"]
-                self.assertTrue(path.exists(), path)
+                templates = node["template"]
+                self.assertTrue(templates)
+                for template in [templates] if isinstance(templates, str) else templates:
+                    path = BASE / "image" / template
+                    self.assertTrue(path.exists(), path)
             for key in ("all_of", "any_of"):
                 for child in node.get(key, []):
                     if isinstance(child, str):
