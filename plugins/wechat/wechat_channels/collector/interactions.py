@@ -14,12 +14,21 @@ Implements:
 """
 
 from datetime import datetime
+from difflib import SequenceMatcher
 import json
 from pathlib import Path
 import re
 import time
 
-from collection import author_in_feed, comment_control_in_feed, find, identity, open_basic_info, parse_author
+from collection import (
+    author_in_feed,
+    comment_control_in_feed,
+    feed_video_preview,
+    find,
+    identity,
+    open_basic_info,
+    parse_author,
+)
 from comments import (
     LIKE_BADGE_RE,
     clean_comment_nickname,
@@ -48,6 +57,11 @@ ACTION_RECORDS = (
     "dm",
     "message_handled",
 )
+
+# Captions and comments are OCR text: the same one can read slightly differently each time.
+OCR_MATCH_RATIO = 0.8
+MIN_TRUNCATED_CAPTION = 8
+MAX_KNOWN_WORKS = 500
 
 
 class QuotaExceededError(RuntimeError):
@@ -85,7 +99,7 @@ class DailyQuotaStore:
     def _today(self):
         return str(self._today_fn())
 
-    def _fresh_state(self, date_str, preserved_self_comments=()):
+    def _fresh_state(self, date_str, preserved_self_comments=(), preserved_works=()):
         actions = {kind: [] for kind in ACTION_RECORDS}
         if preserved_self_comments:
             actions["self_comment"] = list(dict.fromkeys(str(x) for x in preserved_self_comments if x))
@@ -94,6 +108,8 @@ class DailyQuotaStore:
             "limits": dict(self.limits),
             "used": {key: 0 for key in DEFAULT_DAILY_LIMITS},
             "actions": actions,
+            "works": _valid_works(preserved_works),
+            "replies": [],
             "updatedAt": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -103,6 +119,7 @@ class DailyQuotaStore:
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 prev_self = raw.get("actions", {}).get("self_comment", []) if isinstance(raw, dict) else []
+                prev_works = raw.get("works", []) if isinstance(raw, dict) else []
                 if isinstance(raw, dict):
                     self.limits = {**DEFAULT_DAILY_LIMITS, **(raw.get("limits") or {}), **self._explicit_limits}
                 if isinstance(raw, dict) and raw.get("date") == today:
@@ -119,11 +136,13 @@ class DailyQuotaStore:
                         "limits": dict(self.limits),
                         "used": used,
                         "actions": actions,
+                        "works": _valid_works(prev_works),
+                        "replies": [r for r in raw.get("replies", []) if isinstance(r, dict)],
                         "updatedAt": raw.get("updatedAt") or datetime.now().isoformat(timespec="seconds"),
                     }
                     self._save(state)
                     return state
-                state = self._fresh_state(today, preserved_self_comments=prev_self)
+                state = self._fresh_state(today, preserved_self_comments=prev_self, preserved_works=prev_works)
                 self._save(state)
                 return state
             except (OSError, ValueError, TypeError):
@@ -144,7 +163,9 @@ class DailyQuotaStore:
         today = self._today()
         if self.state.get("date") != today:
             prev_self = self.state.get("actions", {}).get("self_comment", [])
-            self.state = self._fresh_state(today, preserved_self_comments=prev_self)
+            self.state = self._fresh_state(
+                today, preserved_self_comments=prev_self, preserved_works=self.state.get("works", [])
+            )
             self._save()
 
     def remaining(self, quota_type):
@@ -193,6 +214,44 @@ class DailyQuotaStore:
                 extra_str = str(extra_key)
                 if extra_str not in bucket:
                     bucket.append(extra_str)
+        self._save()
+
+    def resolve_work_key(self, author, caption=""):
+        """Reuse the key of a known work whose caption is an OCR variant of this one."""
+        self.refresh_day()
+        author = (author or "").strip()
+        caption = (caption or "").strip()
+        if not author:
+            raise ValueError("author is required to identify a work")
+        works = self.state.setdefault("works", [])
+        for work in works:
+            if (nickname_matches(work["author"], author)
+                    and ocr_text_matches(work["caption"], caption, allow_truncation=True)):
+                return work["key"]
+        key = compute_work_key(author=author, title=caption)
+        works.append({"author": author, "caption": caption, "key": key})
+        del works[:-MAX_KNOWN_WORKS]
+        self._save()
+        return key
+
+    def has_replied(self, work_key, nickname, content, text):
+        """Match a reply target by OCR similarity: its key changes with OCR noise and thread parsing."""
+        self.refresh_day()
+        return any(
+            r.get("workKey") == work_key
+            and compact(r.get("text", "")) == compact(text)
+            and nickname_matches(r.get("nickname", ""), nickname)
+            and ocr_text_matches(r.get("content", ""), content)
+            for r in self.state.get("replies", ())
+        )
+
+    def remember_reply(self, work_key, nickname, content, text):
+        self.refresh_day()
+        if self.has_replied(work_key, nickname, content, text):
+            return
+        self.state.setdefault("replies", []).append(
+            {"workKey": work_key, "nickname": nickname, "content": content, "text": text}
+        )
         self._save()
 
     def summary(self):
@@ -269,6 +328,31 @@ def is_red_active(frame, box, min_ratio=0.012, min_pixels=10):
         return (red_count >= min_pixels and ratio >= min_ratio), round(ratio, 4)
 
     return False, 0.0
+
+
+def _valid_works(works):
+    return [
+        {"author": str(w["author"]), "caption": str(w.get("caption") or ""), "key": str(w["key"])}
+        for w in works or ()
+        if isinstance(w, dict) and w.get("author") and w.get("key")
+    ][-MAX_KNOWN_WORKS:]
+
+
+def ocr_text_matches(a, b, allow_truncation=False):
+    """True when two OCR readings of the same text are at least OCR_MATCH_RATIO similar.
+
+    With allow_truncation, a shorter reading (the feed cuts long captions) is
+    compared with the same-length start of the longer one.
+    """
+    a = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(a or ""))
+    b = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(b or ""))
+    if not a or not b:
+        return a == b
+    if allow_truncation:
+        short, long_ = sorted((a, b), key=len)
+        if len(short) >= MIN_TRUNCATED_CAPTION:
+            b, a = long_[:len(short)], short
+    return SequenceMatcher(None, a, b).ratio() >= OCR_MATCH_RATIO
 
 
 def compute_work_key(video_event=None, author="", title=""):
@@ -907,6 +991,19 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
     }
 
 
+def _visible_own_reply(drawer, comment, text):
+    """Our earlier reply to this comment is on screen in the same thread."""
+    thread = comment.get("parentCommentKey") or comment.get("key")
+    want = compact(text)
+    return bool(want) and any(
+        c.get("_isSelf")
+        and c.get("parentCommentKey")
+        and c["parentCommentKey"] == thread
+        and want in compact(c.get("content", ""))
+        for c in drawer.get("comments", ())
+    )
+
+
 def reply_to_comment(
     ui,
     quota_store,
@@ -960,7 +1057,15 @@ def reply_to_comment(
     c_key = comment.get("key") or comment_identity_key(work_key, comment["nickname"], comment["content"])
     reply_key = f"{c_key}:reply:{identity(text)}"
 
-    if quota_store.has_acted("comment_reply", reply_key):
+    already = None
+    if (quota_store.has_acted("comment_reply", reply_key)
+            or quota_store.has_replied(work_key, comment["nickname"], comment["content"], text)):
+        already = "ledger"
+    elif _visible_own_reply(located.get("drawer") or {}, comment, text):
+        already = "visible_in_drawer"
+    if already:
+        quota_store.mark_action("comment_reply", reply_key)
+        quota_store.remember_reply(work_key, comment["nickname"], comment["content"], text)
         return {
             "action": "comment_reply",
             "status": "already_replied",
@@ -970,6 +1075,7 @@ def reply_to_comment(
             "workKey": work_key,
             "commentKey": c_key,
             "nickname": comment["nickname"],
+            "reason": already,
         }
 
     quota_store.require_quota("comment")
@@ -1044,6 +1150,7 @@ def reply_to_comment(
     if posted_reply and posted_reply.get("key"):
         extra.append(("self_comment", posted_reply["key"]))
     quota_store.record("comment", "comment_reply", reply_key, extra_records=extra)
+    quota_store.remember_reply(work_key, comment["nickname"], comment["content"], text)
 
     return {
         "action": "comment_reply",
@@ -1057,6 +1164,25 @@ def reply_to_comment(
         "replyText": text,
         "postedReplyKey": posted_reply["key"] if posted_reply else None,
     }
+
+
+def _work_body_text(region):
+    return "".join(item["text"].strip() for row in region["body"] for item in row["items"]
+                   if not re.search(r"已声明原创|发表评论", item["text"])
+                   and not re.fullmatch(r"收起", item["text"].strip()))
+
+
+def _caption_from_drawer(ui, lines):
+    """The feed may show a hot comment instead of the caption; the drawer header always has it."""
+    drawer_lines, opened = _open_comment_drawer_if_needed(ui, lines)
+    try:
+        caption = _work_body_text(work_region(drawer_lines))
+    except ValueError:
+        caption = ""
+    if opened:
+        check_stopped(ui)
+        ui.back()
+    return caption
 
 
 def _work_matches_spec(ui, lines, target_work):
@@ -1112,9 +1238,7 @@ def _work_matches_spec(ui, lines, target_work):
         region = work_region(check_lines)
 
     observed_author = region["authorHeader"].rsplit("作者", 1)[0].strip()
-    body_text = "".join(item["text"].strip() for row in region["body"] for item in row["items"]
-                        if not re.search(r"已声明原创|发表评论", item["text"])
-                        and not re.fullmatch(r"收起", item["text"].strip()))
+    body_text = _work_body_text(region)
     computed = compute_work_key(author=observed_author, title=body_text)
     if (not observed_author
             or (want_author and not nickname_matches(want_author, observed_author))
@@ -1855,24 +1979,45 @@ def inspect_and_handle_messages(
     }
 
 
+# These actions are deduplicated per work, so they need to know which work is on screen.
+WORK_SCOPED_ACTIONS = ("likeWork", "collectWork", "commentText", "likeComment", "replyText", "touchCommenterProfile")
+
+
 def interact_work_and_comments(ui, quota_store, config, video_event=None):
     """High-level entry point executing configured Batch 3 actions with clean resume."""
     check_stopped(ui)
     resume_info = ensure_clean_page_on_resume(ui)
     lines = resume_info["lines"]
 
-    author = config.get("author") or ""
-    title = config.get("title") or ""
-    if not author and classify_page_state(lines, ui.height) == "channels_feed":
-        try:
-            author = author_in_feed(lines, ui.height)["text"].strip()
-        except ValueError:
-            author = ""
-    work_key = config.get("workKey") or compute_work_key(video_event=video_event, author=author, title=title)
+    author = (config.get("author") or "").strip()
+    caption = (config.get("title") or "").strip()
+    work = None
+    work_key = config.get("workKey") or ""
+    if not work_key and video_event is not None:
+        work_key = compute_work_key(video_event=video_event, author=author, title=caption)
+    if not work_key:
+        if classify_page_state(lines, ui.height) == "channels_feed":
+            try:
+                preview = feed_video_preview(lines, ui.height)
+            except ValueError:
+                preview = {}
+            author = author or preview.get("author", "")
+            caption = caption or preview.get("captionPreview", "")
+            if author and not caption and any(config.get(k) for k in WORK_SCOPED_ACTIONS):
+                caption = _caption_from_drawer(ui, lines)
+        if author:
+            work_key = quota_store.resolve_work_key(author, caption)
+            work = {"author": author, "caption": caption}
+        elif any(config.get(k) for k in WORK_SCOPED_ACTIONS):
+            raise RuntimeError(
+                "Cannot identify the current work: start from the Channels feed or pass workKey/author"
+            )
     results = {
         "workKey": work_key,
         "resume": {k: v for k, v in resume_info.items() if k != "lines"},
     }
+    if work:
+        results["work"] = work
 
     if config.get("likeWork"):
         results["workLike"] = like_work(ui, quota_store, work_key)

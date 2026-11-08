@@ -82,6 +82,36 @@ def author_in_feed(lines, height):
     return candidates[0]
 
 
+def feed_video_preview(lines, height=1605) -> dict:
+    """Extract the visible feed author and caption preview before opening drawers/profiles."""
+    author_line = author_in_feed(lines, height)
+    author = author_line["text"].strip()
+    ay = author_line["box"][1]
+
+    caption_lines = sorted(
+        (
+            l
+            for l in lines
+            if height - 310 <= l["box"][1] < ay - 8
+            and l["box"][0] < 80
+            and not re.search(
+                r"热评|可能含有AI|作者提示|设置为铃声|\d+条回复|倍速|^\d{2}:\d{2}",
+                l.get("text", ""),
+            )
+        ),
+        key=lambda l: (l["box"][1], l["box"][0]),
+    )
+    caption = "".join(l["text"].strip() for l in caption_lines).strip()
+    author_key = "wxch-author:" + identity(author)
+    preview_key = "wxch-preview:" + identity(author, caption or author)
+    return {
+        "author": author,
+        "captionPreview": caption,
+        "authorKey": author_key,
+        "previewKey": preview_key,
+    }
+
+
 def comment_control_in_feed(lines, height, ui=None):
     comment = find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?|评论)$",
                    lambda line: line["box"][0] > 590 and line["box"][1] > height - 130)
