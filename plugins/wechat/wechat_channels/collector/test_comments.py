@@ -8,6 +8,7 @@ from pathlib import Path
 
 from collection import LocalStore, Timings
 from comments import (
+    _collect_comment,
     clean_comment_nickname,
     collect_visible_comments,
     parse_comment_drawer,
@@ -55,7 +56,7 @@ class FakeCommentUi:
     def prepare_basic_info(self):
         yield None
 
-    def wait_basic_info(self, timeout=5, reader=None):
+    def wait_basic_info(self, timeout=8, reader=None):
         return self.snapshot("author-basic-info-ready")
 
 
@@ -167,6 +168,70 @@ class CommentTests(unittest.TestCase):
         resolve_reply_targets(comments, [{"commentKey": comments[1]["key"], "profileVisited": True, "douyinId": "sphAfanti888"}])
         self.assertEqual(comments[2]["replyToCommentKey"], comments[1]["key"])
         self.assertEqual(comments[2]["replyToDouyinId"], "sphAfanti888")
+
+    def test_overlapping_pages_do_not_collect_one_comment_twice(self):
+        # Huawei Hebe-BD00 run 49c170b4: pages 3 and 4 read the same comment with ".." and "...".
+        page_3 = [
+            line("评论196", 477, 24, 114, 34),
+            line("佳一讲商业 我 浙江40分钟前", 1211, 99, 338, 28),
+            line("一下子回到了学生时代", 1252, 101, 267, 27),
+            line("2636", 1344, 588, 101, 29),
+            line("你的眼淚是零.福建9天前", 1347, 101, 310, 23),
+            line("十七岁就是很美好啊..比十六岁成熟 比十八岁稚嫩", 1386, 101, 590, 28),
+            line("1001", 1435, 589, 100, 26),
+            line("佳一讲商业发表评论：", 1494, 114, 254, 27),
+        ]
+        page_4 = [
+            line("评论196", 477, 24, 114, 34),
+            line("佳一讲商业我浙江40分钟前", 711, 99, 339, 27),
+            line("一下子回到了学生时代", 750, 99, 272, 32),
+            line("2636", 841, 586, 105, 35),
+            line("你的眼淚是零..福建9天前", 846, 99, 314, 27),
+            line("十七岁就是很美好啊...比十六岁成熟 比十八岁稚嫩", 886, 102, 589, 28),
+            line("1084", 935, 586, 106, 39),
+            line("讨厌啊讨厌讨...江西8天前", 943, 157, 346, 28),
+            line("十八我只能说高考加油", 982, 157, 268, 31),
+            line("16条回复", 1042, 99, 137, 29),
+            line("226", 1128, 599, 95, 41),
+            line("sayOh江苏8天前", 1133, 94, 222, 33),
+            line("这张完全初恋感", 1174, 98, 192, 32),
+            line("佳一讲商业发表评论：", 1494, 114, 254, 27),
+        ]
+        collected, aliases = {}, {}
+        first = parse_comment_drawer(page_3, 1559, parent_event_id="vid")["comments"]
+        second = parse_comment_drawer(page_4, 1559, parent_event_id="vid")["comments"]
+        for item in first + second:
+            _collect_comment(collected, aliases, item)
+
+        names = [c["nickname"] for c in collected.values()]
+        self.assertEqual(sum("眼淚" in n for n in names), 1, names)
+        self.assertEqual(sum("佳一讲商业" in n for n in names), 1, names)
+        reply = next(c for c in collected.values() if c["nickname"].startswith("讨厌啊"))
+        kept = next(c for c in collected.values() if "眼淚" in c["nickname"])
+        # The reply under the merged comment points at the comment that was kept.
+        self.assertEqual(reply["parentCommentKey"], kept["key"])
+        self.assertIn("sayOh", names)
+
+    def test_recommend_badge_with_merged_count_keeps_the_liked_comment(self):
+        # vivo V2131A run f5625b81: after liking, OCR read the count and badge as one box "5推荐".
+        lines = [
+            line("评论2", 436, 95, 90, 37),
+            line("Q都在搜：王楚然说山东话表白", 444, 347, 340, 22),
+            line("综艺大表姐作者 江西1天前", 575, 100, 388, 28),
+            line("王楚然用方言表白，给黄sir整娇羞了#现在就出", 616, 102, 567, 24),
+            line("发#现在就出发第4季", 652, 102, 256, 23),
+            line("AI吕哥说我1分钟前", 921, 98, 270, 28),
+            line("这段太有意思了，看完心情都变好了", 961, 96, 438, 30),
+            line("5推荐", 1053, 526, 166, 32),
+            line("嫣然含笑河南1天前", 1058, 100, 268, 23),
+            line("王楚然好可爱啊，表情好丰富，演技真好", 1098, 100, 588, 28),
+            line("首评", 1175, 96, 58, 32),
+        ]
+        drawer = parse_comment_drawer(lines, 1605, parent_event_id="vid-1")
+        liked = next(c for c in drawer["comments"] if c["nickname"] == "嫣然含笑")
+        self.assertTrue(liked["_liked"])
+        self.assertEqual(liked["_likeCountText"], "5")
+        self.assertEqual(liked["content"], "王楚然好可爱啊，表情好丰富，演技真好")
 
     def test_reply_target_name_requires_single_colon_on_reply(self):
         self.assertEqual(reply_target_name("回复 阿凡提:对，很有道理", is_reply=True), "阿凡提")

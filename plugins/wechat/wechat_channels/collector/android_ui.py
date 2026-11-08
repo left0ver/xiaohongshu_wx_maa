@@ -22,6 +22,8 @@ from readiness import wait_basic_info
 from layout import line_height
 from probe_reader import prepared_reader
 
+COMMENT_SWIPE_MS = 900
+
 
 def command(*args, timeout=15):
     return run(list(args), timeout=timeout, binary=True)
@@ -367,32 +369,43 @@ class MaaUi:
         time.sleep(0.95)
 
     def restore_work_header(self, lines):
-        heading = find(lines, r"^评论\s*\d*")
-        if not heading:
-            raise ValueError("Cannot scroll an unclassified details drawer")
-        height = line_height(lines)
-        start = int(heading["box"][1] + height * 5)
-        end = int(self.height - height * 4)
-        if end <= start:
-            raise ValueError("Details drawer has no safe scroll region")
+        # A long fast pull dragged the whole sheet closed once the list hit its top
+        # (Hebe-BD00 run 4675d961); pull back in short, slow steps instead.
+        start, end = self._comment_swipe(lines)
         foreground()
-        if not self.controller.post_swipe(360, start, 360, end, 300).wait().succeeded:
+        if not self.controller.post_swipe(360, end, 360, start, COMMENT_SWIPE_MS).wait().succeeded:
             raise RuntimeError("Details header recovery failed")
         self.navigation_stage = None
         time.sleep(0.6)
 
-    def scroll_comments(self, lines):
+    def _comment_swipe(self, lines):
         heading = find(lines, r"^评论\s*\d*")
         if not heading:
             raise ValueError("Cannot scroll an unclassified comment drawer")
         height = line_height(lines)
-        end = max(int(heading["box"][1] + heading["box"][3] + height * 3), int(self.height * 0.42))
+        top = int(heading["box"][1] + heading["box"][3] + height * 3)
         start = min(int(self.height - 140), int(self.height * 0.84))
-        if start <= end + int(height * 2):
+        if start <= top + int(height * 2):
             raise ValueError("Comment drawer has no safe scroll region")
+        # WeChat adds ~250px of momentum even to slow swipes (Hebe-BD00: a 560px,
+        # 900ms swipe moved 804px), so swipe half the band to keep overlap.
+        return start, start - max(int((start - top) * 0.5), int(height * 4))
+
+    def scroll_comments(self, lines):
+        start, end = self._comment_swipe(lines)
         foreground()
-        if not self.controller.post_swipe(360, start, 360, end, 350).wait().succeeded:
+        if not self.controller.post_swipe(360, start, 360, end, COMMENT_SWIPE_MS).wait().succeeded:
             raise RuntimeError("Comment drawer scroll failed")
+        self.navigation_stage = None
+        time.sleep(0.7)
+
+    def scroll_comments_back(self, lines):
+        """Undo part of an overshooting scroll so the next page overlaps the last one."""
+        start, end = self._comment_swipe(lines)
+        foreground()
+        if not self.controller.post_swipe(360, end, 360, end + (start - end) // 2,
+                                          COMMENT_SWIPE_MS).wait().succeeded:
+            raise RuntimeError("Comment drawer scroll back failed")
         self.navigation_stage = None
         time.sleep(0.7)
 

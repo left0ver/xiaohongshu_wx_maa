@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from layout import REGION, WorkHeaderMissing, label_values, line_height, profile_name, video_values, work_region
+from readiness import BASIC_INFO_TIMEOUT
 
 
 def normalize(text):
@@ -28,17 +29,47 @@ def find(lines, pattern, predicate=lambda line: True):
                  if re.search(pattern, line["text"]) and predicate(line)), None)
 
 
+def _join_same_row_fragments(start, fragments):
+    """OCR may split one nickname (e.g. a trailing emoji) into adjacent boxes on one row."""
+    merged = dict(start)
+    while True:
+        x, y, w, h = merged["box"]
+        center = y + h / 2
+        right = min((item for item in fragments
+                     if -6 <= item["box"][0] - (x + w) <= 24
+                     and abs(item["box"][1] + item["box"][3] / 2 - center) <= max(h, item["box"][3]) / 2),
+                    key=lambda item: item["box"][0], default=None)
+        if right is None:
+            return merged
+        rx, ry, rw, rh = right["box"]
+        top, bottom_edge = min(y, ry), max(y + h, ry + rh)
+        merged = {**merged, "text": merged["text"].strip() + right["text"].strip(),
+                  "box": [x, top, rx + rw - x, bottom_edge - top]}
+        fragments = [item for item in fragments if item is not right]
+
+
 def author_in_feed(lines, height):
     hot_rows = [line["box"][1] for line in lines if re.search(r"热评|\d+条回复", line["text"])]
-    candidates = sorted(
-        (line for line in lines
-         if line["box"][1] > height - 150 and 65 < line["box"][0] < 250
-         and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
-         and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
-         and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
-         and not re.fullmatch(r"[\d.万wW]+", line["text"])),
-        key=lambda item: (item["box"][1], item["box"][0]),
-    )
+    fragments = [
+        line for line in lines
+        if line["box"][1] > height - 150 and line["box"][0] > 65
+        and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
+        and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
+        and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
+        and not re.fullmatch(r"[\d.万wW]+", line["text"])
+    ]
+    starts = sorted((line for line in fragments if line["box"][0] < 250),
+                    key=lambda item: (item["box"][1], item["box"][0]))
+    candidates, absorbed = [], []
+    for start in starts:
+        if any(start is item for item in absorbed):
+            continue
+        rest = [item for item in fragments if item is not start and not any(item is a for a in absorbed)]
+        merged = _join_same_row_fragments(start, rest)
+        absorbed += [item for item in rest if item["box"][0] >= start["box"][0]
+                     and item["box"][0] + item["box"][2] <= merged["box"][0] + merged["box"][2]
+                     and abs(item["box"][1] - start["box"][1]) <= max(start["box"][3], item["box"][3])]
+        candidates.append(merged)
     if len(candidates) == 2:
         first, second = candidates
         gap = second["box"][1] - (first["box"][1] + first["box"][3])
@@ -50,6 +81,36 @@ def author_in_feed(lines, height):
     if len(candidates) != 1:
         raise ValueError("The feed author is missing or ambiguous")
     return candidates[0]
+
+
+def feed_video_preview(lines, height=1605) -> dict:
+    """Extract the visible feed author and caption preview before opening drawers/profiles."""
+    author_line = author_in_feed(lines, height)
+    author = author_line["text"].strip()
+    ay = author_line["box"][1]
+
+    caption_lines = sorted(
+        (
+            l
+            for l in lines
+            if height - 310 <= l["box"][1] < ay - 8
+            and l["box"][0] < 80
+            and not re.search(
+                r"热评|可能含有AI|作者提示|设置为铃声|\d+条回复|倍速|^\d{2}:\d{2}",
+                l.get("text", ""),
+            )
+        ),
+        key=lambda l: (l["box"][1], l["box"][0]),
+    )
+    caption = "".join(l["text"].strip() for l in caption_lines).strip()
+    author_key = "wxch-author:" + identity(author)
+    preview_key = "wxch-preview:" + identity(author, caption or author)
+    return {
+        "author": author,
+        "captionPreview": caption,
+        "authorKey": author_key,
+        "previewKey": preview_key,
+    }
 
 
 def comment_control_in_feed(lines, height, ui=None):
@@ -140,7 +201,7 @@ def parse_basic_info(lines):
 def open_basic_info(ui, more):
     # Library/model preparation happens before clicking and is logged separately.
     with ui.prepare_basic_info() as reader:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + BASIC_INFO_TIMEOUT
         ui.click(more)
         ready = ui.wait_basic_info(timeout=max(0, deadline - time.monotonic()), reader=reader)
     try:

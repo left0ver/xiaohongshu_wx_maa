@@ -8,6 +8,25 @@ from test_collection import AUTHOR, DETAILS, INFO, PROFILE, line
 
 
 class LayoutTests(unittest.TestCase):
+    def test_profile_name_in_feed_sheet_and_full_page_profiles(self):
+        # Hebe-BD00: the same author opened from the feed (sheet) and from a comment (full page).
+        from layout import profile_name
+        sheet = [line("周“三叫日", 220, 24, 119, 29), line("*100%1:15", 501, 25, 193, 26),
+                 line("怎么舍得不说出来", 281, 339, 154, 23), line("歪不歪Uu.", 189, 501, 171, 44),
+                 line("福建 厦门女", 191, 550, 144, 29), line("谢谢大家的喜欢^ω^", 32, 641, 221, 32),
+                 line("120条原创内容", 33, 680, 172, 28), line("私信", 494, 756, 58, 36),
+                 line("关注", 162, 758, 56, 31), line("凸3.9万", 388, 1133, 81, 32), line("1372", 154, 1457, 75, 25)]
+        page = [line("100%2:37", 499, 22, 193, 28), line("<", 27, 99, 13, 17),
+                line("歪不歪Uu.", 192, 204, 166, 34), line("福建 厦门女", 191, 248, 143, 28),
+                line("谢谢大家的喜欢^ω^", 35, 339, 217, 28), line("120条原创内容", 33, 375, 174, 32),
+                line("私信", 494, 453, 60, 37), line("√已关注", 139, 456, 108, 29),
+                line("置顶", 260, 579, 38, 20), line("归来兮", 565, 706, 65, 29),
+                line("凸3.9万", 388, 833, 81, 32), line("1372", 154, 1157, 75, 25), line("Letting", 70, 1347, 71, 30)]
+        for name, lines in (("sheet", sheet), ("page", page)):
+            with self.subTest(layout=name):
+                self.assertEqual(profile_name(lines, "歪不歪Uu.")["text"], "歪不歪Uu.")
+                self.assertEqual(parse_author(lines, "歪不歪Uu.")["authorNickname"], "歪不歪Uu.")
+
     def test_original_audio_is_a_work_boundary(self):
         for label in ("原声", "」原声", "♪ 原声", "原声 · 示例歌曲", "相关音乐·示例歌曲"):
             with self.subTest(label=label):

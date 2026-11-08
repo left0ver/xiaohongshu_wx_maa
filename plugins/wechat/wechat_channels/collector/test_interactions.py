@@ -7,7 +7,7 @@ from pathlib import Path
 
 from interactions import (
     _work_matches_spec,
-     DailyQuotaStore,
+    DailyQuotaStore,
     QuotaExceededError,
     classify_page_state,
     collect_work_action,
@@ -19,6 +19,8 @@ from interactions import (
     is_red_active,
     like_comment,
     like_work,
+    locate_target_comment,
+    ocr_text_matches,
     open_personal_messages,
     parse_comment_messages,
     post_work_comment,
@@ -26,6 +28,8 @@ from interactions import (
     reply_to_comment,
     visit_and_touch_commenter_profile,
 )
+from collection import identity
+from comments import parse_comment_drawer
 
 
 def make_frame(width=720, height=1605, red_boxes=()):
@@ -140,6 +144,113 @@ def message_center_comment_lines():
     ]
 
 
+def ln(text, y, x, w, h):
+    return {"text": text, "box": [x, y, w, h]}
+
+
+# Huawei Hebe-BD00 runs on 2026-11-08: the same comment before and after posting our own comment.
+HUAWEI_DRAWER_BEFORE_POST = [
+    ln("评论3.8万", 477, 25, 129, 34),
+    ln("Q都在搜:齐天大圣孙悟空后续德云社", 482, 276, 410, 23),
+    ln("王子不会拍作者广东7天前", 566, 98, 390, 29),
+    ln("“大圣不会输你也不会”#短剧满贯#接住你的专", 604, 106, 583, 29),
+    ln("属时刻#轻松真有料#悟空#齐天大圣", 643, 101, 432, 27),
+    ln("♪相关音乐·新·与天齐", 690, 102, 288, 31),
+    ln("Q帮他上热门", 764, 120, 167, 33),
+    ln("等1413人帮过", 766, 527, 162, 28),
+    ln("9.1万凸", 867, 585, 106, 35),
+    ln("窗下有清风o广东7天前", 870, 101, 308, 28),
+    ln("换一份机缘❤天道出手了！", 909, 98, 315, 32),
+    ln("顺便告诉大家，小伙子已经顺利通过，成为腾字科", 948, 101, 586, 27),
+    ln("a一员了🎉", 975, 96, 141, 43),
+    ln("2.5万", 1034, 583, 108, 39),
+    ln("丹若森林湖北7天前", 1040, 159, 268, 28),
+    ln("好消息，太好了，", 1083, 157, 219, 27),
+    ln("祝福！祝所有的好人一生", 1083, 368, 305, 27),
+    ln("平安🔥🔥🔥", 1117, 152, 159, 39),
+    ln("1831条回复", 1177, 99, 166, 32),
+    ln("佳一讲商业发表评论：", 1494, 115, 253, 27),
+]
+HUAWEI_DRAWER_AFTER_POST = [
+    ln("评论3.8万", 480, 27, 125, 29),
+    ln("Q都在搜：齐天大圣孙悟空后续德云社", 483, 274, 412, 22),
+    ln("王子不会拍作者广东7天前", 566, 98, 390, 29),
+    ln("“大圣不会输你也不会”#短剧大满贯#接住你的专", 604, 106, 583, 29),
+    ln("属时刻#轻松真有料#悟空#齐天大圣", 643, 101, 432, 27),
+    ln("♪相关音乐·新·与天齐", 690, 102, 288, 31),
+    ln("Q帮他上热门", 764, 120, 167, 33),
+    ln("等1413人帮过", 766, 528, 161, 28),
+    ln("佳一讲商业我1分钟前", 868, 98, 263, 31),
+    ln("这份坚持太让人佩服了", 912, 99, 267, 28),
+    ln("9.1万凸", 1001, 585, 107, 35),
+    ln("窗下有清风o广东7天前", 1005, 101, 308, 27),
+    ln("换一份机缘❤天道出手了！", 1042, 98, 315, 34),
+    ln("顺便告诉大家，小伙子已经顺利通过，成为腾字科", 1084, 101, 585, 23),
+    ln("a一员了", 1112, 98, 136, 39),
+    ln("2.5万", 1170, 586, 103, 34),
+    ln("丹若森林湖北7天前", 1177, 159, 266, 23),
+    ln("好消息，太好了，税福！祝所有的好人一", 1214, 157, 516, 31),
+    ln("平安🔥🔥🙏", 1252, 154, 157, 37),
+    ln("1831条回复", 1313, 101, 162, 28),
+    ln("佳一讲商业发表评论", 1494, 115, 251, 27),
+]
+# vivo V2131A run on 2026-11-08: our reply to 俊国 is already visible in the thread.
+VIVO_DRAWER_WITH_OWN_REPLY = [
+    ln("评论5357", 439, 98, 130, 30),
+    ln("Q都在搜：海龟成活率", 439, 446, 244, 29),
+    ln(" 问小微16人问过", 479, 98, 227, 34),
+    ln("老王的动物园", 575, 100, 216, 28),
+    ln("已声明原创>", 578, 541, 153, 28),
+    ln("作者江苏9月30日", 610, 98, 220, 28),
+    ln("视死如“龟”#搞笑科普#动物世界", 660, 100, 424, 28),
+    ln("♪乐·OnMyOwn", 707, 103, 263, 31),
+    ln("3人帮过", 775, 590, 105, 40),
+    ln("帮他上热门", 782, 122, 163, 30),
+    ln("AI吕哥说我1分钟前", 884, 98, 270, 28),
+    ln("小海龟加油，太可爱了", 927, 100, 272, 29),
+    ln("龍龍ｉ飛麗山西9月30日", 1013, 95, 334, 40),
+    ln("龍", 1014, 24, 59, 62),
+    ln("1.1万凸", 1016, 586, 108, 37),
+    ln("配乐一个比一个燃，结局一个比一个惨经", 1059, 96, 473, 32),
+    ln("4157", 1108, 583, 112, 47),
+    ln("俊国河南10月1日", 1120, 155, 217, 28),
+    ln("众生皆苦，却皆苦苦相逼。", 1158, 155, 320, 32),
+    ln("AI吕哥说我1分钟前", 1217, 157, 272, 28),
+    ln("回复俊国：哈哈确实，看得我也着急", 1260, 159, 413, 24),
+    ln("更多回复", 1315, 98, 139, 30),
+    ln("AI吕哥说发表评论：", 1539, 110, 262, 29),
+]
+
+# vivo V2131A runs on 2026-11-08: the feed shows a hot comment where the caption was.
+VIVO_FEED_WITH_HOT_COMMENT = [
+    ln("关注", 71, 190, 71, 37),
+    ln("朋友", 75, 297, 102, 35),
+    ln("推荐", 75, 439, 64, 32),
+    ln("可以在这放一个桌子", 1044, 192, 335, 46),
+    ln("这个房子最大的优点就是：方便时很方便", 1364, 98, 561, 28),
+    ln("热评", 1367, 36, 50, 25),
+    ln("137条回复", 1414, 27, 101, 23),
+    ln("+关注", 1494, 252, 66, 32),
+    ln("小琦受不了", 1496, 117, 101, 28),
+    ln("2.1万", 1529, 340, 61, 30),
+    ln("8.0万", 1529, 434, 64, 30),
+    ln("1.0万", 1531, 533, 57, 25),
+    ln("1.1万", 1531, 631, 54, 27),
+]
+VIVO_DRAWER_HEADER = [
+    ln("评论1.1万", 438, 96, 130, 35),
+    ln("Q都在搜：上海老破小热销原因", 444, 347, 341, 22),
+    ln(" 问小微10人问过", 479, 98, 227, 34),
+    ln("小琦受不了作者上海6月6日", 575, 98, 422, 28),
+    ln("已声明原创>", 578, 536, 154, 23),
+    ln("总裁，欢迎回到沪上1800的家@乔百万上海", 611, 98, 589, 29),
+    ln("破小", 643, 93, 69, 39),
+    ln("♪原声", 693, 98, 95, 37),
+    ln("・上海市", 737, 96, 123, 40),
+    ln("AI吕哥说发表评论：", 1539, 110, 262, 29),
+]
+
+
 class FakeUi:
     def __init__(self, snapshots, frames=None, height=1605):
         self.snapshots = list(snapshots)
@@ -193,6 +304,11 @@ class FakeUi:
             raise InterruptedError("Interaction was stopped")
         self.comment_scrolls += 1
 
+    def scroll_comments_back(self, lines):
+        if self.is_stopped:
+            raise InterruptedError("Interaction was stopped")
+        self.comment_back_scrolls = getattr(self, "comment_back_scrolls", 0) + 1
+
     def restore_work_header(self, lines):
         if self.is_stopped:
             raise InterruptedError("Interaction was stopped")
@@ -245,6 +361,113 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(next_day_store.remaining("like"), 2)
         self.assertFalse(next_day_store.has_acted("work_like", "wxch-video:1"))
         self.assertTrue(next_day_store.has_acted("self_comment", "sc:1"))
+
+    def test_ocr_variants_of_a_caption_share_one_work_key(self):
+        day = ["2026-11-08"]
+        store = DailyQuotaStore(self.quota_path, today_fn=lambda: day[0])
+        author = "喜剧之王单口季"
+        caption = "【东北风格特辑】#翟佳宁是不是背着我们追星？#喜单3高光盘点#喜剧之王单口季"
+        key = store.resolve_work_key(author, caption)
+        # Same work read again with OCR slips: a missing char, a swapped char, half-width punctuation.
+        self.assertEqual(store.resolve_work_key(author, "【东北风格特辑】#翟佳宁是不是背着我门追星?#喜单3高光盘点#喜剧之王单口"), key)
+        # Another work of the same author is a different work.
+        other = store.resolve_work_key(author, "#张兴朝 讲述自己的北漂故事#喜单3高光盘点")
+        self.assertNotEqual(other, key)
+        # Another author with the same caption is a different work too.
+        self.assertNotEqual(store.resolve_work_key("综艺大表姐", caption), key)
+
+        # Known works survive a reload and a day rollover, unlike the daily counters.
+        day[0] = "2026-11-09"
+        next_day = DailyQuotaStore(self.quota_path, today_fn=lambda: day[0])
+        self.assertEqual(next_day.resolve_work_key(author, caption), key)
+
+    def test_interaction_reads_feed_caption_to_skip_an_already_commented_work(self):
+        store = DailyQuotaStore(self.quota_path)
+        text = "笑到停不下来，这段太绝了"
+        key = store.resolve_work_key("新华社", "春日航拍美景合集，带你看遍江南")
+        store.record("comment", "work_comment", f"{key}:comment:{identity(text)}")
+        feed = feed_lines() + [{"text": "春日航拍美景合集，带你看遍江男", "box": [30, 1420, 560, 30]}]
+        ui = FakeUi(snapshots=[feed])
+
+        result = interact_work_and_comments(ui, store, {"commentText": text})
+
+        self.assertEqual(result["workKey"], key)
+        self.assertEqual(result["work"]["author"], "新华社")
+        self.assertEqual(result["workComment"]["status"], "already_commented")
+        self.assertEqual(ui.clicks, [])
+
+    def test_interaction_refuses_work_actions_when_the_work_is_unknown(self):
+        store = DailyQuotaStore(self.quota_path)
+        ui = FakeUi(snapshots=[drawer_lines(total=5)])
+
+        with self.assertRaisesRegex(RuntimeError, "Cannot identify the current work"):
+            interact_work_and_comments(ui, store, {"commentText": "笑到停不下来，这段太绝了", "replyText": "同感"})
+
+        self.assertEqual(ui.clicks, [])
+        self.assertEqual(store.summary()["used"]["comment"], 0)
+
+    def test_reply_is_not_repeated_when_ocr_reads_the_target_comment_differently(self):
+        store = DailyQuotaStore(self.quota_path)
+        work_key = "wxch-video:huawei-dasheng"
+        text = "说得好，给大圣点赞"
+        first_read = next(
+            c for c in parse_comment_drawer(HUAWEI_DRAWER_AFTER_POST, 1559, parent_event_id=work_key)["comments"]
+            if c["nickname"] == "窗下有清风o"
+        )
+        store.remember_reply(work_key, first_read["nickname"], first_read["content"], text)
+        ui = FakeUi(snapshots=[], height=1559)
+
+        result = reply_to_comment(
+            ui, store, work_key, text, target_comment={"nickname": "窗下有清风o"}, lines=HUAWEI_DRAWER_BEFORE_POST
+        )
+
+        self.assertNotEqual(result["commentKey"], first_read["key"])
+        self.assertEqual(result["status"], "already_replied")
+        self.assertEqual(result["reason"], "ledger")
+        self.assertEqual(ui.clicks, [])
+
+    def test_reply_already_visible_in_the_thread_is_not_sent_again(self):
+        store = DailyQuotaStore(self.quota_path)
+        ui = FakeUi(snapshots=[])
+
+        result = reply_to_comment(
+            ui, store, "wxch-video:vivo-turtle", "哈哈确实，看得我也着急",
+            target_comment={"nickname": "俊国"}, lines=VIVO_DRAWER_WITH_OWN_REPLY,
+        )
+
+        self.assertEqual(result["status"], "already_replied")
+        self.assertEqual(result["reason"], "visible_in_drawer")
+        self.assertEqual(ui.clicks, [])
+        self.assertTrue(store.has_replied("wxch-video:vivo-turtle", "俊国", "众生皆苦，却皆苦苦相逼。", "哈哈确实，看得我也着急"))
+
+    def test_a_different_reply_text_to_the_same_comment_is_still_allowed(self):
+        store = DailyQuotaStore(self.quota_path)
+        store.remember_reply("wxch-video:1", "俊国", "众生皆苦，却皆苦苦相逼。", "哈哈确实，看得我也着急")
+        self.assertFalse(store.has_replied("wxch-video:1", "俊国", "众生皆苦，却皆苦苦相逼", "另一句回复"))
+        self.assertFalse(store.has_replied("wxch-video:2", "俊国", "众生皆苦，却皆苦苦相逼", "哈哈确实，看得我也着急"))
+        self.assertTrue(store.has_replied("wxch-video:1", "俊国", "众生皆苦，却皆苦苦相逼", "哈哈确实，看得我也着急"))
+
+    def test_feed_hot_comment_falls_back_to_the_drawer_caption(self):
+        store = DailyQuotaStore(self.quota_path)
+        text = "小空间也能住得这么开心，佩服"
+        # First run read the caption on the feed (and cut the author's last character).
+        key = store.resolve_work_key("小琦受不", "总裁，欢迎回到沪上1800米的家@乔百万上海老破小")
+        store.record("comment", "work_comment", f"{key}:comment:{identity(text)}")
+        ui = FakeUi(snapshots=[VIVO_FEED_WITH_HOT_COMMENT, VIVO_DRAWER_HEADER])
+
+        result = interact_work_and_comments(ui, store, {"commentText": text})
+
+        self.assertEqual(result["work"]["caption"], "总裁，欢迎回到沪上1800的家@乔百万上海破小")
+        self.assertEqual(result["workKey"], key)
+        self.assertEqual(result["workComment"]["status"], "already_commented")
+        self.assertEqual(ui.backs, 1)
+
+    def test_a_feed_cut_caption_matches_the_full_drawer_caption(self):
+        full = "“某天你想起我我就永远在你的十七岁”#青春#校园生活#合照#毕业季#回不去的夏天"
+        self.assertTrue(ocr_text_matches("“某天你想起我我就永远在你的十七岁”#青春#校园…", full, allow_truncation=True))
+        self.assertFalse(ocr_text_matches("“某天你想起我我就永远在你的十七岁”#青春#校园…", full))
+        # A fragment too short to identify a work is not matched as a prefix.
+        self.assertFalse(ocr_text_matches("“某天你想", full, allow_truncation=True))
 
     def test_stop_guard_and_dirty_resume_cleanup(self):
         ui = FakeUi(
@@ -490,6 +713,36 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(lines, fixture["top"])
         self.assertEqual(ui.feed_next_scrolls, 0)
 
+    def test_locate_rereads_when_a_scroll_skips_comments(self):
+        # Hebe-BD00 measured ~1.25x overshoot: consecutive pages shared no comment,
+        # so a target between them was never visible.
+        def page(names, top=600):
+            lines = [{"text": "评论 9", "box": [315, 520, 90, 32]}]
+            for index, name in enumerate(names):
+                y = top + index * 130
+                lines += [{"text": f"{name} 广东 1小时前", "box": [98, y, 220, 28]},
+                          {"text": f"{name}的评论内容", "box": [98, y + 38, 300, 30]},
+                          {"text": "1凸", "box": [645, y, 40, 28]}]
+            return lines + [{"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]}]
+        ui = FakeUi([page(["星河长明", "海棠依旧"]), page(["远山如黛", "晚风轻拂", "星河长明"])])
+        located = locate_target_comment(ui, target_spec={"nickname": "晚风轻拂"}, lines=page(["林间微风", "远山如黛"]))
+        self.assertTrue(located["found"])
+        self.assertEqual(located["comment"]["nickname"], "晚风轻拂")
+        self.assertEqual(ui.comment_scrolls, 1)
+        self.assertEqual(ui.comment_back_scrolls, 1)
+
+    def test_work_header_recovery_reopens_a_drawer_dismissed_by_the_pull(self):
+        # Hebe-BD00 run 4675d961: WeChat reopened the drawer deep in the list and the
+        # second header-recovery pull dismissed the whole sheet back to the feed.
+        top = drawer_lines()
+        scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
+        ui = FakeUi([scrolled, feed_lines(), top])
+        matched, _, lines = _work_matches_spec(ui, feed_lines(), {"author": "新华社"})
+        self.assertTrue(matched)
+        self.assertEqual(lines, top)
+        self.assertEqual(ui.header_scrolls, 1)
+        self.assertEqual([click["text"] for click in ui.clicks], ["16", "16"])
+
     def test_preemptive_recovers_top_then_scrolls_down_to_reply(self):
         # Start deep in comments; the target is below the restored first page.
         top = drawer_lines()
@@ -530,9 +783,9 @@ class WechatInteractionsTests(unittest.TestCase):
         ui = FakeUi([])
         self.assertFalse(_work_matches_spec(ui, top, {"author": "新华社", "title": "春日航拍"})[0])
         scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
-        ui = FakeUi([scrolled, scrolled, scrolled])
+        ui = FakeUi([scrolled] * 7)
         self.assertFalse(_work_matches_spec(ui, scrolled, {"author": "新华社", "title": "春日航拍"})[0])
-        self.assertEqual(ui.header_scrolls, 3)
+        self.assertEqual(ui.header_scrolls, 7)
         self.assertEqual(ui.typed, [])
 
     def test_profile_follow_first_work_touch_and_comment_drawer_return(self):
@@ -602,6 +855,21 @@ class WechatInteractionsTests(unittest.TestCase):
                  {"text": "评论", "box": [410, 98, 55, 30]}]
         self.assertEqual(classify_page_state(lines), "channels_message_center")
         self.assertNotEqual(classify_page_state(lines[1:]), "channels_message_center")
+
+    def test_personal_page_prefers_creator_messages_over_viewer_messages(self):
+        # vivo V2131A WeChat 8.0.79 lists viewer 消息 above creator 视频号消息; the
+        # viewer page has icon tabs and is not the Channels message center.
+        personal = [{"text": "赞、收藏和最近看过", "box": [20, 120, 260, 30]},
+                    {"text": "关注", "box": [20, 178, 50, 30]},
+                    {"text": "消息", "box": [20, 236, 50, 30]},
+                    {"text": "我的视频号", "box": [14, 300, 130, 28]},
+                    {"text": "视频号消息", "box": [20, 490, 136, 30]},
+                    {"text": "视频号私信", "box": [20, 548, 136, 30]}]
+        center = [{"text": "点赞", "box": [196, 40, 50, 30]}, {"text": "评论", "box": [330, 40, 50, 30]},
+                  {"text": "关注", "box": [462, 40, 50, 30]}]
+        ui = FakeUi([feed_lines(), personal, center, center])
+        open_personal_messages(ui)
+        self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "视频号消息", "评论"])
 
     def test_recorded_message_center_with_heart_template_opens_comments(self):
         lines = json.loads((Path(__file__).parent / "testdata/message-center-heart.json").read_text(encoding="utf-8"))

@@ -7,6 +7,8 @@ from difflib import SequenceMatcher
 
 DATE = r"(?:\d{4}年)?\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:今天|昨天|前天)(?:\s*\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚"
 REGION = r"北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆|香港|澳门|台湾|中国|美国|日本|韩国|英国|法国|德国|加拿大|澳大利亚|新加坡|马来西亚|泰国|海外"
+# Screenshots are scaled to 720 wide; the status bar text sits above this line.
+STATUS_BAR_BOTTOM = 60
 LABELS = {
     "channel": r"视频号\s*ID",
     "ip": r"IP\s*(?:归)?属地",
@@ -24,6 +26,28 @@ class WorkHeaderMissing(ValueError):
 
 def compact(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+
+
+# Captions and comments are OCR text: the same one can read slightly differently each time.
+OCR_MATCH_RATIO = 0.8
+MIN_TRUNCATED_CAPTION = 8
+
+
+def ocr_text_matches(a, b, allow_truncation=False):
+    """True when two OCR readings of the same text are at least OCR_MATCH_RATIO similar.
+
+    With allow_truncation, a shorter reading (the feed cuts long captions) is
+    compared with the same-length start of the longer one.
+    """
+    a = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(a or ""))
+    b = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(b or ""))
+    if not a or not b:
+        return a == b
+    if allow_truncation:
+        short, long_ = sorted((a, b), key=len)
+        if len(short) >= MIN_TRUNCATED_CAPTION:
+            b, a = long_[:len(short)], short
+    return SequenceMatcher(None, a, b).ratio() >= OCR_MATCH_RATIO
 
 
 def line_height(lines):
@@ -185,9 +209,11 @@ def profile_name(lines, hint):
     if len(controls) < 2:
         raise ValueError("Author profile controls are missing")
     end = min(item["box"][1] for item in controls)
-    height = max((bottom(item) for item in lines), default=0)
+    # The header sits directly above the follow/message row. Its distance from the
+    # top differs between the feed sheet and the full-page profile, so only the
+    # status bar is excluded; the hint ranking below separates any video caption.
     candidates = [item for item in lines if 170 <= item["box"][0] < 540
-                  and height / 4 < item["box"][1] < end]
+                  and STATUS_BAR_BOTTOM < item["box"][1] < end]
     # The hint ranks locations only. There is no similarity threshold, equality
     # requirement or second OCR; the saved nickname remains the first reading.
     name = max(candidates, key=lambda item: (SequenceMatcher(None, compact(hint), compact(item["text"])).ratio(),
