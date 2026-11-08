@@ -168,6 +168,27 @@ class CommentTests(unittest.TestCase):
         self.assertEqual(comments[2]["replyToCommentKey"], comments[1]["key"])
         self.assertEqual(comments[2]["replyToDouyinId"], "sphAfanti888")
 
+    def test_recommend_badge_with_merged_count_keeps_the_liked_comment(self):
+        # vivo V2131A run f5625b81: after liking, OCR read the count and badge as one box "5推荐".
+        lines = [
+            line("评论2", 436, 95, 90, 37),
+            line("Q都在搜：王楚然说山东话表白", 444, 347, 340, 22),
+            line("综艺大表姐作者 江西1天前", 575, 100, 388, 28),
+            line("王楚然用方言表白，给黄sir整娇羞了#现在就出", 616, 102, 567, 24),
+            line("发#现在就出发第4季", 652, 102, 256, 23),
+            line("AI吕哥说我1分钟前", 921, 98, 270, 28),
+            line("这段太有意思了，看完心情都变好了", 961, 96, 438, 30),
+            line("5推荐", 1053, 526, 166, 32),
+            line("嫣然含笑河南1天前", 1058, 100, 268, 23),
+            line("王楚然好可爱啊，表情好丰富，演技真好", 1098, 100, 588, 28),
+            line("首评", 1175, 96, 58, 32),
+        ]
+        drawer = parse_comment_drawer(lines, 1605, parent_event_id="vid-1")
+        liked = next(c for c in drawer["comments"] if c["nickname"] == "嫣然含笑")
+        self.assertTrue(liked["_liked"])
+        self.assertEqual(liked["_likeCountText"], "5")
+        self.assertEqual(liked["content"], "王楚然好可爱啊，表情好丰富，演技真好")
+
     def test_reply_target_name_requires_single_colon_on_reply(self):
         self.assertEqual(reply_target_name("回复 阿凡提:对，很有道理", is_reply=True), "阿凡提")
         self.assertEqual(reply_target_name("回复  样本用户：好的", is_reply=True), "样本用户")

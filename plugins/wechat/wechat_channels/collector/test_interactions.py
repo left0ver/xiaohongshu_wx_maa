@@ -19,6 +19,7 @@ from interactions import (
     is_red_active,
     like_comment,
     like_work,
+    locate_target_comment,
     open_personal_messages,
     parse_comment_messages,
     post_work_comment,
@@ -192,6 +193,11 @@ class FakeUi:
         if self.is_stopped:
             raise InterruptedError("Interaction was stopped")
         self.comment_scrolls += 1
+
+    def scroll_comments_back(self, lines):
+        if self.is_stopped:
+            raise InterruptedError("Interaction was stopped")
+        self.comment_back_scrolls = getattr(self, "comment_back_scrolls", 0) + 1
 
     def restore_work_header(self, lines):
         if self.is_stopped:
@@ -490,6 +496,36 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(lines, fixture["top"])
         self.assertEqual(ui.feed_next_scrolls, 0)
 
+    def test_locate_rereads_when_a_scroll_skips_comments(self):
+        # Hebe-BD00 measured ~1.25x overshoot: consecutive pages shared no comment,
+        # so a target between them was never visible.
+        def page(names, top=600):
+            lines = [{"text": "评论 9", "box": [315, 520, 90, 32]}]
+            for index, name in enumerate(names):
+                y = top + index * 130
+                lines += [{"text": f"{name} 广东 1小时前", "box": [98, y, 220, 28]},
+                          {"text": f"{name}的评论内容", "box": [98, y + 38, 300, 30]},
+                          {"text": "1凸", "box": [645, y, 40, 28]}]
+            return lines + [{"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]}]
+        ui = FakeUi([page(["星河长明", "海棠依旧"]), page(["远山如黛", "晚风轻拂", "星河长明"])])
+        located = locate_target_comment(ui, target_spec={"nickname": "晚风轻拂"}, lines=page(["林间微风", "远山如黛"]))
+        self.assertTrue(located["found"])
+        self.assertEqual(located["comment"]["nickname"], "晚风轻拂")
+        self.assertEqual(ui.comment_scrolls, 1)
+        self.assertEqual(ui.comment_back_scrolls, 1)
+
+    def test_work_header_recovery_reopens_a_drawer_dismissed_by_the_pull(self):
+        # Hebe-BD00 run 4675d961: WeChat reopened the drawer deep in the list and the
+        # second header-recovery pull dismissed the whole sheet back to the feed.
+        top = drawer_lines()
+        scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
+        ui = FakeUi([scrolled, feed_lines(), top])
+        matched, _, lines = _work_matches_spec(ui, feed_lines(), {"author": "新华社"})
+        self.assertTrue(matched)
+        self.assertEqual(lines, top)
+        self.assertEqual(ui.header_scrolls, 1)
+        self.assertEqual([click["text"] for click in ui.clicks], ["16", "16"])
+
     def test_preemptive_recovers_top_then_scrolls_down_to_reply(self):
         # Start deep in comments; the target is below the restored first page.
         top = drawer_lines()
@@ -530,9 +566,9 @@ class WechatInteractionsTests(unittest.TestCase):
         ui = FakeUi([])
         self.assertFalse(_work_matches_spec(ui, top, {"author": "新华社", "title": "春日航拍"})[0])
         scrolled = [line for line in top if line["box"][1] >= 690 or line["text"].startswith("评论")]
-        ui = FakeUi([scrolled, scrolled, scrolled])
+        ui = FakeUi([scrolled] * 7)
         self.assertFalse(_work_matches_spec(ui, scrolled, {"author": "新华社", "title": "春日航拍"})[0])
-        self.assertEqual(ui.header_scrolls, 3)
+        self.assertEqual(ui.header_scrolls, 7)
         self.assertEqual(ui.typed, [])
 
     def test_profile_follow_first_work_touch_and_comment_drawer_return(self):
@@ -602,6 +638,21 @@ class WechatInteractionsTests(unittest.TestCase):
                  {"text": "评论", "box": [410, 98, 55, 30]}]
         self.assertEqual(classify_page_state(lines), "channels_message_center")
         self.assertNotEqual(classify_page_state(lines[1:]), "channels_message_center")
+
+    def test_personal_page_prefers_creator_messages_over_viewer_messages(self):
+        # vivo V2131A WeChat 8.0.79 lists viewer 消息 above creator 视频号消息; the
+        # viewer page has icon tabs and is not the Channels message center.
+        personal = [{"text": "赞、收藏和最近看过", "box": [20, 120, 260, 30]},
+                    {"text": "关注", "box": [20, 178, 50, 30]},
+                    {"text": "消息", "box": [20, 236, 50, 30]},
+                    {"text": "我的视频号", "box": [14, 300, 130, 28]},
+                    {"text": "视频号消息", "box": [20, 490, 136, 30]},
+                    {"text": "视频号私信", "box": [20, 548, 136, 30]}]
+        center = [{"text": "点赞", "box": [196, 40, 50, 30]}, {"text": "评论", "box": [330, 40, 50, 30]},
+                  {"text": "关注", "box": [462, 40, 50, 30]}]
+        ui = FakeUi([feed_lines(), personal, center, center])
+        open_personal_messages(ui)
+        self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "视频号消息", "评论"])
 
     def test_recorded_message_center_with_heart_template_opens_comments(self):
         lines = json.loads((Path(__file__).parent / "testdata/message-center-heart.json").read_text(encoding="utf-8"))

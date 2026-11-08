@@ -728,6 +728,20 @@ def _comment_matches_spec(comment, target_spec):
     return bool(nick_ok and content_ok and (want_nick or want_content))
 
 
+def _reread_if_scroll_skipped(ui, previous_drawer, lines, work_key, label):
+    """A scroll that shares no comment with the previous page may have skipped some."""
+    previous = [c["nickname"] for c in previous_drawer.get("comments", [])]
+    current = parse_comment_drawer(lines, ui.height, parent_event_id=work_key)
+    # Compare nicknames, not keys: the same comment's body OCR varies between frames.
+    if (not previous or not current["comments"] or current.get("empty")
+            or any(nickname_matches(a, c["nickname"]) for a in previous for c in current["comments"])
+            or not hasattr(ui, "scroll_comments_back")):
+        return lines
+    check_stopped(ui)
+    ui.scroll_comments_back(lines)
+    return ui.snapshot(label)
+
+
 def locate_target_comment(
     ui,
     target_spec=None,
@@ -735,7 +749,7 @@ def locate_target_comment(
     quota_store=None,
     work_key="",
     exclude_self=False,
-    max_pages=3,
+    max_pages=10,
     lines=None,
 ):
     """Locate a target comment in the comment drawer across up to max_pages."""
@@ -788,6 +802,7 @@ def locate_target_comment(
         check_stopped(ui)
         ui.scroll_comments(drawer_lines)
         drawer_lines = ui.snapshot(f"comments-locate-{page_index + 2}")
+        drawer_lines = _reread_if_scroll_skipped(ui, drawer, drawer_lines, work_key, f"comments-locate-{page_index + 2}-back")
 
     return {
         "found": False,
@@ -900,7 +915,7 @@ def reply_to_comment(
     target_comment=None,
     self_nickname="",
     lines=None,
-    max_comment_pages=3,
+    max_comment_pages=10,
 ):
     """Reply to a target comment with 3-layer self-comment protection."""
     check_stopped(ui)
@@ -1067,13 +1082,20 @@ def _work_matches_spec(ui, lines, target_work):
     # Every candidate starts at the original work header, even when WeChat
     # remembers a previously scrolled comment position.
     check_lines, opened_drawer = _open_comment_drawer_if_needed(ui, lines)
-    for attempt in range(4):
+    reopened = False
+    attempts = 8
+    for attempt in range(attempts):
         check_stopped(ui)
+        if not find(check_lines, r"^评论\s*[\d.万wW]*") and not reopened:
+            # A pull at the top of the list can drag the whole sheet closed.
+            reopened = True
+            check_lines, now_opened = _open_comment_drawer_if_needed(ui, check_lines)
+            opened_drawer = opened_drawer or now_opened
         try:
             region = work_region(check_lines)
             break
         except WorkHeaderMissing:
-            if attempt == 3:
+            if attempt == attempts - 1:
                 # Without the header we cannot establish the work's identity.
                 if opened_drawer:
                     ui.back()
@@ -1112,7 +1134,7 @@ def preemptive_reply_comment(
     reply_text,
     self_nickname="",
     max_work_scrolls=2,
-    max_comment_pages=3,
+    max_comment_pages=10,
 ):
     """Locate a specified work and comment to reply preemptively, then restore task state."""
     check_stopped(ui)
@@ -1579,7 +1601,9 @@ def open_personal_messages(ui, lines=None):
         state = classify_page_state(lines, ui.height)
 
     if state == "personal_page":
-        msg_entry = find(lines, r"^(?:视频号消息|消息)$")
+        # The personal page may list the viewer's own 消息 above the creator's
+        # 视频号消息; only the latter is the Channels message center.
+        msg_entry = find(lines, r"^视频号消息$") or find(lines, r"^消息$")
         if not msg_entry:
             raise ValueError("视频号消息 entry was not found on personal page")
         check_stopped(ui)

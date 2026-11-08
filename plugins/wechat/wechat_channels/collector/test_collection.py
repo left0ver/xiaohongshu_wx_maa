@@ -156,6 +156,24 @@ class CollectionTests(unittest.TestCase):
         from collection import author_in_feed
         self.assertEqual(author_in_feed([*FEED, line("√", 220, 1459, 16, 13)], 1558)["text"], AUTHOR)
 
+    def test_same_row_emoji_fragment_is_part_of_the_feed_author(self):
+        # Hebe-BD00 run e61b980f: OCR split "饺子WTF💖" into two boxes on one row.
+        from collection import author_in_feed
+        lines = [line("场雨#后弦#混音", 25, 1358, 213, 34),
+                 line("我本想等雨停后就去找你 哪知道这场雨连绵不绝.#下完这", 26, 1320, 664, 32),
+                 line("饺子WTF", 121, 1451, 119, 31), line("💖", 241, 1457, 21, 18),
+                 line("已关注", 274, 1451, 61, 25), line("1.4万", 359, 1481, 58, 31),
+                 line("6081", 450, 1481, 57, 30), line("2.0万", 540, 1481, 59, 30), line("79", 646, 1482, 33, 26)]
+        author = author_in_feed(lines, 1559)
+        self.assertEqual(author["text"], "饺子WTF💖")
+        self.assertEqual(author["box"], [121, 1451, 141, 31])
+
+    def test_long_author_split_past_the_start_column_is_joined(self):
+        from collection import author_in_feed
+        lines = [*FEED[:3], line("一个特别长的", 122, 1470, 140, 28), line("作者昵称", 266, 1471, 90, 27),
+                 line("+关注", 362, 1470, 60, 28), FEED[-1]]
+        self.assertEqual(author_in_feed(lines, 1605)["text"], "一个特别长的作者昵称")
+
     def test_wrapped_two_line_feed_author_and_merged_back_follow_tab(self):
         from collection import author_in_feed, ensure_feed
         wrapped = [*FEED[:3], line("月井羊一瘦至", 123, 1471, 152, 29), line("对象", 123, 1505, 53, 27), FEED[-1]]

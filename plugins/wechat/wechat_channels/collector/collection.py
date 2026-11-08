@@ -28,17 +28,47 @@ def find(lines, pattern, predicate=lambda line: True):
                  if re.search(pattern, line["text"]) and predicate(line)), None)
 
 
+def _join_same_row_fragments(start, fragments):
+    """OCR may split one nickname (e.g. a trailing emoji) into adjacent boxes on one row."""
+    merged = dict(start)
+    while True:
+        x, y, w, h = merged["box"]
+        center = y + h / 2
+        right = min((item for item in fragments
+                     if -6 <= item["box"][0] - (x + w) <= 24
+                     and abs(item["box"][1] + item["box"][3] / 2 - center) <= max(h, item["box"][3]) / 2),
+                    key=lambda item: item["box"][0], default=None)
+        if right is None:
+            return merged
+        rx, ry, rw, rh = right["box"]
+        top, bottom_edge = min(y, ry), max(y + h, ry + rh)
+        merged = {**merged, "text": merged["text"].strip() + right["text"].strip(),
+                  "box": [x, top, rx + rw - x, bottom_edge - top]}
+        fragments = [item for item in fragments if item is not right]
+
+
 def author_in_feed(lines, height):
     hot_rows = [line["box"][1] for line in lines if re.search(r"热评|\d+条回复", line["text"])]
-    candidates = sorted(
-        (line for line in lines
-         if line["box"][1] > height - 150 and 65 < line["box"][0] < 250
-         and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
-         and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
-         and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
-         and not re.fullmatch(r"[\d.万wW]+", line["text"])),
-        key=lambda item: (item["box"][1], item["box"][0]),
-    )
+    fragments = [
+        line for line in lines
+        if line["box"][1] > height - 150 and line["box"][0] > 65
+        and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
+        and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
+        and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
+        and not re.fullmatch(r"[\d.万wW]+", line["text"])
+    ]
+    starts = sorted((line for line in fragments if line["box"][0] < 250),
+                    key=lambda item: (item["box"][1], item["box"][0]))
+    candidates, absorbed = [], []
+    for start in starts:
+        if any(start is item for item in absorbed):
+            continue
+        rest = [item for item in fragments if item is not start and not any(item is a for a in absorbed)]
+        merged = _join_same_row_fragments(start, rest)
+        absorbed += [item for item in rest if item["box"][0] >= start["box"][0]
+                     and item["box"][0] + item["box"][2] <= merged["box"][0] + merged["box"][2]
+                     and abs(item["box"][1] - start["box"][1]) <= max(start["box"][3], item["box"][3])]
+        candidates.append(merged)
     if len(candidates) == 2:
         first, second = candidates
         gap = second["box"][1] - (first["box"][1] + first["box"][3])

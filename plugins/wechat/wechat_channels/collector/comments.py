@@ -19,6 +19,8 @@ from collection import (
 from layout import DATE, REGION, compact, line_height, profile_name, reading_rows
 
 LIKE_BADGE_RE = r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+"
+# A liked comment shows "推荐"; OCR may merge it with the count ("5推荐").
+RECOMMEND_BADGE_RE = r"([\d.万wW]*)推荐[♡♥]?"
 TAG_ONLY_RE = r"作者赞过|置顶|首评|热评|精选|收起|赞过"
 FOOTER_END_RE = r"没有更多评论|已显示全部评论|到底了|THE\s*END"
 EMPTY_COMMENTS_RE = r"暂无评论|还没有评论"
@@ -164,10 +166,15 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             ),
             None,
         )
-        has_recommend_badge = any(
-            item["box"][0] > 500 and re.fullmatch(r"推荐[♡♥]?", item["text"].strip())
-            for item in row["items"]
+        recommend_item = next(
+            (
+                item
+                for item in row["items"]
+                if item["box"][0] > 500 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip())
+            ),
+            None,
         )
+        has_recommend_badge = recommend_item is not None
         has_like_action = like_item is not None or has_recommend_badge
         pieces = [
             item
@@ -175,7 +182,7 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             if item["box"][0] < 570
             and not re.search(r"已声明原创|都在搜", item["text"])
             and not (item["box"][0] > 400 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
-            and not (item["box"][0] > 500 and re.fullmatch(r"推荐[♡♥]?", item["text"].strip()))
+            and not (item["box"][0] > 500 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip()))
         ]
         if not pieces:
             continue
@@ -208,6 +215,8 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             if like_item is not None
             else ""
         )
+        if not like_count_text and recommend_item is not None:
+            like_count_text = re.fullmatch(RECOMMEND_BADGE_RE, recommend_item["text"].strip())[1]
         row_h = max(24, row["bottom"] - row["top"])
         if has_recommend_badge:
             like_box = [590, row["top"], 36, row_h]
@@ -761,7 +770,7 @@ def collect_visible_comments(
     path,
     video_event,
     timings,
-    max_pages=3,
+    max_pages=5,
     max_reply_expansions=1,
     max_profiles=2,
 ):
@@ -932,6 +941,15 @@ def collect_visible_comments(
                 ui.scroll_comments(lines)
                 lines = ui.snapshot(f"comments-page-{page_index + 2}")
                 next_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                previous_names = [c["nickname"] for c in drawer["comments"]]
+                if (previous_names and next_drawer["comments"] and not next_drawer["empty"]
+                        and not any(nickname_matches(a, c["nickname"])
+                                    for a in previous_names for c in next_drawer["comments"])
+                        and hasattr(ui, "scroll_comments_back")):
+                    # No shared comment: the scroll overshot and may have skipped some.
+                    ui.scroll_comments_back(lines)
+                    lines = ui.snapshot(f"comments-page-{page_index + 2}-back")
+                    next_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
                 for item in next_drawer["comments"]:
                     if item["key"] in expanded_reply_parents:
                         item["repliesCollected"] = True
