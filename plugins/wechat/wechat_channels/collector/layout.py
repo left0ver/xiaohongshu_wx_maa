@@ -28,6 +28,28 @@ def compact(text):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
 
 
+# Captions and comments are OCR text: the same one can read slightly differently each time.
+OCR_MATCH_RATIO = 0.8
+MIN_TRUNCATED_CAPTION = 8
+
+
+def ocr_text_matches(a, b, allow_truncation=False):
+    """True when two OCR readings of the same text are at least OCR_MATCH_RATIO similar.
+
+    With allow_truncation, a shorter reading (the feed cuts long captions) is
+    compared with the same-length start of the longer one.
+    """
+    a = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(a or ""))
+    b = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(b or ""))
+    if not a or not b:
+        return a == b
+    if allow_truncation:
+        short, long_ = sorted((a, b), key=len)
+        if len(short) >= MIN_TRUNCATED_CAPTION:
+            b, a = long_[:len(short)], short
+    return SequenceMatcher(None, a, b).ratio() >= OCR_MATCH_RATIO
+
+
 def line_height(lines):
     return median([item["box"][3] for item in lines if item["box"][3] > 0]) if lines else 28
 

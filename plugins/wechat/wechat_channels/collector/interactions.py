@@ -14,7 +14,6 @@ Implements:
 """
 
 from datetime import datetime
-from difflib import SequenceMatcher
 import json
 from pathlib import Path
 import re
@@ -36,7 +35,17 @@ from comments import (
     parse_comment_drawer,
     parse_wechat_user_card,
 )
-from layout import DATE, REGION, WorkHeaderMissing, compact, line_height, profile_name, reading_rows, work_region
+from layout import (
+    DATE,
+    REGION,
+    WorkHeaderMissing,
+    compact,
+    line_height,
+    ocr_text_matches,
+    profile_name,
+    reading_rows,
+    work_region,
+)
 
 DEFAULT_DAILY_LIMITS = {
     "like": 50,
@@ -58,9 +67,6 @@ ACTION_RECORDS = (
     "message_handled",
 )
 
-# Captions and comments are OCR text: the same one can read slightly differently each time.
-OCR_MATCH_RATIO = 0.8
-MIN_TRUNCATED_CAPTION = 8
 MAX_KNOWN_WORKS = 500
 
 
@@ -336,23 +342,6 @@ def _valid_works(works):
         for w in works or ()
         if isinstance(w, dict) and w.get("author") and w.get("key")
     ][-MAX_KNOWN_WORKS:]
-
-
-def ocr_text_matches(a, b, allow_truncation=False):
-    """True when two OCR readings of the same text are at least OCR_MATCH_RATIO similar.
-
-    With allow_truncation, a shorter reading (the feed cuts long captions) is
-    compared with the same-length start of the longer one.
-    """
-    a = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(a or ""))
-    b = re.sub(r"(?:\.{2,}|…+|展开)$", "", compact(b or ""))
-    if not a or not b:
-        return a == b
-    if allow_truncation:
-        short, long_ = sorted((a, b), key=len)
-        if len(short) >= MIN_TRUNCATED_CAPTION:
-            b, a = long_[:len(short)], short
-    return SequenceMatcher(None, a, b).ratio() >= OCR_MATCH_RATIO
 
 
 def compute_work_key(video_event=None, author="", title=""):

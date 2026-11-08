@@ -8,6 +8,7 @@ from pathlib import Path
 
 from collection import LocalStore, Timings
 from comments import (
+    _collect_comment,
     clean_comment_nickname,
     collect_visible_comments,
     parse_comment_drawer,
@@ -167,6 +168,49 @@ class CommentTests(unittest.TestCase):
         resolve_reply_targets(comments, [{"commentKey": comments[1]["key"], "profileVisited": True, "douyinId": "sphAfanti888"}])
         self.assertEqual(comments[2]["replyToCommentKey"], comments[1]["key"])
         self.assertEqual(comments[2]["replyToDouyinId"], "sphAfanti888")
+
+    def test_overlapping_pages_do_not_collect_one_comment_twice(self):
+        # Huawei Hebe-BD00 run 49c170b4: pages 3 and 4 read the same comment with ".." and "...".
+        page_3 = [
+            line("评论196", 477, 24, 114, 34),
+            line("佳一讲商业 我 浙江40分钟前", 1211, 99, 338, 28),
+            line("一下子回到了学生时代", 1252, 101, 267, 27),
+            line("2636", 1344, 588, 101, 29),
+            line("你的眼淚是零.福建9天前", 1347, 101, 310, 23),
+            line("十七岁就是很美好啊..比十六岁成熟 比十八岁稚嫩", 1386, 101, 590, 28),
+            line("1001", 1435, 589, 100, 26),
+            line("佳一讲商业发表评论：", 1494, 114, 254, 27),
+        ]
+        page_4 = [
+            line("评论196", 477, 24, 114, 34),
+            line("佳一讲商业我浙江40分钟前", 711, 99, 339, 27),
+            line("一下子回到了学生时代", 750, 99, 272, 32),
+            line("2636", 841, 586, 105, 35),
+            line("你的眼淚是零..福建9天前", 846, 99, 314, 27),
+            line("十七岁就是很美好啊...比十六岁成熟 比十八岁稚嫩", 886, 102, 589, 28),
+            line("1084", 935, 586, 106, 39),
+            line("讨厌啊讨厌讨...江西8天前", 943, 157, 346, 28),
+            line("十八我只能说高考加油", 982, 157, 268, 31),
+            line("16条回复", 1042, 99, 137, 29),
+            line("226", 1128, 599, 95, 41),
+            line("sayOh江苏8天前", 1133, 94, 222, 33),
+            line("这张完全初恋感", 1174, 98, 192, 32),
+            line("佳一讲商业发表评论：", 1494, 114, 254, 27),
+        ]
+        collected, aliases = {}, {}
+        first = parse_comment_drawer(page_3, 1559, parent_event_id="vid")["comments"]
+        second = parse_comment_drawer(page_4, 1559, parent_event_id="vid")["comments"]
+        for item in first + second:
+            _collect_comment(collected, aliases, item)
+
+        names = [c["nickname"] for c in collected.values()]
+        self.assertEqual(sum("眼淚" in n for n in names), 1, names)
+        self.assertEqual(sum("佳一讲商业" in n for n in names), 1, names)
+        reply = next(c for c in collected.values() if c["nickname"].startswith("讨厌啊"))
+        kept = next(c for c in collected.values() if "眼淚" in c["nickname"])
+        # The reply under the merged comment points at the comment that was kept.
+        self.assertEqual(reply["parentCommentKey"], kept["key"])
+        self.assertIn("sayOh", names)
 
     def test_recommend_badge_with_merged_count_keeps_the_liked_comment(self):
         # vivo V2131A run f5625b81: after liking, OCR read the count and badge as one box "5推荐".
