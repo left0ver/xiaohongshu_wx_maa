@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from layout import REGION, WorkHeaderMissing, label_values, line_height, profile_name, video_values, work_region
+from readiness import BASIC_INFO_TIMEOUT
 
 
 def normalize(text):
@@ -200,7 +201,7 @@ def parse_basic_info(lines):
 def open_basic_info(ui, more):
     # Library/model preparation happens before clicking and is logged separately.
     with ui.prepare_basic_info() as reader:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + BASIC_INFO_TIMEOUT
         ui.click(more)
         ready = ui.wait_basic_info(timeout=max(0, deadline - time.monotonic()), reader=reader)
     try:

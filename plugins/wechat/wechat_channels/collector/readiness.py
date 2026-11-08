@@ -6,6 +6,11 @@ from pathlib import Path
 
 from layout import basic_info_ready
 
+# From the "更多信息" click until the basic-info panel is recognized. vivo V2131A
+# needs about 2.7 s and occasionally ran out of the original 5 s.
+BASIC_INFO_TIMEOUT = 8
+BASIC_INFO_TIMEOUT_MESSAGE = f"Author basic information was not ready within {BASIC_INFO_TIMEOUT} seconds"
+
 
 def framework_directory(environment):
     # The agent core can contain only AgentServer/Client. The actual framework
@@ -17,11 +22,11 @@ def framework_directory(environment):
     raise RuntimeError("Native MaaFramework is unavailable for the bounded readiness probe")
 
 
-def wait_basic_info(semantic, bounded_ocr, timeout=5):
+def wait_basic_info(semantic, bounded_ocr, timeout=BASIC_INFO_TIMEOUT):
     deadline = time.monotonic() + timeout
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise ValueError("Author basic information was not ready within 5 seconds")
+        raise ValueError(BASIC_INFO_TIMEOUT_MESSAGE)
     try:
         lines = semantic(min(1.2, remaining))
         if time.monotonic() < deadline and basic_info_ready(lines):
@@ -36,4 +41,4 @@ def wait_basic_info(semantic, bounded_ocr, timeout=5):
                 return lines, "local-template" if all(line.get("source") == "local-template" for line in lines) else "local-ocr"
         except subprocess.TimeoutExpired:
             pass
-    raise ValueError("Author basic information was not ready within 5 seconds")
+    raise ValueError(BASIC_INFO_TIMEOUT_MESSAGE)

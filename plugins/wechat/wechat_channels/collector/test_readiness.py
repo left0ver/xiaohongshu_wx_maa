@@ -37,9 +37,9 @@ class ReadinessTests(unittest.TestCase):
 
     def test_empty_tree_gives_ocr_only_remaining_budget(self):
         ocr = Mock(return_value=INFO)
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 101.2, 104.9]):
+        with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 101.2, 107.9]):
             self.assertEqual(wait_basic_info(lambda _: [], ocr), (INFO, "local-ocr"))
-        self.assertAlmostEqual(ocr.call_args.args[0], 3.8)
+        self.assertAlmostEqual(ocr.call_args.args[0], 6.8)
 
     def test_semantic_timeout_can_use_remaining_budget(self):
         semantic = Mock(side_effect=subprocess.TimeoutExpired("dump", 1.2))
@@ -48,20 +48,20 @@ class ReadinessTests(unittest.TestCase):
 
     def test_expired_budget_does_not_start_ocr(self):
         ocr = Mock()
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 105, 105]):
-            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+        with patch("readiness.time.monotonic", side_effect=[100, 100, 108, 108]):
+            with self.assertRaisesRegex(ValueError, "within 8 seconds"):
                 wait_basic_info(lambda _: INFO, ocr)
         ocr.assert_not_called()
 
     def test_late_success_is_not_accepted(self):
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101, 101, 106]):
-            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+        with patch("readiness.time.monotonic", side_effect=[100, 100, 101, 101, 109]):
+            with self.assertRaisesRegex(ValueError, "within 8 seconds"):
                 wait_basic_info(lambda _: [], lambda _: INFO)
 
     def test_ocr_timeout_is_not_retried_with_a_fresh_budget(self):
         ocr = Mock(side_effect=subprocess.TimeoutExpired("ocr", 3.8))
         with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 101.2]):
-            with self.assertRaisesRegex(ValueError, "within 5 seconds"):
+            with self.assertRaisesRegex(ValueError, "within 8 seconds"):
                 wait_basic_info(lambda _: [], ocr)
         self.assertEqual(ocr.call_count, 1)
 

@@ -271,12 +271,12 @@ class FakeModeUi:
     def prepare_basic_info(self):
         yield None
 
-    def wait_basic_info(self, timeout=5, reader=None):
+    def wait_basic_info(self, timeout=8, reader=None):
         from layout import basic_info_ready
 
         lines = self.snapshot("author-basic-info-ready")
         if not basic_info_ready(lines):
-            raise ValueError("Author basic information was not ready within 5 seconds")
+            raise ValueError("Author basic information was not ready within 8 seconds")
         return lines
 
 
