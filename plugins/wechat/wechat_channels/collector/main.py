@@ -12,9 +12,15 @@ from maa.agent.agent_server import AgentServer
 from maa.custom_action import CustomAction
 
 from android_ui import MaaUi
-from collection import LocalStore, Timings, collect
+from collection import LocalStore, Timings, collect, ensure_feed
 from comments import collect_visible_comments
-from interactions import DailyQuotaStore, interact_work_and_comments
+from interactions import (
+    INTERACTION_ACTIONS,
+    DailyQuotaStore,
+    classify_page_state,
+    interact_work_and_comments,
+    validate_interaction_config,
+)
 from modes import run_mode
 
 
@@ -56,6 +62,19 @@ class CollectComments(CollectVideo):
     include_comments = True
 
 
+INTERACTION_RESULT_KEYS = ("workLike", "workCollect", "workComment", "commentLike", "commentReply",
+                           "authorProfileTouch", "preemptiveReply", "profileTouch")
+
+
+def interaction_summary(result):
+    """One status per performed action, so the run log shows what happened without opening the JSON."""
+    summary = {key: result[key].get("status") or result[key].get("touchStatus") for key in INTERACTION_RESULT_KEYS
+               if isinstance(result.get(key), dict)}
+    if isinstance(result.get("messages"), dict):
+        summary["messagesHandled"] = len(result["messages"].get("messagesHandled") or [])
+    return summary
+
+
 @AgentServer.custom_action("InteractWechatWork")
 class InteractWork(CustomAction):
     def run(self, context, argv):
@@ -68,15 +87,24 @@ class InteractWork(CustomAction):
         raw_param = getattr(argv, "custom_action_param", None)
         config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
         try:
+            # Fail on an unusable configuration before touching the phone.
+            if not any(config.get(key) for key in INTERACTION_ACTIONS):
+                raise ValueError("No interaction is enabled")
+            validate_interaction_config(config)
             with (root / "collection.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 ui = MaaUi(context.tasker, run_dir, context)
+                if config.get("ensureFeed"):
+                    # Navigating re-selects 推荐 and may refresh the feed, so a work already on screen is kept.
+                    if classify_page_state(ui.snapshot("interact-start"), ui.height) != "channels_feed":
+                        ensure_feed(ui, launch=True)
                 quota_store = DailyQuotaStore(root / "daily_quotas.json", limits=config.get("limits"))
                 result = interact_work_and_comments(ui, quota_store, config)
                 (run_dir / "interactions.json").write_text(
                     json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                timings.emit({"kind": "interactionsCompleted", "outcome": "succeeded", "workKey": result.get("workKey")})
+                timings.emit({"kind": "interactionsCompleted", "outcome": "succeeded", "workKey": result.get("workKey"),
+                              "summary": interaction_summary(result)})
                 return True
         except Exception as error:
             timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})

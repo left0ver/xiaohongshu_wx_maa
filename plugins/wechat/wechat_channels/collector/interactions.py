@@ -1970,10 +1970,44 @@ def inspect_and_handle_messages(
 
 # These actions are deduplicated per work, so they need to know which work is on screen.
 WORK_SCOPED_ACTIONS = ("likeWork", "collectWork", "commentText", "likeComment", "replyText", "touchCommenterProfile")
+# Every key that makes the entry point act; anything else only tunes those actions.
+INTERACTION_ACTIONS = (*WORK_SCOPED_ACTIONS, "touchAuthorProfile", "preemptiveReply", "inspectMessages")
+
+
+def _has_comment_target(spec):
+    return isinstance(spec, dict) and any(
+        str(spec.get(key) or "").strip() for key in ("commentKey", "nickname", "content")
+    )
+
+
+def commenter_target(config):
+    """The comment whose author `touchCommenterProfile` visits; falls back to the shared target."""
+    spec = config.get("touchCommenterProfile")
+    own = spec.get("targetComment") if isinstance(spec, dict) else None
+    return own if _has_comment_target(own) else config.get("targetComment")
+
+
+def validate_interaction_config(config):
+    """Reject configurations that would make the entry point act on an unintended target.
+
+    An empty comment target matches the first visible comment, so comment actions
+    without one would like, reply to or visit an arbitrary person. A text key that
+    is present but blank was enabled without its content and must not be skipped
+    silently.
+    """
+    for key in ("commentText", "replyText"):
+        if key in config and not str(config.get(key) or "").strip():
+            raise ValueError(f"{key} is enabled but empty")
+    for key in ("likeComment", "replyText"):
+        if config.get(key) and not _has_comment_target(config.get("targetComment")):
+            raise ValueError(f"{key} needs targetComment with a nickname, content or commentKey")
+    if config.get("touchCommenterProfile") and not _has_comment_target(commenter_target(config)):
+        raise ValueError("touchCommenterProfile needs targetComment with a nickname, content or commentKey")
 
 
 def interact_work_and_comments(ui, quota_store, config, video_event=None):
     """High-level entry point executing configured Batch 3 actions with clean resume."""
+    validate_interaction_config(config)
     check_stopped(ui)
     resume_info = ensure_clean_page_on_resume(ui)
     lines = resume_info["lines"]
@@ -2067,7 +2101,7 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
         spec = config["touchCommenterProfile"] if isinstance(config["touchCommenterProfile"], dict) else {}
         located = locate_target_comment(
             ui,
-            target_spec=spec.get("targetComment"),
+            target_spec=commenter_target(config),
             quota_store=quota_store,
             work_key=work_key,
             exclude_self=True,
