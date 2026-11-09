@@ -3,6 +3,7 @@
 import copy
 import json
 import re
+import sys
 import tomllib
 import unittest
 from pathlib import Path
@@ -12,6 +13,9 @@ BASE = PROJECT / "resource/base"
 NODES = {k: v for path in sorted((BASE / "pipeline").glob("*.json"))
          for k, v in json.loads(path.read_text(encoding="utf-8")).items() if not k.startswith("$")}
 INTERFACE = json.loads((PROJECT / "interface.json").read_text(encoding="utf-8"))
+OPTIONS = INTERFACE.get("option", {})
+sys.path.insert(0, str(PROJECT / "collector"))
+from interactions import INTERACTION_ACTIONS, validate_interaction_config  # noqa: E402
 
 
 def merge(target, source):
@@ -20,6 +24,48 @@ def merge(target, source):
             merge(target[key], value)
         else:
             target[key] = copy.deepcopy(value)
+
+
+def substitute(value, inputs, values):
+    """Mirror the host resolver: a whole-string placeholder takes the field's pipeline type."""
+    if isinstance(value, dict):
+        return {key: substitute(item, inputs, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [substitute(item, inputs, values) for item in value]
+    if isinstance(value, str):
+        for field in inputs:
+            raw = values.get(field["name"], field.get("default", ""))
+            if value.strip() == "{%s}" % field["name"]:
+                kind = field.get("pipeline_type", "string")
+                return int(raw) if kind == "int" else {"true": True, "false": False}[raw] if kind == "bool" else raw
+            value = value.replace("{%s}" % field["name"], raw)
+    return value
+
+
+def resolve_task(task, values):
+    """Build the pipeline override the host sends for a task, from option values keyed by option name."""
+    output = copy.deepcopy(task.get("pipeline_override", {}))
+
+    def apply(name):
+        option = OPTIONS[name]
+        kind = option.get("type", "select")
+        if kind == "input":
+            merge(output, substitute(option["pipeline_override"], option["inputs"], values.get(name, {})))
+            return
+        default = option.get("default_case", [] if kind == "checkbox" else option["cases"][0]["name"])
+        chosen = values.get(name, default)
+        chosen = chosen if isinstance(chosen, list) else [chosen]
+        children = []
+        for case in option["cases"]:
+            if case["name"] in chosen:
+                merge(output, case.get("pipeline_override", {}))
+                children += [child for child in case.get("option", []) if child not in children]
+        for child in children:
+            apply(child)
+
+    for name in task.get("option", []):
+        apply(name)
+    return output
 
 
 class ResourceFlowTests(unittest.TestCase):
@@ -184,6 +230,78 @@ class ResourceFlowTests(unittest.TestCase):
                 self.assertTrue(task.get("enabled", True))
         self.assertEqual([task["name"] for task in presets["compose_profile_like"]["task"]],
                          ["open_wechat", "open_discover", "open_channels", "open_author", "open_author_video", "like_video"])
+
+    def interact_param(self, values):
+        task = next(task for task in INTERFACE["task"] if task["name"] == "interact_work")
+        self.assertEqual(NODES[task["entry"]]["custom_action"], "InteractWechatWork")
+        self.assertEqual(NODES[task["entry"]]["custom_action_param"], {})
+        return resolve_task(task, values)["InteractWechatWork"]["custom_action_param"]
+
+    def test_interact_task_defaults_enable_no_action(self):
+        param = self.interact_param({})
+        self.assertEqual(param, {"ensureFeed": True, "touchAuthorProfile": False, "inspectMessages": False,
+                                 "selfNickname": ""})
+        self.assertFalse(any(param.get(key) for key in INTERACTION_ACTIONS))
+
+    def test_interact_task_options_build_the_agent_configuration(self):
+        param = self.interact_param({
+            "interact_work_actions": ["like", "collect", "comment"],
+            "interact_comment_text": {"text": "拍得真好"},
+            "interact_comment_actions": ["like", "reply", "visit"],
+            "interact_target_comment": {"nickname": "俊国", "content": ""},
+            "interact_reply_text": {"text": "同感"},
+            "interact_commenter_actions": ["follow"],
+            "interact_author_profile": "Yes",
+            "interact_messages": "Yes",
+            "interact_messages_like": "No",
+            "interact_messages_settings": {"count": "3", "reply": "谢谢"},
+            "interact_self_nickname": {"nickname": "我"},
+        })
+        self.assertEqual(param, {
+            "ensureFeed": True,
+            "likeWork": True,
+            "collectWork": True,
+            "commentText": "拍得真好",
+            "likeComment": True,
+            "replyText": "同感",
+            "targetComment": {"nickname": "俊国", "content": ""},
+            "touchCommenterProfile": {"follow": True, "likeFirstWork": False, "collectFirstWork": False},
+            "touchAuthorProfile": {"follow": True, "likeFirstWork": True, "collectFirstWork": True},
+            "inspectMessages": {"like": False, "maxMessages": 3, "replyText": "谢谢"},
+            "selfNickname": "我",
+        })
+        validate_interaction_config(param)
+
+    def test_interact_task_refuses_comment_actions_left_without_a_target(self):
+        param = self.interact_param({"interact_comment_actions": ["like"]})
+        self.assertEqual(param["targetComment"], {"nickname": "", "content": ""})
+        with self.assertRaisesRegex(ValueError, "targetComment"):
+            validate_interaction_config(param)
+        param = self.interact_param({"interact_work_actions": ["comment"]})
+        with self.assertRaisesRegex(ValueError, "commentText is enabled but empty"):
+            validate_interaction_config(param)
+
+    def test_options_are_defined_localized_and_reachable(self):
+        catalogs = [json.loads((PROJECT / path).read_text(encoding="utf-8")) for path in INTERFACE["languages"].values()]
+        referenced = {name for task in INTERFACE["task"] for name in task.get("option", [])}
+        for option in OPTIONS.values():
+            for case in option.get("cases", []):
+                referenced.update(case.get("option", []))
+        self.assertEqual(referenced, set(OPTIONS))
+        def keys(item, fields):
+            return [item[field].removeprefix("$") for field in fields if item.get(field, "").startswith("$")]
+        for option in OPTIONS.values():
+            found = keys(option, ("label", "description"))
+            for case in option.get("cases", []):
+                found += keys(case, ("label", "description"))
+            for field in option.get("inputs", []):
+                found += keys(field, ("label", "description", "placeholder"))
+                self.assertTrue(field["label"].startswith("$"))
+            for key in found:
+                for catalog in catalogs:
+                    self.assertIn(key, catalog)
+            if option.get("type") == "switch":
+                self.assertEqual({case["name"] for case in option["cases"]}, {"Yes", "No"})
 
     def test_localizations_cover_all_tasks_and_models_exist(self):
         catalogs = [json.loads((PROJECT / path).read_text(encoding="utf-8")) for path in INTERFACE["languages"].values()]

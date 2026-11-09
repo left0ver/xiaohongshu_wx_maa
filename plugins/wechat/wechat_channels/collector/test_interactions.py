@@ -11,6 +11,7 @@ from interactions import (
     QuotaExceededError,
     classify_page_state,
     collect_work_action,
+    commenter_target,
     ensure_clean_page_on_resume,
     follow_profile_user,
     inspect_and_handle_messages,
@@ -26,6 +27,7 @@ from interactions import (
     post_work_comment,
     preemptive_reply_comment,
     reply_to_comment,
+    validate_interaction_config,
     visit_and_touch_commenter_profile,
 )
 from collection import identity
@@ -401,10 +403,45 @@ class WechatInteractionsTests(unittest.TestCase):
         ui = FakeUi(snapshots=[drawer_lines(total=5)])
 
         with self.assertRaisesRegex(RuntimeError, "Cannot identify the current work"):
-            interact_work_and_comments(ui, store, {"commentText": "笑到停不下来，这段太绝了", "replyText": "同感"})
+            interact_work_and_comments(ui, store, {"commentText": "笑到停不下来，这段太绝了", "replyText": "同感",
+                                                   "targetComment": {"nickname": "俊国"}})
 
         self.assertEqual(ui.clicks, [])
         self.assertEqual(store.summary()["used"]["comment"], 0)
+
+    def test_comment_actions_without_a_target_are_refused_before_touching_the_phone(self):
+        # An empty target matches the first visible comment, so it would act on a stranger.
+        store = DailyQuotaStore(self.quota_path)
+        blank = {"nickname": "", "content": "  "}
+        for config in (
+            {"likeComment": True},
+            {"likeComment": True, "targetComment": blank},
+            {"replyText": "同感", "targetComment": blank},
+            {"touchCommenterProfile": {"follow": True}, "targetComment": blank},
+            {"touchCommenterProfile": {"follow": True, "targetComment": blank}},
+        ):
+            ui = FakeUi(snapshots=[])
+            with self.assertRaisesRegex(ValueError, "targetComment"):
+                interact_work_and_comments(ui, store, config)
+            self.assertEqual(ui.clicks, [])
+
+    def test_enabled_but_blank_texts_are_refused(self):
+        for key in ("commentText", "replyText"):
+            with self.assertRaisesRegex(ValueError, f"{key} is enabled but empty"):
+                validate_interaction_config({key: " ", "targetComment": {"nickname": "俊国"}})
+        # A missing key is simply not enabled.
+        validate_interaction_config({"likeWork": True})
+
+    def test_commenter_visit_uses_its_own_target_then_the_shared_one(self):
+        shared = {"nickname": "俊国", "content": ""}
+        own = {"content": "众生皆苦"}
+        self.assertEqual(commenter_target({"touchCommenterProfile": {"follow": True}, "targetComment": shared}), shared)
+        self.assertEqual(commenter_target({"touchCommenterProfile": {"targetComment": own}, "targetComment": shared}), own)
+        self.assertEqual(
+            commenter_target({"touchCommenterProfile": {"targetComment": {"nickname": ""}}, "targetComment": shared}),
+            shared,
+        )
+        validate_interaction_config({"touchCommenterProfile": {"follow": True}, "targetComment": shared})
 
     def test_reply_is_not_repeated_when_ocr_reads_the_target_comment_differently(self):
         store = DailyQuotaStore(self.quota_path)
