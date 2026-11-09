@@ -108,7 +108,10 @@ def comment_row(row, previous, following, height):
 def work_region(lines):
     rows = reading_rows(lines)
     height = line_height(lines)
-    heading = next((row for row in rows if re.match(r"^评论\s*\d*", row["text"])), None)
+    # Match the title item itself: an avatar misread as a glyph can join its row.
+    heading = next((row for row in rows if re.match(r"^评论\s*\d*", row["text"])
+                    or any(re.fullmatch(r"评论\s*[\d.万wW]*", item["text"].strip()) for item in row["items"])),
+                   None)
     if not heading:
         raise ValueError("The video details drawer is not open")
     rows = [row for row in rows if row["top"] > heading["bottom"]]
@@ -174,6 +177,12 @@ def work_region(lines):
     expand_rows = [*body, *([boundary] if boundary_kind == "music" else [])]
     expand = next((item for row in expand_rows for item in row["items"]
                    if re.fullmatch(r"展开|全文|更多", item["text"].strip())), None)
+    if expand is None and boundary is not None and body:
+        # OCR can join "…展开" onto a full-width last line ("…#黑色幽默自嘲#一轧展开").
+        last = body[-1]["items"][-1]
+        x, y, w, h = last["box"]
+        if re.search(r"(?:展开|全文)$", last["text"].strip()) and x + w >= 640 and len(last["text"].strip()) > 2:
+            expand = {**last, "text": "展开", "box": [x + w - 48, y, 48, h]}
     return {"heading": heading, "header": header, "authorHeader": header_text,
             "metadata": metadata, "body": body, "boundary": boundary,
             "boundaryKind": boundary_kind, "expand": expand, "lineHeight": height}

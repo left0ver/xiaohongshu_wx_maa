@@ -366,6 +366,13 @@ def video_details(ui, lines, author):
             ui.restore_work_header(details)
             details = ui.snapshot("video-details", author=author)
     for _ in range(2):
+        # Comments load after the drawer opens; until then nothing marks where the description ends.
+        region = work_region(details)
+        if region["boundary"] or region["expand"]:
+            break
+        time.sleep(1.0)
+        details = ui.snapshot("video-details", author=author)
+    for _ in range(2):
         region = work_region(details)
         expand = region["expand"]
         if not expand:

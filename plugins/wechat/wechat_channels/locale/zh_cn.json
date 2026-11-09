@@ -1,6 +1,6 @@
 {
-  "collect_comments_name": "采集作品及可见评论（第二批开发中）",
-  "collect_comments_description": "先采集作品，再保存当前屏幕中完整可见的一级评论并关联作品。暂不翻页或展开二级回复，不代表全量评论；评论者视频号 ID 待第三批补充。仅本地保存，上报暂缓。",
+  "collect_comments_name": "采集作品及可见评论（第二批）",
+  "collect_comments_description": "先采集作品，再逐页读取评论区：昵称、正文、时间、IP 属地，展开长评论和二级回复，并按上限访问评论者主页取视频号 ID。翻页、展开回复和访问评论者数量可在选项中设置，勾选「不限」则全部采集直到评论区到底。仅本地保存，上报暂缓。",
   "project_name": "微信视频号助手",
   "project_description": "按顺序组合微信视频号操作：打开主页、打开视频、点赞和返回等。支持添加、删除和拖动排序。请保持手机解锁、亮屏、竖屏，并使用前台模式。",
   "resource_name": "视频号竖屏资源",
@@ -71,5 +71,13 @@
   "interact_messages_reply_description": "留空则只点赞不回复。",
   "interact_self_nickname_label": "我的视频号昵称（可选）",
   "interact_self_nickname_description": "用于识别自己的评论、避免自己回复自己。留空时自动从评论区识别。",
-  "interact_self_nickname_field": "昵称"
+  "interact_self_nickname_field": "昵称",
+  "collect_comments_unlimited_label": "不限数量",
+  "collect_comments_unlimited_description": "勾选后忽略下方三个数量，翻到评论区底部、展开所有回复并访问每一位评论者。评论多时耗时很长。",
+  "collect_comments_unlimited_case": "不限",
+  "collect_comments_limits_label": "采集数量上限",
+  "collect_comments_limits_description": "未勾选「不限」时生效。翻页至少 1；展开回复和访问评论者填 0 表示不做。",
+  "collect_comments_max_pages": "最多翻页数",
+  "collect_comments_max_reply_expansions": "最多展开回复次数",
+  "collect_comments_max_profiles": "最多访问评论者人数"
 }

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from android_ui import phone_ui
 from collection import LocalStore, Timings, collect, ensure_feed
-from comments import collect_visible_comments
+from comments import collect_visible_comments, comment_limits
 from interactions import DailyQuotaStore, interact_work_and_comments
 from modes import run_mode
 
@@ -98,14 +98,17 @@ def main():
         event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
         (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
         if "--comments" in sys.argv:
-            comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings)
+            # Optional JSON after --comments uses the task-option keys, e.g. {"maxPages": "20"} or {"unlimited": true}.
+            limits = comment_limits(_load_flag_config(sys.argv, "--comments"))
+            timings.emit({"kind": "commentLimits", **limits})
+            comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings, **limits)
             (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
             timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
                           "userCount": len(comments.get("userEvents", [])),
                           "profilesVisited": len(comments.get("profiles", [])),
                           "skippedProfiles": len(comments.get("skippedProfiles", [])),
                           "coverage": comments["coverage"], "complete": comments["complete"],
-                          "endReason": comments.get("endReason")})
+                          "pagesRead": comments["pagesRead"], "endReason": comments.get("endReason")})
         timings.emit({"kind": "runCompleted", "outcome": "succeeded", "eventId": event["event_id"]})
     except Exception as error:
         timings.emit({"kind": "runCompleted", "outcome": "failed", "error": str(error)})

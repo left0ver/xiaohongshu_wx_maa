@@ -13,7 +13,7 @@ from maa.custom_action import CustomAction
 
 from android_ui import MaaUi
 from collection import LocalStore, Timings, collect, ensure_feed
-from comments import collect_visible_comments
+from comments import COMMENT_LIMIT_KEYS, collect_visible_comments, comment_limits
 from interactions import (
     INTERACTION_ACTIONS,
     DailyQuotaStore,
@@ -36,19 +36,27 @@ class CollectVideo(CustomAction):
         run_dir.mkdir(parents=True)
         timings = Timings(run_dir / "timings.jsonl", run_id)
         try:
+            limits = {}
+            if self.include_comments:
+                raw_param = getattr(argv, "custom_action_param", None)
+                config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
+                # Reject unusable limits before touching the phone.
+                limits = comment_limits(config)
+                timings.emit({"kind": "commentLimits", **{key: limits.get(name, "default")
+                                                          for key, name in COMMENT_LIMIT_KEYS.items()}})
             with (root / "collection.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 ui = MaaUi(context.tasker, run_dir, context)
                 event = collect(ui, LocalStore(root / "videos.sqlite3"), timings)
                 (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
                 if self.include_comments:
-                    comments = collect_visible_comments(ui, root / "videos.sqlite3", event, timings)
+                    comments = collect_visible_comments(ui, root / "videos.sqlite3", event, timings, **limits)
                     (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
                     timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
                                   "userCount": len(comments.get("userEvents", [])),
                                   "profilesVisited": len(comments.get("profiles", [])),
                                   "skippedProfiles": len(comments.get("skippedProfiles", [])),
-                                  "coverage": comments["coverage"], "complete": comments["complete"],
+                                  "coverage": comments["coverage"], "complete": comments["complete"], "pagesRead": comments["pagesRead"],
                                   "endReason": comments.get("endReason")})
                 timings.emit({"kind": "runCompleted", "outcome": "succeeded", "eventId": event["event_id"]})
                 return True
