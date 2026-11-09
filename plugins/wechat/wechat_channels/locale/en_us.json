@@ -1,6 +1,6 @@
 {
-  "collect_comments_name": "Collect video and visible comments (batch 2 preview)",
-  "collect_comments_description": "Collect the video, then save complete visible top-level comments linked to it. Paging and replies are not collected; this is not a complete comment export. Public commenter IDs await batch 3. Local storage only; upload is deferred.",
+  "collect_comments_name": "Collect video and comments (batch 2)",
+  "collect_comments_description": "Collect the video, then read the comment drawer page by page: nickname, text, time and IP region, expanding long comments and replies, and visit commenter profiles up to the limit to get Channels IDs. Page, reply and profile limits are task options; tick Unlimited to collect until the end of the comments. Local storage only; upload is deferred.",
   "project_name": "WeChat Channels Assistant",
   "project_description": "Compose WeChat Channels operations in order: open profiles and videos, like, and return. Add, remove and drag tasks to reorder them. Keep the phone unlocked, awake and in portrait, and use foreground mode.",
   "resource_name": "Portrait Channels resource",
@@ -71,5 +71,13 @@
   "interact_messages_reply_description": "Leave empty to like without replying.",
   "interact_self_nickname_label": "My Channels nickname (optional)",
   "interact_self_nickname_description": "Identifies your own comments so you never reply to yourself. Detected from the comment section when left empty.",
-  "interact_self_nickname_field": "Nickname"
+  "interact_self_nickname_field": "Nickname",
+  "collect_comments_unlimited_label": "No limits",
+  "collect_comments_unlimited_description": "Ignores the three limits below: pages to the end of the comments, expands every reply thread and visits every commenter. Slow on videos with many comments.",
+  "collect_comments_unlimited_case": "Unlimited",
+  "collect_comments_limits_label": "Collection limits",
+  "collect_comments_limits_description": "Used when Unlimited is not ticked. Pages must be at least 1; 0 replies or profiles skips that step.",
+  "collect_comments_max_pages": "Max pages",
+  "collect_comments_max_reply_expansions": "Max reply expansions",
+  "collect_comments_max_profiles": "Max commenters to visit"
 }

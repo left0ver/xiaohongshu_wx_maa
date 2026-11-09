@@ -2,7 +2,7 @@
   "interface_version": 2,
   "name": "wechat_channels",
   "label": "$project_name",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "$project_description",
   "languages": {
     "zh_cn": "locale/zh_cn.json",
@@ -37,7 +37,11 @@
       "label": "$collect_comments_name",
       "description": "$collect_comments_description",
       "entry": "CollectWechatComments",
-      "default_check": false
+      "default_check": false,
+      "option": [
+        "collect_comments_unlimited",
+        "collect_comments_limits"
+      ]
     },
     {
       "name": "interact_work",
@@ -591,6 +595,58 @@
         "InteractWechatWork": {
           "custom_action_param": {
             "selfNickname": "{nickname}"
+          }
+        }
+      }
+    },
+    "collect_comments_unlimited": {
+      "type": "checkbox",
+      "label": "$collect_comments_unlimited_label",
+      "description": "$collect_comments_unlimited_description",
+      "cases": [
+        {
+          "name": "unlimited",
+          "label": "$collect_comments_unlimited_case",
+          "pipeline_override": {
+            "CollectWechatComments": {
+              "custom_action_param": {
+                "unlimited": true
+              }
+            }
+          }
+        }
+      ]
+    },
+    "collect_comments_limits": {
+      "type": "input",
+      "label": "$collect_comments_limits_label",
+      "description": "$collect_comments_limits_description",
+      "inputs": [
+        {
+          "name": "max_pages",
+          "label": "$collect_comments_max_pages",
+          "default": "5",
+          "verify": "^[1-9]\\d*$"
+        },
+        {
+          "name": "max_reply_expansions",
+          "label": "$collect_comments_max_reply_expansions",
+          "default": "1",
+          "verify": "^\\d+$"
+        },
+        {
+          "name": "max_profiles",
+          "label": "$collect_comments_max_profiles",
+          "default": "2",
+          "verify": "^\\d+$"
+        }
+      ],
+      "pipeline_override": {
+        "CollectWechatComments": {
+          "custom_action_param": {
+            "maxPages": "{max_pages}",
+            "maxReplyExpansions": "{max_reply_expansions}",
+            "maxProfiles": "{max_profiles}"
           }
         }
       }

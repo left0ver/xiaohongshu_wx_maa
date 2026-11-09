@@ -1,6 +1,8 @@
 """Field association and boundaries across layouts; no rendered UI or device."""
 
+import json
 import unittest
+from pathlib import Path
 
 from collection import parse_author, parse_basic_info, parse_video
 from layout import basic_info_ready, work_region
@@ -192,6 +194,16 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(parse_video(pinned, AUTHOR)["description"], "完整的作品文案#音乐#我们俩")
         same_row_expand = [*DETAILS[:4], line("」原声", 127, 691, 68), line("展开", 201, 692, 48), *DETAILS[6:]]
         self.assertEqual(work_region(same_row_expand)["expand"]["text"], "展开")
+
+
+
+class DetailsGlyphTests(unittest.TestCase):
+    def test_avatar_glyph_on_the_title_row_and_expand_joined_to_the_last_line(self):
+        data = json.loads((Path(__file__).parent / "testdata/details-avatar-glyph.json").read_text(encoding="utf-8"))
+        region = work_region(data["lines"])
+        self.assertEqual(region["boundaryKind"], "comment")
+        self.assertEqual(region["expand"]["box"][0], 637)
+        self.assertIn("北京", region["metadata"])
 
 
 if __name__ == "__main__":

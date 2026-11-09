@@ -7,8 +7,14 @@ import unittest
 from pathlib import Path
 
 from collection import LocalStore, Timings
+import comments as comments_module
 from comments import (
     _collect_comment,
+    CommenterProfileSkipped,
+    comment_limits,
+    inspect_commenter_profile,
+    same_person,
+    user_card_open,
     clean_comment_nickname,
     collect_visible_comments,
     parse_comment_drawer,
@@ -335,6 +341,115 @@ class CommentTests(unittest.TestCase):
             with contextlib.closing(sqlite3.connect(path)) as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM comment_drafts").fetchone()[0], 3)
                 self.assertEqual(db.execute("SELECT count(*) FROM user_drafts").fetchone()[0], 2)
+
+
+def fixture(name):
+    return json.loads((Path(__file__).parent / "testdata" / name).read_text(encoding="utf-8"))
+
+
+class CommentPagingTests(unittest.TestCase):
+    def setUp(self):
+        self._settle = comments_module.REPLY_SETTLE_SECONDS
+        comments_module.REPLY_SETTLE_SECONDS = 0
+
+    def tearDown(self):
+        comments_module.REPLY_SETTLE_SECONDS = self._settle
+
+    def test_replies_on_a_page_without_their_thread_header_keep_the_parent(self):
+        data = fixture("reply-thread-pages.json")
+        parent = {"nickname": "櫂ToT", "key": "wxch-comment:parent", "commentLevel": 1}
+        orphan = parse_comment_drawer(data["pages"]["page2"], data["height"], "video")
+        self.assertEqual(orphan["comments"], [])
+        page = parse_comment_drawer(data["pages"]["page2"], data["height"], "video",
+                                    resolve_parent=lambda reply: parent)
+        names = [c["nickname"] for c in page["comments"]]
+        self.assertEqual(names[:6], ["急需2778个板车", "欣林林", "恋", "昕妤", "灭霸", "梧桐吟夏"])
+        self.assertTrue(all(c["commentLevel"] == 2 for c in page["comments"]))
+        self.assertTrue(all(c["parentCommentKey"] == "wxch-comment:parent" for c in page["comments"]))
+        self.assertEqual(page["comments"][3]["replyToNickname"], "恋")
+        self.assertEqual(page["comments"][1]["replyToNickname"], "急需2778个...")
+
+    def test_avatar_glyph_does_not_turn_a_reply_into_a_top_level_comment(self):
+        data = fixture("reply-thread-pages.json")
+        parent = {"nickname": "櫂ToT", "key": "wxch-comment:parent"}
+        page = parse_comment_drawer(data["pages"]["page3"], data["height"], "video",
+                                    resolve_parent=lambda reply: parent)
+        by_name = {c["nickname"]: c for c in page["comments"]}
+        self.assertEqual(by_name["7Y2o"]["commentLevel"], 2)
+        self.assertEqual(len(page["comments"]), 7)
+
+    def test_reading_cut_off_by_the_input_bar_is_replaced_by_the_full_one(self):
+        collected, aliases = {}, {}
+        parent = {"nickname": "甲", "key": "wxch-comment:parent"}
+        data = fixture("reply-thread-pages.json")
+        for name in ("page2", "page3"):
+            page = parse_comment_drawer(data["pages"][name], data["height"], "video",
+                                        resolve_parent=lambda reply: parent)
+            for item in page["comments"]:
+                _collect_comment(collected, aliases, item)
+        readings = [c for c in collected.values() if c["nickname"] == "7Y2o"]
+        self.assertEqual(len(readings), 1)
+        self.assertIn("所以我还", readings[0]["content"])
+
+    def test_same_person_ignores_truncation_dots_but_not_other_regions(self):
+        self.assertTrue(same_person({"nickname": "基石施工围挡...", "ipLocation": "河北"},
+                                    {"nickname": "基石施工围挡", "ipLocation": "河北"}))
+        self.assertFalse(same_person({"nickname": "基石施工围挡", "ipLocation": "河北"},
+                                     {"nickname": "基石施工围挡", "ipLocation": "广东"}))
+        self.assertFalse(same_person({"nickname": "小王"}, {"nickname": "小李"}))
+
+    def test_skipped_commenter_card_is_closed_before_reading_on(self):
+        data = fixture("user-card-stuck.json")
+        ui = FakeCommentUi([data["cardLoading"], data["cardStillOpen"], data["drawer"]])
+        ui.height = data["height"]
+        self.assertTrue(user_card_open(data["cardStillOpen"], data["height"]))
+        self.assertFalse(user_card_open(data["drawer"], data["height"]))
+        comment = {"nickname": "L", "key": "k", "_nameBox": [152, 1269, 32, 38]}
+        with self.assertRaises(CommenterProfileSkipped) as caught:
+            inspect_commenter_profile(ui, comment)
+        self.assertEqual(caught.exception.reason, "identity_unconfirmed")
+        self.assertEqual(ui.backs, 2)
+        self.assertIs(caught.exception.recovered_lines, data["drawer"])
+
+    def test_comment_limits(self):
+        self.assertEqual(comment_limits({}), {})
+        self.assertEqual(comment_limits({"maxPages": "20", "maxReplyExpansions": "20", "maxProfiles": "0"}),
+                         {"max_pages": 20, "max_reply_expansions": 20, "max_profiles": 0})
+        self.assertEqual(comment_limits({"unlimited": True, "maxPages": "3"}),
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None})
+        with self.assertRaises(ValueError):
+            comment_limits({"maxPages": "0"})
+        with self.assertRaises(ValueError):
+            comment_limits({"maxProfiles": "-1"})
+
+    def test_unlimited_run_keeps_comments_read_before_expanding_and_follows_more_replies(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "作者", "description": "作品", "authorDouyinId": "sphAuthor001",
+            })
+            bar = line("我发表评论：", 1500, 110, 200, 25)
+            first = [line("评论5", 400, 25, 90, 29),
+                     line("甲广东8月2日", 500), line("甲的评论", 540),
+                     line("乙广东8月2日", 620), line("乙的评论", 660),
+                     line("2条回复", 700, 96, 110), bar]
+            # Opening the thread scrolls 甲 out of view.
+            thread = [line("评论5", 400, 25, 90, 29),
+                      line("乙广东8月2日", 500), line("乙的评论", 540),
+                      line("丙广东8月3日", 600, 160, 280), line("回复乙：丙的回复", 640, 160, 280),
+                      line("展开更多回复", 700, 160, 150), bar]
+            full = [*thread[:5],
+                    line("丁广东8月3日", 720, 160, 280), line("回复丙：丁的回复", 760, 160, 280), bar]
+            ui = FakeCommentUi([[line("5", 1555, 622, 42, 23)], first, thread, full, full])
+            result = collect_visible_comments(
+                ui, path, video_event, Timings(Path(directory) / "t.jsonl", "run"),
+                max_pages=None, max_reply_expansions=None, max_profiles=0)
+            names = {e["payload"]["nickname"]: e["payload"] for e in result["events"]}
+            self.assertEqual(set(names), {"甲", "乙", "丙", "丁"})
+            self.assertEqual(result["replyExpansions"], 2)
+            self.assertEqual(result["endReason"], "end_of_list")
+            self.assertEqual(names["丁"]["replyToNickname"], "丙")
+            self.assertEqual(ui.labels.count("comments-replies"), 2)
 
 
 if __name__ == "__main__":

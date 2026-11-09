@@ -1,8 +1,10 @@
 """Comment drawer parsing, paging, reply expansion, and commenter identity collection."""
 
+import itertools
 import json
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import closing
 from datetime import datetime, timezone
@@ -24,6 +26,20 @@ RECOMMEND_BADGE_RE = r"([\d.万wW]*)推荐[♡♥]?"
 TAG_ONLY_RE = r"作者赞过|置顶|首评|热评|精选|收起|赞过"
 FOOTER_END_RE = r"没有更多评论|已显示全部评论|到底了|THE\s*END"
 EMPTY_COMMENTS_RE = r"暂无评论|还没有评论"
+# Expanded replies render after a short animation; reading at once sees the collapsed list.
+REPLY_SETTLE_SECONDS = 1.0
+
+
+def _is_avatar_noise(item, row_items):
+    """OCR occasionally reads an avatar as one or two tall glyphs left of the nickname."""
+    x, _, w, h = item["box"]
+    text = compact(item["text"])
+    return (
+        0 < len(text) <= 2
+        and h >= 40
+        and w <= 70
+        and any(other is not item and other["box"][0] >= x + w - 4 for other in row_items)
+    )
 
 
 class CommenterProfileSkipped(ValueError):
@@ -79,7 +95,8 @@ def reply_target_name(content, is_reply=True):
     match = re.match(r"^回复\s*([^:：\n]+)[:：]\s*\S", first_line)
     if not match:
         return None
-    target, _ = clean_comment_nickname(match[1])
+    # A cut-off name ends in dots that OCR also reads as 。，, — normalise them to "...".
+    target, _ = clean_comment_nickname(re.sub(r"\s*[.。，,·…⋯]+$", "...", match[1].strip()))
     return target or None
 
 
@@ -124,8 +141,14 @@ def _expand_click_target(item):
     return item
 
 
-def parse_comment_drawer(lines, height, parent_event_id=""):
-    """Parse first-level comments, second-level replies, and expansion controls."""
+def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None):
+    """Parse first-level comments, second-level replies, and expansion controls.
+
+    A page scrolled into a long reply thread starts with replies whose parent
+    header is off screen. resolve_parent(reply) supplies that parent (as a dict
+    with at least nickname and key) from earlier pages; without it such
+    replies are dropped because they cannot be linked.
+    """
     rows = reading_rows(lines)
     lh = line_height(lines)
     heading = next(
@@ -183,6 +206,7 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             and not re.search(r"已声明原创|都在搜", item["text"])
             and not (item["box"][0] > 400 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
             and not (item["box"][0] > 500 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip()))
+            and not _is_avatar_noise(item, row["items"])
         ]
         if not pieces:
             continue
@@ -309,6 +333,16 @@ def parse_comment_drawer(lines, height, parent_event_id=""):
             body.append(text)
 
         content = "\n".join(body).strip()
+        if level == 2 and current_parent is None and resolve_parent is not None and content:
+            resolved = resolve_parent({
+                "nickname": header["nickname"],
+                "content": content,
+                "commentTime": header["date"],
+                "ipLocation": header["region"],
+            })
+            if resolved:
+                # A copy: reply bookkeeping below must not alter the stored parent.
+                current_parent = {**resolved, "complete": True, "inlineReplies": 0}
         target_parent = current_parent if level == 2 else None
         if level == 1:
             current_parent = None
@@ -527,13 +561,18 @@ def parse_wechat_user_card(lines, expected_nickname, height):
     }
 
 
+def user_card_open(lines, height):
+    """The WeChat user card slides up over the drawer, so the drawer title stays visible behind it."""
+    return bool(find(lines, r"^设置$", lambda line: line["box"][0] > 520 and line["box"][1] > height * 0.55))
+
+
 def _recover_to_comment_drawer(ui, max_backs=2):
     for _ in range(max_backs):
         ui.back()
         lines = ui.snapshot("comments-recover")
         if find(lines, r"^评论\s*[\d.万wW]*") and not (
             find(lines, r"^(?:[√✓]?)\s*(已关注|申请关注|关注)$") and find(lines, r"^(私信|客服)$")
-        ) and not find(lines, r"^基础信息$"):
+        ) and not find(lines, r"^基础信息$") and not user_card_open(lines, ui.height):
             return lines
     raise RuntimeError("Could not recover to the comment drawer")
 
@@ -618,7 +657,8 @@ def inspect_commenter_profile(ui, comment):
             "profileActionsPerformed": [],
         }
 
-    recovered = _recover_to_comment_drawer(ui, max_backs=1)
+    # A card still sliding in can swallow the first back press.
+    recovered = _recover_to_comment_drawer(ui, max_backs=2)
     raise CommenterProfileSkipped(
         "identity_unconfirmed",
         f"Could not confirm commenter identity for {nickname}",
@@ -766,12 +806,17 @@ def _drawer_signature(drawer):
 
 
 def same_comment(a, b):
-    """Two OCR readings of one comment: overlapping pages read it again with small differences."""
-    return (
-        a.get("commentLevel", 1) == b.get("commentLevel", 1)
-        and nickname_matches(a.get("nickname", ""), b.get("nickname", ""))
-        and ocr_text_matches(a.get("content", ""), b.get("content", ""))
-    )
+    """Two OCR readings of one comment: overlapping pages read it again with small differences.
+
+    The input bar hides the end of the lowest comment, so a reading with the
+    same author and time may also be the start of the other one.
+    """
+    if a.get("commentLevel", 1) != b.get("commentLevel", 1):
+        return False
+    if not nickname_matches(a.get("nickname", ""), b.get("nickname", "")):
+        return False
+    truncated = bool(a.get("commentTime")) and a.get("commentTime") == b.get("commentTime")
+    return ocr_text_matches(a.get("content", ""), b.get("content", ""), allow_truncation=truncated)
 
 
 def _collect_comment(collected, aliases, item, replace=False):
@@ -790,9 +835,88 @@ def _collect_comment(collected, aliases, item, replace=False):
         return
     prev["repliesCollected"] = bool(item.get("repliesCollected") or prev.get("repliesCollected"))
     prev["replyCount"] = max(item.get("replyCount", 0), prev.get("replyCount", 0))
+    if len(compact(item.get("content", ""))) > len(compact(prev.get("content", ""))) + 2:
+        # The earlier reading was cut off at the bottom of a page: keep the full one.
+        _replace_reading(collected, aliases, key, item)
+        return
     if replace and key == item["key"]:
         item["repliesCollected"], item["replyCount"] = prev["repliesCollected"], prev["replyCount"]
         collected[key] = item
+
+
+def _replace_reading(collected, aliases, old_key, item):
+    prev = collected[old_key]
+    item["repliesCollected"], item["replyCount"] = prev["repliesCollected"], prev["replyCount"]
+    new_key = item["key"]
+    entries = list(collected.items())
+    collected.clear()
+    for key, value in entries:
+        if key == old_key:
+            collected[new_key] = item
+        elif key != new_key:
+            if value.get("parentCommentKey") == old_key:
+                value["parentCommentKey"] = new_key
+            collected[key] = value
+    aliases.pop(new_key, None)
+    for alias, target in list(aliases.items()):
+        if target == old_key:
+            aliases[alias] = new_key
+    if old_key != new_key:
+        aliases[old_key] = new_key
+
+
+def _person_name(nickname):
+    """Comparable form of a commenter name; WeChat truncates long names with dots."""
+    text, _ = clean_comment_nickname(nickname)
+    return compact(re.sub(r"[.…⋯·]+$", "", text))
+
+
+def same_person(a, b):
+    """Whether two comment readings belong to one commenter (used to visit each person once).
+
+    Stricter than nickname_matches: a truncated name only matches its own
+    prefix, and differing visible regions keep namesakes apart.
+    """
+    left, right = _person_name(a.get("nickname", "")), _person_name(b.get("nickname", ""))
+    if not left or not right:
+        return False
+    if left != right:
+        shorter, longer = sorted((left, right), key=len)
+        if len(shorter) < 2 or not longer.startswith(shorter):
+            return False
+    region_a, region_b = a.get("ipLocation"), b.get("ipLocation")
+    return not (region_a and region_b and region_a != region_b)
+
+
+COMMENT_LIMIT_KEYS = {
+    "maxPages": "max_pages",
+    "maxReplyExpansions": "max_reply_expansions",
+    "maxProfiles": "max_profiles",
+}
+
+
+def comment_limits(config):
+    """Comment-collection limits from the task options; None means no limit."""
+    unlimited = config.get("unlimited") in (True, "true", "True", "1", 1)
+    limits = {}
+    for key, name in COMMENT_LIMIT_KEYS.items():
+        if unlimited:
+            limits[name] = None
+            continue
+        value = config.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        text = str(value).strip()
+        if not re.fullmatch(r"\d+", text):
+            raise ValueError(f"{key} must be a whole number of 0 or more, got {value!r}")
+        limits[name] = int(text)
+    if limits.get("max_pages") == 0:
+        raise ValueError("maxPages must be at least 1")
+    return limits
+
+
+def _within(limit, used):
+    return limit is None or used < limit
 
 
 def collect_visible_comments(
@@ -804,6 +928,11 @@ def collect_visible_comments(
     max_reply_expansions=1,
     max_profiles=2,
 ):
+    """Read the comment drawer page by page.
+
+    Each limit is a non-negative count or None for no limit. max_profiles
+    counts commenter visits, whether or not the visit yields a profile.
+    """
     with timings.phase("collect_visible_comments"):
         feed = ui.snapshot("feed")
         for _ in range(2):
@@ -827,16 +956,48 @@ def collect_visible_comments(
             aliases = {}
             profiles = []
             skipped_profiles = []
+            attempted_people = []
             visited_comment_keys = set()
-            expanded_reply_parents = set()
+            reply_clicks = {}
+            stalled_reply_parents = set()
             reply_expansions_done = 0
             pages_read = 0
             end_reason = "page_limit"
             complete = False
+            last_parent = None
 
-            for page_index in range(max(1, max_pages)):
+            def resolve_parent(reply):
+                """Parent of a reply whose thread header scrolled off the top of the page."""
+                for known in collected.values():
+                    if (known.get("commentLevel") == 2 and known.get("parentCommentKey")
+                            and same_comment(known, {**reply, "commentLevel": 2})):
+                        parent = collected.get(known["parentCommentKey"])
+                        if parent:
+                            return parent
+                return last_parent
+
+            def parse(page_lines):
+                return parse_comment_drawer(page_lines, ui.height, parent_event_id=parent_id,
+                                            resolve_parent=resolve_parent)
+
+            def absorb(page, replace=False):
+                """Keep every reading, including ones superseded by a later expansion."""
+                nonlocal last_parent
+                for item in page["comments"]:
+                    if item["key"] in stalled_reply_parents or item["key"] in reply_clicks:
+                        item["repliesCollected"] = True
+                    _collect_comment(collected, aliases, item, replace=replace)
+                level_one = [c for c in page["comments"] if c.get("commentLevel", 1) == 1]
+                if level_one:
+                    last_parent = collected.get(aliases.get(level_one[-1]["key"], level_one[-1]["key"]))
+                elif page["comments"]:
+                    parent_key = page["comments"][-1].get("parentCommentKey")
+                    last_parent = collected.get(aliases.get(parent_key, parent_key)) or last_parent
+
+            for page_index in itertools.count() if max_pages is None else range(max(1, max_pages)):
                 pages_read += 1
-                drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                drawer = parse(lines)
+                absorb(drawer)
 
                 # 1. Expand truncated comments on the current viewport (bounded to 2 clicks).
                 for _ in range(2):
@@ -844,41 +1005,42 @@ def collect_visible_comments(
                         break
                     ui.click(drawer["commentExpands"][0])
                     lines = ui.snapshot("comments-expanded")
-                    drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                    drawer = parse(lines)
+                    absorb(drawer, replace=True)
 
-                # 2. Expand secondary replies when available and within budget.
-                while reply_expansions_done < max_reply_expansions:
-                    pending = [
-                        exp
-                        for exp in drawer["replyExpands"]
-                        if exp["parentKey"] not in expanded_reply_parents
-                    ]
+                # 2. Expand reply threads. A thread may need several clicks
+                #    ("N条回复", then "展开更多回复"); stop on a thread once a click
+                #    adds nothing so a stuck control cannot loop.
+                while _within(max_reply_expansions, reply_expansions_done):
+                    pending = [exp for exp in drawer["replyExpands"]
+                               if exp["parentKey"] not in stalled_reply_parents]
                     if not pending:
                         break
                     chosen = pending[0]
-                    expanded_reply_parents.add(chosen["parentKey"])
+                    parent_key = chosen["parentKey"]
+                    before = len(collected)
                     ui.click(chosen)
                     reply_expansions_done += 1
+                    reply_clicks[parent_key] = reply_clicks.get(parent_key, 0) + 1
+                    time.sleep(REPLY_SETTLE_SECONDS)
                     lines = ui.snapshot("comments-replies")
-                    drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
-                    for item in drawer["comments"]:
-                        if item["key"] == chosen["parentKey"]:
+                    drawer = parse(lines)
+                    absorb(drawer)
+                    if len(collected) == before:
+                        stalled_reply_parents.add(parent_key)
+                    for item in collected.values():
+                        if item["key"] == aliases.get(parent_key, parent_key):
                             item["repliesCollected"] = True
 
-                for item in drawer["comments"]:
-                    if item["key"] in expanded_reply_parents:
-                        item["repliesCollected"] = True
-                    _collect_comment(collected, aliases, item, replace=True)
-
                 # 3. Visit commenter profiles on the current viewport when supported by ui.
-                can_inspect_profiles = hasattr(ui, "profile_more") and max_profiles > 0
-                if can_inspect_profiles and len(profiles) < max_profiles and drawer["comments"]:
+                can_inspect_profiles = hasattr(ui, "profile_more") and max_profiles != 0
+                if can_inspect_profiles and drawer["comments"]:
                     reply_targets = {
                         c["replyToNickname"]
                         for c in list(collected.values()) + drawer["comments"]
                         if c.get("replyToNickname")
                     }
-                    while len(profiles) < max_profiles:
+                    while _within(max_profiles, len(attempted_people)):
                         has_visited_channels = any(p.get("accountType") == "channels" for p in profiles)
 
                         def candidate_rank(c):
@@ -892,12 +1054,15 @@ def collect_visible_comments(
                             for c in sorted(drawer["comments"], key=candidate_rank)
                             if c["key"] not in visited_comment_keys
                             and c["nickname"] != "[表情昵称]"
+                            and not c.get("_isSelf")
+                            and not any(same_person(person, c) for person in attempted_people)
                         ]
                         if not remaining:
                             break
                         candidate = remaining[0]
                         visited_comment_keys.add(candidate["key"])
-                        current_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                        attempted_people.append(candidate)
+                        current_drawer = parse(lines)
                         live_match = next(
                             (
                                 c
@@ -920,14 +1085,14 @@ def collect_visible_comments(
                             with timings.phase("collect_commenter_profile"):
                                 prof = inspect_commenter_profile(ui, live_match)
                                 lines = ui.snapshot("comments-return")
-                                if not find(lines, r"^评论\s*[\d.万wW]*") and (
+                                if user_card_open(lines, ui.height) or not find(lines, r"^评论\s*[\d.万wW]*") and (
                                     find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
                                     or find(lines, r"^(私信|客服)$")
                                     or find(lines, r"^正在观看$")
                                 ):
                                     ui.back()
                                     lines = ui.snapshot("comments-return")
-                                returned_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                                returned_drawer = parse(lines)
                                 anchor_ok = any(
                                     c["key"] == live_match["key"]
                                     or nickname_matches(live_match["nickname"], c["nickname"])
@@ -944,9 +1109,11 @@ def collect_visible_comments(
                                 }
                             )
                             lines = skipped.recovered_lines or ui.snapshot("comments-after-skip")
+                        # Visits return to the same scroll position; keep reading from the fresh view.
+                        drawer = parse(lines)
+                        absorb(drawer)
 
                 # 4. Determine whether collection is complete or should scroll to next page.
-                first_level_count = sum(1 for c in collected.values() if c.get("commentLevel", 1) == 1)
                 if drawer["empty"]:
                     end_reason = "empty_comments"
                     complete = True
@@ -959,15 +1126,20 @@ def collect_visible_comments(
                     end_reason = "all_declared_collected"
                     complete = True
                     break
-                if page_index + 1 >= max_pages or not hasattr(ui, "scroll_comments"):
-                    end_reason = "page_limit" if page_index + 1 >= max_pages else "single_page_only"
+                if (max_pages is not None and page_index + 1 >= max_pages) or not hasattr(ui, "scroll_comments"):
+                    end_reason = "page_limit" if hasattr(ui, "scroll_comments") else "single_page_only"
                     complete = False
                     break
 
+                if user_card_open(lines, ui.height):
+                    # Scrolling under an open card leaves the list still and would look like its end.
+                    lines = _recover_to_comment_drawer(ui, max_backs=2)
+                    drawer = parse(lines)
+                    absorb(drawer)
                 prev_sig = _drawer_signature(drawer)
                 ui.scroll_comments(lines)
                 lines = ui.snapshot(f"comments-page-{page_index + 2}")
-                next_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
+                next_drawer = parse(lines)
                 previous_names = [c["nickname"] for c in drawer["comments"]]
                 if (previous_names and next_drawer["comments"] and not next_drawer["empty"]
                         and not any(nickname_matches(a, c["nickname"])
@@ -976,12 +1148,9 @@ def collect_visible_comments(
                     # No shared comment: the scroll overshot and may have skipped some.
                     ui.scroll_comments_back(lines)
                     lines = ui.snapshot(f"comments-page-{page_index + 2}-back")
-                    next_drawer = parse_comment_drawer(lines, ui.height, parent_event_id=parent_id)
-                for item in next_drawer["comments"]:
-                    if item["key"] in expanded_reply_parents:
-                        item["repliesCollected"] = True
-                    _collect_comment(collected, aliases, item)
+                    next_drawer = parse(lines)
                 if _drawer_signature(next_drawer) == prev_sig:
+                    absorb(next_drawer)
                     end_reason = "end_of_list"
                     complete = True
                     break
@@ -1004,6 +1173,8 @@ def collect_visible_comments(
                 "pagesRead": pages_read,
                 "replyExpansions": reply_expansions_done,
                 "repliesCollected": has_replies,
+                "limits": {"maxPages": max_pages, "maxReplyExpansions": max_reply_expansions,
+                           "maxProfiles": max_profiles},
                 "profiles": profiles,
                 "skippedProfiles": skipped_profiles,
                 "events": events,
