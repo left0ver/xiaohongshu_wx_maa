@@ -1,6 +1,7 @@
 """Maa OCR adapter. Both the packaged agent and on-device acceptance runner use it."""
 
 import json
+import os
 import re
 import struct
 import subprocess
@@ -116,6 +117,9 @@ class MaaUi:
         self.observation = 0
         self.hierarchy_unavailable = False
         self.navigation_stage = None
+        # Debug only: keep the exact frames behind each recognition for box overlays.
+        self.dump_frames = os.environ.get("WECHAT_DUMP_FRAMES") == "1"
+        self.snapshot_frame = None
         sizes = re.findall(r"(\d+)x(\d+)", command("wm", "size").decode())
         if not sizes:
             raise RuntimeError("Physical screen size is unavailable")
@@ -195,6 +199,7 @@ class MaaUi:
             if not job.succeeded:
                 raise RuntimeError("Screenshot failed")
             self.image = job.get()
+            self.snapshot_frame = self.image
             spec = {key: node[key] for key in ("all_of", "box_index") if key in node}
             result = self.tasker.post_recognition("And", JAnd(**spec), self.image).wait().get()
             detail = result.nodes[-1].recognition if result and result.nodes else None
@@ -210,6 +215,7 @@ class MaaUi:
 
     def snapshot(self, label, author=None):
         attempts = []
+        self.snapshot_frame = None
 
         def measured(source, read):
             started = time.monotonic_ns()
@@ -246,6 +252,11 @@ class MaaUi:
                     "fields": field_evidence(lines, label, author)}
         (self.evidence_dir / f"{self.sequence:03d}-{label}.json").write_text(
             json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.dump_frames:
+            # Hierarchy reads take no screenshot; capture right after for the overlay.
+            frame = self.snapshot_frame if self.snapshot_frame is not None else self.debug_screencap()
+            if frame is not None:
+                np.save(self.evidence_dir / f"{self.sequence:03d}-{label}.npy", frame)
         print(json.dumps({"kind": "recognitionTiming", "label": label, "source": source,
                           "attempts": attempts}, ensure_ascii=False), flush=True)
 
@@ -282,12 +293,26 @@ class MaaUi:
                     ocr_image[orange] = 255
             result = self.tasker.post_recognition("OCR", JOCR(threshold=0.55, roi=roi), ocr_image).wait().get()
             detail = result.nodes[0].recognition if result and result.nodes else None
+            self.snapshot_frame = image
         if detail is None:
             raise RuntimeError("OCR returned no result")
         # Native results retain every OCR box, including ones not chosen as best_result.
         lines = detail.raw_detail.get("all", [])
+        if self.dump_frames and not self.context:
+            self.ocr_calls = getattr(self, "ocr_calls", 0) + 1
+            name = f"ocr-{self.sequence + 1:03d}-{self.ocr_calls:03d}-{label}"
+            np.save(self.evidence_dir / f"{name}.npy", image)
+            (self.evidence_dir / f"{name}.json").write_text(json.dumps(
+                {"label": label, "roi": roi, "threshold": 0.55, "lines": lines},
+                ensure_ascii=False, indent=2), encoding="utf-8")
         lines = [line for line in lines if line.get("score", 0) >= 0.55 and line.get("text", "").strip()]
         return self.annotate(lines, "ocr")
+
+    def debug_screencap(self):
+        if self.context:
+            return None
+        job = self.controller.post_screencap().wait()
+        return job.get() if job.succeeded else None
 
     @contextmanager
     def prepare_basic_info(self):
