@@ -11,13 +11,15 @@ from pathlib import Path
 from maa.agent.agent_server import AgentServer
 from maa.custom_action import CustomAction
 
-from android_ui import MaaUi
+from android_ui import MaaUi, foreground
 from collection import LocalStore, Timings, collect, ensure_feed
 from comments import COMMENT_LIMIT_KEYS, collect_visible_comments, comment_limits
 from interactions import (
     INTERACTION_ACTIONS,
+    INTERACTION_RESULT_KEYS,
     DailyQuotaStore,
     classify_page_state,
+    failed_interactions,
     interact_work_and_comments,
     validate_interaction_config,
 )
@@ -70,17 +72,36 @@ class CollectComments(CollectVideo):
     include_comments = True
 
 
-INTERACTION_RESULT_KEYS = ("workLike", "workCollect", "workComment", "commentLike", "commentReply",
-                           "authorProfileTouch", "preemptiveReply", "profileTouch")
-
-
 def interaction_summary(result):
     """One status per performed action, so the run log shows what happened without opening the JSON."""
     summary = {key: result[key].get("status") or result[key].get("touchStatus") for key in INTERACTION_RESULT_KEYS
-               if isinstance(result.get(key), dict)}
+               if isinstance(result.get(key), dict) and key != "messages"}
     if isinstance(result.get("messages"), dict):
-        summary["messagesHandled"] = len(result["messages"].get("messagesHandled") or [])
+        messages = result["messages"]
+        if messages.get("status") == "failed":
+            summary["messages"] = "failed"
+        else:
+            summary["messagesHandled"] = len(messages.get("messagesHandled") or [])
     return summary
+
+
+def wechat_in_front():
+    try:
+        foreground()
+    except RuntimeError:
+        return False
+    return True
+
+
+def start_on_feed(ui):
+    """Open WeChat and enter the Channels feed; a feed already on screen is kept.
+
+    Starting from the helper app leaves the helper in front, so WeChat is opened
+    first. Navigating re-selects 推荐 and may refresh the feed, which is why a
+    work already showing in the feed is not navigated away from.
+    """
+    if not wechat_in_front() or classify_page_state(ui.snapshot("interact-start"), ui.height) != "channels_feed":
+        ensure_feed(ui, launch=True)
 
 
 @AgentServer.custom_action("InteractWechatWork")
@@ -95,25 +116,27 @@ class InteractWork(CustomAction):
         raw_param = getattr(argv, "custom_action_param", None)
         config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
         try:
-            # Fail on an unusable configuration before touching the phone.
+            # Fail on an unusable configuration before touching the phone. A
+            # ticked action with blank text is reported as such, not as "nothing enabled".
+            validate_interaction_config(config)
             if not any(config.get(key) for key in INTERACTION_ACTIONS):
                 raise ValueError("No interaction is enabled")
-            validate_interaction_config(config)
             with (root / "collection.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 ui = MaaUi(context.tasker, run_dir, context)
                 if config.get("ensureFeed"):
-                    # Navigating re-selects 推荐 and may refresh the feed, so a work already on screen is kept.
-                    if classify_page_state(ui.snapshot("interact-start"), ui.height) != "channels_feed":
-                        ensure_feed(ui, launch=True)
+                    start_on_feed(ui)
                 quota_store = DailyQuotaStore(root / "daily_quotas.json", limits=config.get("limits"))
                 result = interact_work_and_comments(ui, quota_store, config)
                 (run_dir / "interactions.json").write_text(
                     json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                timings.emit({"kind": "interactionsCompleted", "outcome": "succeeded", "workKey": result.get("workKey"),
-                              "summary": interaction_summary(result)})
-                return True
+                # Every action has run; the task still reports failure when any of them failed.
+                failed = failed_interactions(result)
+                timings.emit({"kind": "interactionsCompleted", "outcome": "failed" if failed else "succeeded",
+                              "workKey": result.get("workKey"), "summary": interaction_summary(result),
+                              **({"failedActions": failed} if failed else {})})
+                return not failed
         except Exception as error:
             timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})
             return False
