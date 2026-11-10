@@ -24,6 +24,12 @@ def identity(*parts):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+# Message-center tabs only need to contain the word: OCR often reads an unread
+# badge into the same box ("点赞+65").
+MESSAGE_LIKE_TAB = r"点赞"
+MESSAGE_COMMENT_TAB = r"评论"
+
+
 def find(lines, pattern, predicate=lambda line: True):
     return next((line for line in sorted(lines, key=lambda item: (item["box"][1], item["box"][0]))
                  if re.search(pattern, line["text"]) and predicate(line)), None)

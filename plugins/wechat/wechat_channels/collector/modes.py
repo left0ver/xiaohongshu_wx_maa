@@ -12,6 +12,8 @@ import time
 import uuid
 
 from collection import (
+    MESSAGE_COMMENT_TAB,
+    MESSAGE_LIKE_TAB,
     LocalStore,
     Timings,
     author_in_feed,
@@ -414,7 +416,8 @@ def find_top_tabs(lines) -> dict:
     if (
         tabs
         and any(40 <= item["box"][1] <= 145 for item in tabs.values())
-        and not (find(lines, r"^点赞$", lambda l: l["box"][1] < 160) and find(lines, r"^评论$", lambda l: l["box"][1] < 160))
+        and not (find(lines, MESSAGE_LIKE_TAB, lambda l: l["box"][1] < 160)
+                 and find(lines, MESSAGE_COMMENT_TAB, lambda l: l["box"][1] < 160))
         and not find(lines, r"^(?:私信|客服)$")
     ):
         defaults = {

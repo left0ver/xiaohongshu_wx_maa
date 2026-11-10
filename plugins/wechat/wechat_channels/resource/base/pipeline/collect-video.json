@@ -63,6 +63,21 @@
     "pre_delay": 0,
     "post_delay": 0
   },
+  "BatchMessagesCommentTab": {
+    "recognition": "And",
+    "all_of": [{
+      "recognition": "TemplateMatch",
+      "template": ["messages-comment.png", "messages-comment-active.png"],
+      "threshold": 0.88,
+      "roi": [120, 60, 400, 100]
+    }],
+    "box_index": 0,
+    "action": "DoNothing",
+    "next": [],
+    "timeout": 1,
+    "pre_delay": 0,
+    "post_delay": 0
+  },
   "BatchDiscoverTab": {
     "recognition": "And",
     "all_of": [
