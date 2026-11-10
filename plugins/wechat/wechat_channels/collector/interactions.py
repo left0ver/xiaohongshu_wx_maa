@@ -2005,8 +2005,60 @@ def validate_interaction_config(config):
         raise ValueError("touchCommenterProfile needs targetComment with a nickname, content or commentKey")
 
 
+def _must_propagate(error):
+    """Stops and verification pages end the whole run; mode runs pause on the latter and retry."""
+    message = str(error)
+    return isinstance(error, InterruptedError) or "Verification detected" in message or "captcha" in message.lower()
+
+
+def recover_to_feed(ui, max_backs=4):
+    """Back out of whatever page a failed action left behind, so the next action starts from the feed."""
+    state = "unknown"
+    for attempt in range(max_backs + 1):
+        check_stopped(ui)
+        state = classify_page_state(ui.snapshot(f"recover-{attempt}"), ui.height)
+        if state == "channels_feed":
+            break
+        if attempt < max_backs:
+            ui.back()
+    return state
+
+
+def _run_action(ui, results, key, action):
+    """Run one configured action; its failure is recorded and does not stop the actions after it."""
+    check_stopped(ui)
+    try:
+        results[key] = action()
+    except Exception as error:
+        check_stopped(ui)
+        if _must_propagate(error):
+            raise
+        failure = {"status": "failed", "error": str(error)}
+        try:
+            failure["recoveredState"] = recover_to_feed(ui)
+        except Exception as recovery_error:
+            check_stopped(ui)
+            if _must_propagate(recovery_error):
+                raise
+            failure["recoveryError"] = str(recovery_error)
+        results[key] = failure
+
+
+INTERACTION_RESULT_KEYS = ("workLike", "workCollect", "workComment", "commentLike", "commentReply",
+                           "authorProfileTouch", "preemptiveReply", "profileTouch", "messages")
+
+
+def failed_interactions(results):
+    return [key for key in INTERACTION_RESULT_KEYS
+            if isinstance(results.get(key), dict) and results[key].get("status") == "failed"]
+
+
 def interact_work_and_comments(ui, quota_store, config, video_event=None):
-    """High-level entry point executing configured Batch 3 actions with clean resume."""
+    """High-level entry point executing configured Batch 3 actions with clean resume.
+
+    Each action runs on its own: one that fails is recorded with status "failed",
+    the page is backed out to the feed, and the remaining actions still run.
+    """
     validate_interaction_config(config)
     check_stopped(ui)
     resume_info = ensure_clean_page_on_resume(ui)
@@ -2015,6 +2067,7 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
     author = (config.get("author") or "").strip()
     caption = (config.get("title") or "").strip()
     work = None
+    work_error = None
     work_key = config.get("workKey") or ""
     if not work_key and video_event is not None:
         work_key = compute_work_key(video_event=video_event, author=author, title=caption)
@@ -2032,9 +2085,9 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
             work_key = quota_store.resolve_work_key(author, caption)
             work = {"author": author, "caption": caption}
         elif any(config.get(k) for k in WORK_SCOPED_ACTIONS):
-            raise RuntimeError(
-                "Cannot identify the current work: start from the Channels feed or pass workKey/author"
-            )
+            # Acting without knowing the work could repeat a comment on it; the
+            # author visit and the message inspection do not need it.
+            work_error = "Cannot identify the current work: start from the Channels feed or pass workKey/author"
     results = {
         "workKey": work_key,
         "resume": {k: v for k, v in resume_info.items() if k != "lines"},
@@ -2042,72 +2095,81 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
     if work:
         results["work"] = work
 
+    def work_action(key, action):
+        if work_error:
+            results[key] = {"status": "failed", "error": work_error}
+        else:
+            _run_action(ui, results, key, action)
+
     if config.get("likeWork"):
-        results["workLike"] = like_work(ui, quota_store, work_key)
+        work_action("workLike", lambda: like_work(ui, quota_store, work_key))
 
     if config.get("collectWork"):
-        results["workCollect"] = collect_work_action(ui, quota_store, work_key)
+        work_action("workCollect", lambda: collect_work_action(ui, quota_store, work_key))
 
     if config.get("commentText"):
-        results["workComment"] = post_work_comment(
+        work_action("workComment", lambda: post_work_comment(
             ui,
             quota_store=quota_store,
             work_key=work_key,
             comment_text=config["commentText"],
             self_nickname=config.get("selfNickname", ""),
             close_drawer=bool(config.get("closeDrawerAfterComment", False)),
-        )
+        ))
 
     if config.get("likeComment"):
-        results["commentLike"] = like_comment(
+        work_action("commentLike", lambda: like_comment(
             ui,
             quota_store=quota_store,
             work_key=work_key,
             target_comment=config.get("targetComment"),
-        )
+        ))
 
     if config.get("replyText"):
-        results["commentReply"] = reply_to_comment(
+        work_action("commentReply", lambda: reply_to_comment(
             ui,
             quota_store=quota_store,
             work_key=work_key,
             reply_text=config["replyText"],
             target_comment=config.get("targetComment"),
             self_nickname=config.get("selfNickname", ""),
-        )
+        ))
 
     if config.get("touchAuthorProfile"):
         spec = config["touchAuthorProfile"] if isinstance(config["touchAuthorProfile"], dict) else {}
-        results["authorProfileTouch"] = visit_and_touch_author_profile(
+        _run_action(ui, results, "authorProfileTouch", lambda: visit_and_touch_author_profile(
             ui,
             quota_store=quota_store,
             do_follow=spec.get("follow", True),
             do_like_first_work=spec.get("likeFirstWork", True),
             do_collect_first_work=spec.get("collectFirstWork", True),
-        )
+        ))
 
     if config.get("preemptiveReply"):
         spec = config["preemptiveReply"]
-        results["preemptiveReply"] = preemptive_reply_comment(
+        _run_action(ui, results, "preemptiveReply", lambda: preemptive_reply_comment(
             ui,
             quota_store=quota_store,
             target_work=spec.get("targetWork"),
             target_comment=spec.get("targetComment"),
             reply_text=spec.get("replyText", ""),
             self_nickname=config.get("selfNickname", ""),
-        )
+        ))
 
     if config.get("touchCommenterProfile"):
         spec = config["touchCommenterProfile"] if isinstance(config["touchCommenterProfile"], dict) else {}
-        located = locate_target_comment(
-            ui,
-            target_spec=commenter_target(config),
-            quota_store=quota_store,
-            work_key=work_key,
-            exclude_self=True,
-        )
-        if located["found"] and located["comment"]:
-            results["profileTouch"] = visit_and_touch_commenter_profile(
+
+        def touch_commenter():
+            located = locate_target_comment(
+                ui,
+                target_spec=commenter_target(config),
+                quota_store=quota_store,
+                work_key=work_key,
+                exclude_self=True,
+            )
+            if not (located["found"] and located["comment"]):
+                return {"status": "target_comment_not_found"}
+            return visit_and_touch_commenter_profile(
                 ui,
                 quota_store=quota_store,
                 comment=located["comment"],
@@ -2116,19 +2178,19 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
                 do_like_first_work=spec.get("likeFirstWork", True),
                 do_collect_first_work=spec.get("collectFirstWork", True),
             )
-        else:
-            results["profileTouch"] = {"status": "target_comment_not_found"}
+
+        work_action("profileTouch", touch_commenter)
 
     if config.get("inspectMessages"):
         spec = config["inspectMessages"] if isinstance(config["inspectMessages"], dict) else {}
-        results["messages"] = inspect_and_handle_messages(
+        _run_action(ui, results, "messages", lambda: inspect_and_handle_messages(
             ui,
             quota_store=quota_store,
             max_messages=int(spec.get("maxMessages", 1)),
             do_like=bool(spec.get("like", True)),
             reply_text=spec.get("replyText"),
             target_nickname=spec.get("targetNickname"),
-        )
+        ))
 
     results["quotas"] = quota_store.summary()
     return results

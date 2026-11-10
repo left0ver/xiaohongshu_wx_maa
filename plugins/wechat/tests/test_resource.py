@@ -50,7 +50,13 @@ def resolve_task(task, values):
         option = OPTIONS[name]
         kind = option.get("type", "select")
         if kind == "input":
-            merge(output, substitute(option["pipeline_override"], option["inputs"], values.get(name, {})))
+            given = values.get(name, {})
+            for field in option["inputs"]:
+                # The host refuses to start a run whose input does not match its pattern.
+                raw = given.get(field["name"], field.get("default", ""))
+                if "verify" in field and not re.search(field["verify"], raw):
+                    raise ValueError(f"{name}.{field['name']}: {field.get('pattern_msg', 'invalid input')}")
+            merge(output, substitute(option["pipeline_override"], option["inputs"], given))
             return
         default = option.get("default_case", [] if kind == "checkbox" else option["cases"][0]["name"])
         chosen = values.get(name, default)
@@ -277,9 +283,22 @@ class ResourceFlowTests(unittest.TestCase):
         self.assertEqual(param["targetComment"], {"nickname": "", "content": ""})
         with self.assertRaisesRegex(ValueError, "targetComment"):
             validate_interaction_config(param)
-        param = self.interact_param({"interact_work_actions": ["comment"]})
+        # A whitespace-only text is refused by the host already, and by the agent if it ever got through.
+        with self.assertRaisesRegex(ValueError, "interact_comment_text_required"):
+            self.interact_param({"interact_work_actions": ["comment"], "interact_comment_text": {"text": " "}})
         with self.assertRaisesRegex(ValueError, "commentText is enabled but empty"):
-            validate_interaction_config(param)
+            validate_interaction_config({"commentText": " "})
+
+    def test_ticked_comment_and_reply_need_their_text_before_the_run_starts(self):
+        with self.assertRaisesRegex(ValueError, "interact_comment_text.text: \\$interact_comment_text_required"):
+            self.interact_param({"interact_work_actions": ["comment"]})
+        with self.assertRaisesRegex(ValueError, "interact_reply_text.text: \\$interact_reply_text_required"):
+            self.interact_param({"interact_comment_actions": ["reply"],
+                                 "interact_target_comment": {"nickname": "俊国", "content": ""}})
+        # Unticked, the empty text fields are not part of the run and do not block it.
+        self.interact_param({"interact_work_actions": ["like"]})
+        self.assertEqual(self.interact_param({"interact_work_actions": ["comment"],
+                                              "interact_comment_text": {"text": "拍得真好"}})["commentText"], "拍得真好")
 
     def test_options_are_defined_localized_and_reachable(self):
         catalogs = [json.loads((PROJECT / path).read_text(encoding="utf-8")) for path in INTERFACE["languages"].values()]
@@ -295,7 +314,7 @@ class ResourceFlowTests(unittest.TestCase):
             for case in option.get("cases", []):
                 found += keys(case, ("label", "description"))
             for field in option.get("inputs", []):
-                found += keys(field, ("label", "description", "placeholder"))
+                found += keys(field, ("label", "description", "placeholder", "pattern_msg"))
                 self.assertTrue(field["label"].startswith("$"))
             for key in found:
                 for catalog in catalogs:

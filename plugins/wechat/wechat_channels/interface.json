@@ -2,7 +2,7 @@
   "interface_version": 2,
   "name": "wechat_channels",
   "label": "$project_name",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "$project_description",
   "languages": {
     "zh_cn": "locale/zh_cn.json",
@@ -251,7 +251,9 @@
           "name": "text",
           "label": "$interact_comment_text_field",
           "placeholder": "$interact_comment_text_placeholder",
-          "default": ""
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$interact_comment_text_required"
         }
       ],
       "pipeline_override": {
@@ -346,7 +348,9 @@
           "name": "text",
           "label": "$interact_reply_text_field",
           "placeholder": "$interact_reply_text_placeholder",
-          "default": ""
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$interact_reply_text_required"
         }
       ],
       "pipeline_override": {

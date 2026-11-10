@@ -4,12 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from interactions import (
     _work_matches_spec,
     DailyQuotaStore,
     QuotaExceededError,
     classify_page_state,
+    failed_interactions,
     collect_work_action,
     commenter_target,
     ensure_clean_page_on_resume,
@@ -402,12 +404,50 @@ class WechatInteractionsTests(unittest.TestCase):
         store = DailyQuotaStore(self.quota_path)
         ui = FakeUi(snapshots=[drawer_lines(total=5)])
 
-        with self.assertRaisesRegex(RuntimeError, "Cannot identify the current work"):
-            interact_work_and_comments(ui, store, {"commentText": "笑到停不下来，这段太绝了", "replyText": "同感",
-                                                   "targetComment": {"nickname": "俊国"}})
+        with mock.patch("interactions.inspect_and_handle_messages", return_value={"messagesHandled": []}) as inspect:
+            result = interact_work_and_comments(ui, store, {"commentText": "笑到停不下来，这段太绝了", "replyText": "同感",
+                                                            "targetComment": {"nickname": "俊国"},
+                                                            "inspectMessages": {"maxMessages": 1}})
 
+        for key in ("workComment", "commentReply"):
+            self.assertEqual(result[key]["status"], "failed")
+            self.assertIn("Cannot identify the current work", result[key]["error"])
+        # The message inspection does not depend on the work, so it still runs.
+        inspect.assert_called_once()
+        self.assertEqual(failed_interactions(result), ["workComment", "commentReply"])
         self.assertEqual(ui.clicks, [])
         self.assertEqual(store.summary()["used"]["comment"], 0)
+
+    def test_a_failed_action_is_recorded_and_the_next_actions_still_run(self):
+        store = DailyQuotaStore(self.quota_path)
+        profile = [{"text": "关注", "box": [157, 723, 64, 39]}, {"text": "私信", "box": [493, 727, 60, 32]}]
+        # resume check, then the recovery: still on the author page, back once, feed.
+        ui = FakeUi(snapshots=[feed_lines(), profile, feed_lines()])
+        config = {"workKey": "wxch-video:k", "likeWork": True, "collectWork": True}
+
+        with mock.patch("interactions.like_work", side_effect=RuntimeError("Like state did not change")), \
+                mock.patch("interactions.collect_work_action", return_value={"status": "performed"}) as collect:
+            result = interact_work_and_comments(ui, store, config)
+
+        self.assertEqual(result["workLike"], {"status": "failed", "error": "Like state did not change",
+                                              "recoveredState": "channels_feed"})
+        self.assertEqual(ui.backs, 1)
+        collect.assert_called_once()
+        self.assertEqual(result["workCollect"]["status"], "performed")
+        self.assertEqual(failed_interactions(result), ["workLike"])
+
+    def test_a_stop_or_a_verification_page_still_ends_the_whole_run(self):
+        store = DailyQuotaStore(self.quota_path)
+        for error, expected in ((InterruptedError("Interaction was stopped"), InterruptedError),
+                                (RuntimeError("Verification detected; manual intervention required"), RuntimeError)):
+            ui = FakeUi(snapshots=[feed_lines()])
+            with mock.patch("interactions.like_work", side_effect=error), \
+                    mock.patch("interactions.collect_work_action") as collect:
+                with self.assertRaises(expected):
+                    interact_work_and_comments(ui, store, {"workKey": "wxch-video:k", "likeWork": True,
+                                                           "collectWork": True})
+            collect.assert_not_called()
+            self.assertEqual(ui.backs, 0)
 
     def test_comment_actions_without_a_target_are_refused_before_touching_the_phone(self):
         # An empty target matches the first visible comment, so it would act on a stranger.

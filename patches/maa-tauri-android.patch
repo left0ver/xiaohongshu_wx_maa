@@ -778,3 +778,79 @@ index 3bff64b..36a6178 100644
          <RunDurationField
            seconds={snapshot?.configuration.maxRunDurationSeconds}
            disabled={restartPending || !snapshot}
+diff --git a/src-tauri/src/domain/loader.rs b/src-tauri/src/domain/loader.rs
+index d06b56e..e4cfe2c 100644
+--- a/src-tauri/src/domain/loader.rs
++++ b/src-tauri/src/domain/loader.rs
+@@ -579,6 +579,9 @@ fn parse_option(
+                         }
+                         input.description = text(raw_input.get("description"));
+                         input.placeholder = text(raw_input.get("placeholder"));
++                        if let Some(message) = text(raw_input.get("pattern_msg")) {
++                            input.pattern_message = Some(message);
++                        }
+                     }
+                 }
+                 OptionDefinition::Input {
+diff --git a/src/components/OptionEditor.tsx b/src/components/OptionEditor.tsx
+index a02695e..2989053 100644
+--- a/src/components/OptionEditor.tsx
++++ b/src/components/OptionEditor.tsx
+@@ -218,8 +218,13 @@ export function OptionEditor({
+           );
+         }
+         const current = values[field.name] ?? field.default ?? "";
++        // A pattern that rejects the empty string marks a required field: its
++        // message shows right away so the user knows to fill it in, and the run
++        // is refused until it matches. Optional fields stay quiet while empty.
+         const patternError =
+-          option.kind === "input" && field.verify && current.length > 0
++          option.kind === "input" &&
++          field.verify &&
++          (current.length > 0 || !matchesPattern("", field.verify))
+             ? matchesPattern(current, field.verify)
+               ? undefined
+               : (field.patternMessage ?? t("invalidInput"))
+diff --git a/src/components/ui/Modal.tsx b/src/components/ui/Modal.tsx
+index 15e69fa..96f105b 100644
+--- a/src/components/ui/Modal.tsx
++++ b/src/components/ui/Modal.tsx
+@@ -25,18 +25,23 @@ export function Modal({
+ }: ModalProps) {
+   const { t } = useTranslation();
+   const panelRef = useRef<HTMLDivElement>(null);
++  // Callers pass a fresh onClose on every render. Keeping it out of the effect's
++  // dependencies stops the panel from re-taking focus on each re-render, which
++  // blurred a text field inside the modal after every typed character.
++  const onCloseRef = useRef(onClose);
++  onCloseRef.current = onClose;
+ 
+   useEffect(() => {
+     if (!open) return;
+     panelRef.current?.focus();
+ 
+     function closeOnEscape(event: KeyboardEvent) {
+-      if (event.key === "Escape") onClose();
++      if (event.key === "Escape") onCloseRef.current();
+     }
+ 
+     document.addEventListener("keydown", closeOnEscape);
+     return () => document.removeEventListener("keydown", closeOnEscape);
+-  }, [open, onClose]);
++  }, [open]);
+ 
+   if (!open) return null;
+ 
+diff --git a/src/lib/pi/adapter.ts b/src/lib/pi/adapter.ts
+index 29fa01d..24c82cb 100644
+--- a/src/lib/pi/adapter.ts
++++ b/src/lib/pi/adapter.ts
+@@ -163,7 +163,7 @@ function parseInputField(
+     default: optionalString(item.default),
+     pipelineType,
+     verify: optionalString(item.verify),
+-    patternMessage: optionalString(item.pattern_msg),
++    patternMessage: localize(item.pattern_msg),
+     password: boolean(item.password) ?? false,
+     inputType,
+   };
