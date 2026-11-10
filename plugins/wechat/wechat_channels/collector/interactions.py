@@ -20,6 +20,8 @@ import re
 import time
 
 from collection import (
+    MESSAGE_COMMENT_TAB,
+    MESSAGE_LIKE_TAB,
     author_in_feed,
     comment_control_in_feed,
     feed_video_preview,
@@ -68,6 +70,9 @@ ACTION_RECORDS = (
 )
 
 MAX_KNOWN_WORKS = 500
+# A freshly opened profile keeps reflowing (bio, counters) for a moment; tapping
+# 关注 off an early snapshot can land on the bio instead of the button.
+PROFILE_SETTLE_SECONDS = 3
 
 
 class QuotaExceededError(RuntimeError):
@@ -407,8 +412,8 @@ def classify_page_state(lines, height=1605):
         return "share_overlay"
 
     if (
-        find(lines, r"^点赞$", lambda l: l["box"][1] < 160)
-        and find(lines, r"^评论$", lambda l: l["box"][1] < 160)
+        find(lines, MESSAGE_LIKE_TAB, lambda l: l["box"][1] < 160)
+        and find(lines, MESSAGE_COMMENT_TAB, lambda l: l["box"][1] < 160)
     ):
         return "channels_message_center"
 
@@ -1570,6 +1575,7 @@ def visit_and_touch_commenter_profile(
         raise ValueError("Comment has no clickable _nameBox")
 
     ui.click({"text": nickname, "box": name_box})
+    time.sleep(PROFILE_SETTLE_SECONDS)
     profile_lines = ui.snapshot("commenter-profile", author=nickname)
 
     if classify_page_state(profile_lines, ui.height) == "user_profile":
@@ -1659,6 +1665,7 @@ def visit_and_touch_author_profile(
     target = author_in_feed(feed_lines, ui.height)
     author_name = target["text"].strip()
     ui.click(target)
+    time.sleep(PROFILE_SETTLE_SECONDS)
     profile_lines = ui.snapshot("author-profile-touch", author=author_name)
     try:
         profile = parse_author(profile_lines, author_name)
@@ -1725,7 +1732,7 @@ def open_personal_messages(ui, lines=None):
         state = classify_page_state(lines, ui.height)
 
     if state == "channels_message_center":
-        comment_tab = find(lines, r"^评论$", lambda l: l["box"][1] < 160)
+        comment_tab = find(lines, MESSAGE_COMMENT_TAB, lambda l: l["box"][1] < 160)
         if comment_tab:
             check_stopped(ui)
             ui.click(comment_tab)

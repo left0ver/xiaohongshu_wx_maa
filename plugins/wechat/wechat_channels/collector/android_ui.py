@@ -16,7 +16,7 @@ from maa.library import Library
 from maa.pipeline import JAnd, JOCR, JTemplateMatch
 from maa.resource import Resource
 from maa.tasker import Tasker
-from collection import find, navigation_roi
+from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
 from hierarchy import HierarchyUnavailable, choose_snapshot, refresh_target, text_lines
 from readiness import wait_basic_info
@@ -24,6 +24,7 @@ from layout import line_height
 from probe_reader import prepared_reader
 
 COMMENT_SWIPE_MS = 900
+MESSAGE_TAB_NODES = ("BatchMessagesLikeTab", "BatchMessagesCommentTab")
 
 
 def command(*args, timeout=15):
@@ -186,7 +187,7 @@ class MaaUi:
         node = json.loads(json.dumps(self.nodes[name]))
         quarter = (self.height + 3) // 4
         roi = [0, self.height - quarter, 720, quarter] if name == "BatchDiscoverTab" else [0, 0, 720, quarter]
-        if name == "BatchMessagesLikeTab":
+        if name in MESSAGE_TAB_NODES:
             roi = [120, 60, 400, 100]
         for child in node["all_of"]:
             if isinstance(child.get("roi"), list):
@@ -209,9 +210,34 @@ class MaaUi:
         role, text = {"BatchDiscoverTab": ("discover", "发现"),
                       "BatchChannelsEntry": ("channels", "视频号"),
                       "BatchRecommended": ("recommend", "推荐"),
-                      "BatchMessagesLikeTab": ("message_like", "点赞")}[name]
+                      "BatchMessagesLikeTab": ("message_like", "点赞"),
+                      "BatchMessagesCommentTab": ("message_comment", "评论")}[name]
         return {"text": text, "box": [box.x, box.y, box.w, box.h],
                 "navigation": role, "templateNode": name}
+
+    def message_tabs(self, label, lines, measured):
+        """Fill in 点赞/评论 message-center tabs that are drawn as icons instead of text.
+
+        The creator 视频号消息 center labels 评论 but may draw 点赞 as a heart; the
+        viewer 消息 page (accounts without a Channels account) draws both tabs as
+        icons (heart, speech bubble). Tabs are only added when both are present,
+        so a lone heart (e.g. the feed's 朋友♡) never fakes a message center.
+        """
+        top = lambda line: line["box"][1] < 160
+        has_like = find(lines, MESSAGE_LIKE_TAB, top)
+        has_comment = find(lines, MESSAGE_COMMENT_TAB, top)
+        if has_like and has_comment:
+            return []
+        if not (label.startswith("messages") or has_like or has_comment):
+            return []
+        like = None if has_like else measured("template", lambda: self.match_navigation("BatchMessagesLikeTab"))
+        if not (has_like or like):
+            return []
+        comment = None if has_comment else measured(
+            "template", lambda: self.match_navigation("BatchMessagesCommentTab"))
+        if not (has_comment or comment):
+            return []
+        return [tab for tab in (like, comment) if tab]
 
     def snapshot(self, label, author=None):
         attempts = []
@@ -235,12 +261,10 @@ class MaaUi:
             lambda: measured("ocr", lambda: self.ocr_snapshot(label)),
             regional_ocr=lambda roi: measured("ocr-region", lambda: self.ocr_snapshot(label, roi)),
             refresh=lambda: measured("hierarchy-confirm", lambda: self.hierarchy(force=True)))
-        if (find(lines, r"^评论$", lambda line: line["box"][1] < 160)
-                and not find(lines, r"^点赞$", lambda line: line["box"][1] < 160)):
-            like_tab = measured("template", lambda: self.match_navigation("BatchMessagesLikeTab"))
-            if like_tab:
-                lines = [*lines, *self.annotate([like_tab], "template")]
-                source = "mixed"
+        tabs = self.message_tabs(label, lines, measured)
+        if tabs:
+            lines = [*lines, *self.annotate(tabs, "template")]
+            source = "mixed"
         self.record_snapshot(label, lines, source, attempts, author)
         return lines
 

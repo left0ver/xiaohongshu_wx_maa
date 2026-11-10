@@ -935,7 +935,7 @@ class WechatInteractionsTests(unittest.TestCase):
 
     def test_personal_page_prefers_creator_messages_over_viewer_messages(self):
         # vivo V2131A WeChat 8.0.79 lists viewer 消息 above creator 视频号消息; the
-        # viewer page has icon tabs and is not the Channels message center.
+        # creator entry wins whenever it exists.
         personal = [{"text": "赞、收藏和最近看过", "box": [20, 120, 260, 30]},
                     {"text": "关注", "box": [20, 178, 50, 30]},
                     {"text": "消息", "box": [20, 236, 50, 30]},
@@ -946,6 +946,32 @@ class WechatInteractionsTests(unittest.TestCase):
                   {"text": "关注", "box": [462, 40, 50, 30]}]
         ui = FakeUi([feed_lines(), personal, center, center])
         open_personal_messages(ui)
+        self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "视频号消息", "评论"])
+
+    def test_viewer_messages_with_icon_tabs_opens_comments(self):
+        # Huawei Hebe_BD00: the account has no Channels account (暂无账号), so the
+        # personal page only offers viewer 消息, whose tabs are a heart and a
+        # speech bubble without text; the agent adds them from templates.
+        testdata = Path(__file__).parent / "testdata"
+        personal = json.loads((testdata / "personal-page-no-channels.json").read_text(encoding="utf-8"))
+        center = json.loads((testdata / "message-center-icons.json").read_text(encoding="utf-8"))
+        self.assertEqual(classify_page_state(center), "unknown")
+        center += [{"text": "点赞", "box": [276, 96, 32, 29], "source": "template",
+                    "templateNode": "BatchMessagesLikeTab"},
+                   {"text": "评论", "box": [411, 96, 35, 29], "source": "template",
+                    "templateNode": "BatchMessagesCommentTab"}]
+        ui = FakeUi([feed_lines(), personal, center, center])
+        self.assertEqual(open_personal_messages(ui), center)
+        self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "消息", "评论"])
+
+    def test_creator_message_center_with_unread_badge_opens_comments(self):
+        # vivo V2131A: OCR reads the 点赞 tab and its unread badge as one box "点赞+65".
+        testdata = Path(__file__).parent / "testdata"
+        personal = json.loads((testdata / "personal-page-creator.json").read_text(encoding="utf-8"))
+        center = json.loads((testdata / "message-center-badge.json").read_text(encoding="utf-8"))
+        self.assertEqual(classify_page_state(center), "channels_message_center")
+        ui = FakeUi([feed_lines(), personal, center, center])
+        self.assertEqual(open_personal_messages(ui), center)
         self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "视频号消息", "评论"])
 
     def test_recorded_message_center_with_heart_template_opens_comments(self):
