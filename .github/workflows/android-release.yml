@@ -53,7 +53,20 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: gradle
+      # setup-android skips downloading cmdline-tools when
+      # $ANDROID_SDK_ROOT/cmdline-tools/<short version>/bin/sdkmanager exists,
+      # so caching that directory avoids flaky dl.google.com downloads.
+      # Keep the short version (22.0) in sync with the long one (15859902).
+      - name: Resolve cmdline-tools cache path
+        id: android-cmdline-tools
+        run: echo "dir=${ANDROID_SDK_ROOT:-$HOME/.android/sdk}/cmdline-tools/22.0" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.android-cmdline-tools.outputs.dir }}
+          key: android-cmdline-tools-${{ runner.os }}-15859902
       - uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: 15859902
       - name: Install Android build dependencies
         run: |
           sdkmanager --install 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-36' 'platforms;android-37.0' 'build-tools;36.0.0'
