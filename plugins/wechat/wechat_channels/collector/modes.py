@@ -29,15 +29,17 @@ from collection import (
     profile_bio_expand,
     video_details,
 )
-from comments import collect_visible_comments, nickname_matches
+from comments import collect_visible_comments, comment_limits, nickname_matches
 from interactions import (
     DailyQuotaStore,
     check_stopped,
     classify_page_state,
     compute_work_key,
     ensure_clean_page_on_resume,
+    failed_interactions,
     inspect_and_handle_messages,
     interact_work_and_comments,
+    validate_interaction_config,
 )
 from layout import DATE, compact, line_height, profile_name, reading_rows
 
@@ -178,6 +180,84 @@ def load_seen_keys(data_dir: Path, sqlite_path: Path | None = None) -> tuple[Pat
 
 def save_seen_keys(seen_file: Path, seen: set[str]):
     _atomic_write_json(seen_file, sorted(seen))
+
+
+# What a mode run does to each video. seen.json records each one separately, so
+# collecting a video never makes a later interaction run skip it.
+SEEN_PURPOSES = ("collect", "comments", "interact")
+
+
+def run_purposes(collect_video, inspect_comments, interaction_options) -> tuple[str, ...]:
+    return tuple(purpose for purpose, wanted in zip(SEEN_PURPOSES, (collect_video, inspect_comments, interaction_options))
+                 if wanted)
+
+
+def seen_done(seen: set[str], purpose: str, key: str) -> bool:
+    if f"{purpose}:{key}" in seen:
+        return True
+    # Records written before purposes were kept are collected videos. Author
+    # records never meant this video was processed.
+    return purpose == "collect" and key in seen and not key.startswith("wxch-author:")
+
+
+def already_processed(seen: set[str], purposes, keys) -> bool:
+    keys = [key for key in keys if key]
+    return bool(purposes) and all(any(seen_done(seen, purpose, key) for key in keys) for purpose in purposes)
+
+
+def mark_processed(seen: set[str], purposes, keys):
+    for purpose in purposes:
+        for key in keys:
+            if key:
+                seen.add(f"{purpose}:{key}")
+
+
+def mode_comment_limits(comment_options: dict | None) -> dict:
+    """Mode defaults overridden by the same limits, including unlimited, as the comment task."""
+    limits = {"max_pages": 2, "max_reply_expansions": 1, "max_profiles": 1}
+    limits.update(comment_limits(dict(comment_options or {})))
+    return limits
+
+
+def validate_mode_spec(spec: dict, where: str = "mode"):
+    """Reject a run that cannot do what it asks before the phone is touched."""
+    collect_video = bool(spec.get("collectVideo", True))
+    inspect_comments = bool(spec.get("inspectComments", False))
+    interactions = spec.get("interactionOptions")
+    if inspect_comments and not collect_video:
+        raise ValueError(f"{where}: collecting comments needs the video collected first (collectVideo)")
+    if not run_purposes(collect_video, inspect_comments, interactions):
+        raise ValueError(f"{where}: nothing to do; enable collection or an interaction")
+    if inspect_comments:
+        mode_comment_limits(spec.get("commentOptions"))
+    if interactions:
+        validate_interaction_config(interactions)
+
+
+def validate_mode_config(config: dict):
+    raw_mode = (config.get("mode") or "recommend").strip().lower()
+    mode = TAB_ALIASES.get(raw_mode, raw_mode)
+    if mode == "auto":
+        for index, spec in enumerate(config.get("stages") or []):
+            stage = TAB_ALIASES.get((spec.get("stage") or spec.get("mode") or "").strip().lower(),
+                                    (spec.get("stage") or spec.get("mode") or "").strip().lower())
+            if stage not in ("recommend", "friends", "follow", "city", "search", "messages"):
+                raise ValueError(f"stage {index + 1}: unsupported stage {stage!r}")
+            if stage != "messages":
+                validate_mode_spec(spec, f"stage {index + 1}")
+    elif mode in ("recommend", "friends", "follow", "city", "search"):
+        validate_mode_spec(config)
+    else:
+        raise ValueError(f"Unsupported mode: {raw_mode!r}")
+
+
+def mode_failures(result: dict) -> list[str]:
+    """Interactions that failed anywhere in a mode or auto-mode result."""
+    failures = []
+    for stage in result.get("stages") or [result]:
+        for video in stage.get("videos") or []:
+            failures += [f"{video.get('dedupeKey')}:{action}" for action in video.get("failedActions") or []]
+    return failures
 
 
 # ---------------------------------------------------------------------------
@@ -1417,12 +1497,16 @@ def scroll_search_results(ui):
 
 def select_search_card(
     ui,
-    seen: set[str],
+    seen,
     *,
     max_screens: int = 5,
     lines=None,
 ) -> tuple[dict, list[dict], list[dict]]:
-    """Find the first unseen video card in Search Results across up to `max_screens` scrolls."""
+    """Find the first unprocessed video card in Search Results across up to `max_screens` scrolls.
+
+    `seen` is a predicate on a card, or a set of processed card keys.
+    """
+    processed = seen if callable(seen) else (lambda card: card["cardKey"] in seen)
     if lines is None:
         lines = ui.snapshot("search-cards")
 
@@ -1430,8 +1514,7 @@ def select_search_card(
         check_stopped(ui)
         cards = parse_search_video_cards(lines, ui.height)
         for card in cards:
-            author_key = "wxch-author:" + identity(card["author"])
-            if card["cardKey"] not in seen and author_key not in seen:
+            if not processed(card):
                 return card, cards, lines
         if screen_idx + 1 >= max_screens:
             break
@@ -1584,7 +1667,6 @@ def _process_open_video_item(
 
     comments_report = None
     if inspect_comments:
-        copts = dict(comment_options or {})
         comments_report = call_with_captcha_pause(
             ui,
             collect_visible_comments,
@@ -1592,18 +1674,7 @@ def _process_open_video_item(
             store.path,
             video_event,
             timings,
-            max_pages=int(copts.get("maxPages", 2)),
-            max_replies_Wait=int(copts.get("maxReplyExpansions", 1)),
-            max_profiles=int(copts.get("maxProfiles", 1)),
-        ) if "max_replies_Wait" in collect_visible_comments.__code__.co_varnames else call_with_captcha_pause(
-            ui,
-            collect_visible_comments,
-            ui,
-            store.path,
-            video_event,
-            timings,
-            max_pages=int(copts.get("maxPages", 2)),
-            max_profiles=int(copts.get("maxProfiles", 1)),
+            **mode_comment_limits(comment_options),
         )
 
     interaction_report = None
@@ -1618,7 +1689,13 @@ def _process_open_video_item(
             video_event=video_event,
         )
 
+    failed = failed_interactions(interaction_report) if interaction_report else []
+    # Only what finished is recorded, so a later run retries a failed interaction.
+    completed = [purpose for purpose, done in zip(SEEN_PURPOSES, (
+        collect_video, comments_report is not None, bool(interaction_options) and not failed)) if done]
     return {
+        "completedPurposes": completed,
+        "failedActions": failed,
         "eventId": video_event["event_id"],
         "dedupeKey": video_event["dedupe_key"],
         "sourceMode": source_mode,
@@ -1666,6 +1743,7 @@ def run_tab_feed_mode(
         quota_store = DailyQuotaStore(data_dir / "daily_quotas.json")
     seen_file, seen = load_seen_keys(data_dir)
     initial_seen_count = len(seen)
+    purposes = run_purposes(collect_video, inspect_comments, interaction_options)
     effective_source_mode = source_mode or STAGE_SOURCE_MODES[norm_tab]
 
     tab_state = call_with_captcha_pause(
@@ -1740,11 +1818,10 @@ def run_tab_feed_mode(
             swipes += 1
             continue
 
-        if (
-            preview["previewKey"] in seen
-            or preview["authorKey"] in seen
-            or compute_work_key(author=preview["author"], title=preview["captionPreview"]) in seen
-        ):
+        if already_processed(seen, purposes, (
+            preview["previewKey"],
+            compute_work_key(author=preview["author"], title=preview["captionPreview"]),
+        )):
             skipped_items.append(
                 {
                     "swipeIndex": swipes,
@@ -1773,9 +1850,7 @@ def run_tab_feed_mode(
             interaction_options=interaction_options,
         )
         videos.append(item_report)
-        seen.add(item_report["dedupeKey"])
-        seen.add(item_report["previewKey"])
-        seen.add(item_report["authorKey"])
+        mark_processed(seen, item_report["completedPurposes"], (item_report["dedupeKey"], item_report["previewKey"]))
         save_seen_keys(seen_file, seen)
 
         if len(videos) < count:
@@ -1847,6 +1922,7 @@ def run_search_mode(
         quota_store = DailyQuotaStore(data_dir / "daily_quotas.json")
     seen_file, seen = load_seen_keys(data_dir)
     initial_seen_count = len(seen)
+    purposes = run_purposes(collect_video, inspect_comments, interaction_options)
 
     search_state = call_with_captcha_pause(
         ui,
@@ -1887,7 +1963,7 @@ def run_search_mode(
 
         card, visible_cards, current_lines = select_search_card(
             ui,
-            seen,
+            lambda card: already_processed(seen, purposes, (card["cardKey"],)),
             max_screens=max_screens,
             lines=current_lines,
         )
@@ -1933,9 +2009,7 @@ def run_search_mode(
         item_report["returnedToSearchResults"] = returned_ok
         videos.append(item_report)
 
-        seen.add(card["cardKey"])
-        seen.add(item_report["dedupeKey"])
-        seen.add(item_report["authorKey"])
+        mark_processed(seen, item_report["completedPurposes"], (card["cardKey"], item_report["dedupeKey"]))
         save_seen_keys(seen_file, seen)
         current_lines = after_back_lines
 
@@ -2069,6 +2143,7 @@ def run_mode(ui, root_dir: Path, config: dict, timings: Timings | None = None) -
     quota_path = Path(config.get("quotaPath") or (data_dir / "daily_quotas.json"))
     quota_store = DailyQuotaStore(quota_path, limits=config.get("limits"))
 
+    validate_mode_config(config)
     raw_mode = (config.get("mode") or "recommend").strip().lower()
     norm_mode = TAB_ALIASES.get(raw_mode, raw_mode)
 

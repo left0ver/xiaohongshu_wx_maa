@@ -1845,16 +1845,8 @@ def handle_single_message(
     """Execute in-place like and/or reply on a parsed message center notification."""
     check_stopped(ui)
     msg_key = message["key"]
-    if quota_store.has_acted("message_handled", msg_key):
-        return {
-            "action": "message_handle",
-            "status": "already_handled",
-            "messageKey": msg_key,
-            "nickname": message["nickname"],
-            "liked": False,
-            "replied": False,
-        }
-
+    # Like and reply are recorded separately below, so a notice that was only
+    # liked earlier still gets the reply asked for now.
     liked_now = False
     replied_now = False
     like_status = "skipped"
@@ -1933,6 +1925,13 @@ def return_from_messages_to_task(ui, max_backs=4):
     }
 
 
+def message_done(quota_store, msg_key, do_like=True, reply_text=None):
+    """Whether every action asked for now was already done on this notice."""
+    liked = not do_like or quota_store.has_acted("comment_like", msg_key)
+    replied = not (reply_text or "").strip() or quota_store.has_acted("comment_reply", msg_key)
+    return liked and replied
+
+
 def inspect_and_handle_messages(
     ui,
     quota_store,
@@ -1953,7 +1952,7 @@ def inspect_and_handle_messages(
             break
         if target_nickname and not nickname_matches(target_nickname, msg["nickname"]):
             continue
-        if quota_store.has_acted("message_handled", msg["key"]):
+        if message_done(quota_store, msg["key"], do_like=do_like, reply_text=reply_text):
             continue
         res = handle_single_message(
             ui,

@@ -8,13 +8,19 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from collection import LocalStore, identity
 from interactions import DailyQuotaStore
 from modes import (
+    _process_open_video_item,
+    already_processed,
+    mark_processed,
+    mode_comment_limits,
+    mode_failures,
+    validate_mode_config,
     parse_search_video_cards,
     is_search_results_page,
     active_top_tab,
@@ -280,6 +286,67 @@ class FakeModeUi:
         if not basic_info_ready(lines):
             raise ValueError("Author basic information was not ready within 8 seconds")
         return lines
+
+
+class ProcessedRecordTests(unittest.TestCase):
+    def test_collected_video_is_still_offered_to_interactions(self):
+        seen = set()
+        mark_processed(seen, ["collect"], ["wxch-video:a"])
+        self.assertTrue(already_processed(seen, ("collect",), ["wxch-video:a"]))
+        self.assertFalse(already_processed(seen, ("interact",), ["wxch-video:a"]))
+        self.assertFalse(already_processed(seen, ("collect", "comments"), ["wxch-video:a"]))
+
+    def test_author_records_never_skip_another_video(self):
+        seen = {"wxch-author:x", "wxch-preview:old"}
+        self.assertFalse(already_processed(seen, ("collect",), ["wxch-author:x", "wxch-preview:new"]))
+        # A record from before purposes were kept is a collected video.
+        self.assertTrue(already_processed(seen, ("collect",), ["wxch-preview:old"]))
+        self.assertFalse(already_processed(seen, ("interact",), ["wxch-preview:old"]))
+
+    def test_failed_interaction_is_not_recorded_and_fails_the_run(self):
+        report = {"workLike": {"status": "performed"}, "workComment": {"status": "failed", "error": "x"}}
+        ui = Mock(height=1605)
+        with patch("modes.feed_video_preview", return_value={"author": "A", "captionPreview": "T", "previewKey": "p",
+                                                             "authorKey": "wxch-author:A"}), \
+                patch("modes.interact_work_and_comments", return_value=report), \
+                patch("modes.check_stopped"):
+            item = _process_open_video_item(ui, Path("."), lines=[], source_mode="RECOMMEND", store=Mock(),
+                                            timings=None, quota_store=Mock(), collect_video=False,
+                                            interaction_options={"likeWork": True, "commentText": "x"})
+        self.assertEqual(item["completedPurposes"], [])
+        self.assertEqual(item["failedActions"], ["workComment"])
+        failures = mode_failures({"stages": [{"videos": [item]}, {"mode": "messages"}]})
+        self.assertEqual(len(failures), 1)
+
+    def test_comment_limits_reach_the_comment_collector(self):
+        self.assertEqual(mode_comment_limits({"maxReplyExpansions": "3"}),
+                         {"max_pages": 2, "max_reply_expansions": 3, "max_profiles": 1})
+        self.assertEqual(mode_comment_limits({"unlimited": True}),
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None})
+        with patch("modes.collect_visible_comments") as collect, patch("modes.check_stopped"), \
+                patch("modes.feed_video_preview", return_value={"author": "A", "captionPreview": "T",
+                                                                "previewKey": "p", "authorKey": "k"}), \
+                patch("modes.collect_video_in_mode", return_value={"event_id": "e", "dedupe_key": "d", "payload": {}}):
+            _process_open_video_item(Mock(height=1605), Path("."), lines=[], source_mode="RECOMMEND",
+                                     store=Mock(path="db"), timings=None, quota_store=Mock(),
+                                     inspect_comments=True, comment_options={"maxReplyExpansions": 4})
+        self.assertEqual(collect.call_args.kwargs["max_reply_expansions"], 4)
+
+    def test_unusable_mode_configuration_is_rejected_before_the_phone(self):
+        for config in ({"collectVideo": False, "inspectComments": True}, {"collectVideo": False},
+                       {"inspectComments": True, "commentOptions": {"maxPages": "0"}},
+                       {"mode": "auto", "stages": [{"stage": "nowhere"}]}):
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                validate_mode_config(config)
+        validate_mode_config({"mode": "auto", "stages": [{"stage": "messages"}, {"stage": "search", "count": 1}]})
+
+    def test_search_card_selection_uses_the_callers_record(self):
+        card = {"cardKey": "c1", "author": "A", "title": "T", "clickBox": [0, 0, 1, 1]}
+        ui = Mock(height=1605)
+        with patch("modes.parse_search_video_cards", return_value=[card]), patch("modes.check_stopped"):
+            self.assertIs(select_search_card(ui, lambda item: False, lines=[])[0], card)
+            with self.assertRaises(RuntimeError):
+                select_search_card(ui, lambda item: True, max_screens=1, lines=[])
 
 
 class ControlSearchTests(unittest.TestCase):

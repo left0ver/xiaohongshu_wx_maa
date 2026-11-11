@@ -25,7 +25,7 @@ from interactions import (
     interact_work_and_comments,
     validate_interaction_config,
 )
-from modes import run_mode
+from modes import mode_failures, run_mode, validate_mode_config
 
 
 @AgentServer.custom_action("CollectWechatVideo")
@@ -160,24 +160,31 @@ class RunModeAction(CustomAction):
         raw_param = getattr(argv, "custom_action_param", None)
         config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
         try:
+            # An unusable configuration fails before the phone is touched.
+            validate_mode_config(config)
             with (root / "collection.lock").open("a") as lock, ExitStack() as stack:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 # Restored before the lock is released, even when the run fails.
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                # Started from the helper app, WeChat is not in front yet.
+                start_on_feed(ui)
                 result = run_mode(ui, root, config, timings=timings)
                 (run_dir / "mode.json").write_text(
                     json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
+                # A failed interaction fails the task, as the interaction task does.
+                failed = mode_failures(result)
                 timings.emit(
                     {
                         "kind": "modeCompleted",
-                        "outcome": "succeeded",
+                        "outcome": "failed" if failed else "succeeded",
                         "mode": result.get("mode"),
                         "status": result.get("status"),
+                        **({"failedActions": failed} if failed else {}),
                     }
                 )
-                return True
+                return not failed
         except Exception as error:
             timings.emit({"kind": "modeCompleted", "outcome": "failed", "error": str(error)})
             return False
