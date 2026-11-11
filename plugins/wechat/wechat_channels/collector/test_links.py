@@ -147,6 +147,14 @@ class PrivateMessageTests(unittest.TestCase):
         self.assertEqual([c["text"] for c in ui.clicks], ["私信", "可按住 转文字", "我知道了", "可按住 转文字", "发送"])
         self.assertEqual(ui.texts_set, ["你好", "你好"])
 
+    def test_a_restricted_chat_names_the_restriction(self):
+        restricted = [line("作者已设置关注7天后才能发消息", 199, 1477, 365, 34),
+                      line("对方回复前，仅可发1条消息。", 101, 190, 340, 34)]
+        ui = LinkUi([restricted])
+        with patch("links.time.sleep"), self.assertRaisesRegex(ValueError, "对方限制了私信：作者已设置关注7天后才能发消息"):
+            send_private_message(ui, PROFILE_TWO, "你好")
+        self.assertEqual(ui.texts_set, [])
+
     def test_a_message_that_does_not_appear_fails(self):
         sent = [line("对方回复前，仅可发1条消息。", 100, 190, 400, 40), *CHAT]
         ui = LinkUi([CHAT, self.DM_TYPED, sent])

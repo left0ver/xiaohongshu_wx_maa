@@ -121,6 +121,9 @@ def _edit_box(lines):
     return next((line for line in lines if line.get("selector", {}).get("class", "").endswith("EditText")), None)
 
 
+# Notices shown instead of the input box when the other side limits messages.
+DM_RESTRICTED = r"设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息|无法发送私信"
+
 # A chat read by OCR has no control classes; its input hint and notices identify it.
 CHAT_TEXT = r"可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息|^发送$"
 
@@ -264,6 +267,10 @@ def send_private_message(ui, profile_lines, text):
         raise ValueError("This profile has no 私信 button")
     ui.click(button)
     chat = ui.snapshot("dm-chat")
+    restriction = find(chat, DM_RESTRICTED)
+    if restriction and not _edit_box(chat):
+        # e.g. 作者已设置关注7天后才能发消息: the chat has no input box at all.
+        raise ValueError(f"对方限制了私信：{restriction['text']}")
     if not _is_chat(chat):
         raise ValueError("The private message chat did not open")
     sent = send_chat_text(ui, chat, text, "dm-chat")
