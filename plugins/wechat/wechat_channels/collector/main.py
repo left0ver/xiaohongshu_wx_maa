@@ -5,12 +5,14 @@ import json
 import os
 import sys
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 
 # Must select the agent binding before importing any other Maa modules.
 from maa.agent.agent_server import AgentServer
 from maa.custom_action import CustomAction
 
+from accessibility import expose_controls
 from android_ui import MaaUi, foreground
 from collection import LocalStore, Timings, collect, ensure_feed
 from comments import COMMENT_LIMIT_KEYS, collect_visible_comments, comment_limits
@@ -46,9 +48,11 @@ class CollectVideo(CustomAction):
                 limits = comment_limits(config)
                 timings.emit({"kind": "commentLimits", **{key: limits.get(name, "default")
                                                           for key, name in COMMENT_LIMIT_KEYS.items()}})
-            with (root / "collection.lock").open("a") as lock:
+            with (root / "collection.lock").open("a") as lock, ExitStack() as stack:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                ui = MaaUi(context.tasker, run_dir, context)
+                # Restored before the lock is released, even when the run fails.
+                exposed = stack.enter_context(expose_controls(root, timings.emit))
+                ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
                 event = collect(ui, LocalStore(root / "videos.sqlite3"), timings)
                 (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
                 if self.include_comments:
@@ -121,9 +125,11 @@ class InteractWork(CustomAction):
             validate_interaction_config(config)
             if not any(config.get(key) for key in INTERACTION_ACTIONS):
                 raise ValueError("No interaction is enabled")
-            with (root / "collection.lock").open("a") as lock:
+            with (root / "collection.lock").open("a") as lock, ExitStack() as stack:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                ui = MaaUi(context.tasker, run_dir, context)
+                # Restored before the lock is released, even when the run fails.
+                exposed = stack.enter_context(expose_controls(root, timings.emit))
+                ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
                 if config.get("ensureFeed"):
                     start_on_feed(ui)
                 quota_store = DailyQuotaStore(root / "daily_quotas.json", limits=config.get("limits"))
@@ -154,9 +160,11 @@ class RunModeAction(CustomAction):
         raw_param = getattr(argv, "custom_action_param", None)
         config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
         try:
-            with (root / "collection.lock").open("a") as lock:
+            with (root / "collection.lock").open("a") as lock, ExitStack() as stack:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                ui = MaaUi(context.tasker, run_dir, context)
+                # Restored before the lock is released, even when the run fails.
+                exposed = stack.enter_context(expose_controls(root, timings.emit))
+                ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
                 result = run_mode(ui, root, config, timings=timings)
                 (run_dir / "mode.json").write_text(
                     json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"

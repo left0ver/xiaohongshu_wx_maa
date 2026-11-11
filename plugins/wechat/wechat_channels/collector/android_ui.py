@@ -108,8 +108,11 @@ class PhoneController(CustomController):
 
 
 class MaaUi:
-    def __init__(self, tasker, evidence_dir, context=None):
+    def __init__(self, tasker, evidence_dir, context=None, controls_exposed=False):
         self.tasker = tasker
+        # True while a screen reader makes WeChat publish its controls; an empty
+        # tree is then a transition, not a page that never exposes controls.
+        self.controls_exposed = controls_exposed
         self.controller = tasker.controller
         self.context = context
         self.evidence_dir = Path(evidence_dir)
@@ -135,7 +138,9 @@ class MaaUi:
         if self.tasker.stopping:
             raise InterruptedError("Collection was stopped")
         if self.hierarchy_unavailable and not force:
-            raise HierarchyUnavailable("Empty hierarchy already observed on this page; probe skipped")
+            error = HierarchyUnavailable("Empty hierarchy already observed on this page; probe skipped")
+            error.skipped = True
+            raise error
         deadline = time.monotonic() + timeout
         try:
             foreground(timeout=max(0.01, deadline - time.monotonic()))
@@ -161,7 +166,7 @@ class MaaUi:
         try:
             return self.annotate(text_lines(xml, self.width, self.physical_height), "hierarchy")
         except HierarchyUnavailable:
-            self.hierarchy_unavailable = True
+            self.hierarchy_unavailable = not self.controls_exposed
             raise
 
     def annotate(self, lines, source):
@@ -258,9 +263,10 @@ class MaaUi:
         lines, source = choose_snapshot(label, self.height, author,
             lambda: measured("hierarchy", self.hierarchy),
             lambda: measured("template", lambda: self.template_navigation(label)),
-            lambda: measured("ocr", lambda: self.ocr_snapshot(label)),
-            regional_ocr=lambda roi: measured("ocr-region", lambda: self.ocr_snapshot(label, roi)),
-            refresh=lambda: measured("hierarchy-confirm", lambda: self.hierarchy(force=True)))
+            lambda: measured("ocr", lambda: self.ocr_snapshot(label)))
+        corrected = sum(1 for line in lines if "ocrText" in line)
+        if corrected:
+            attempts.append({"source": "hierarchy-correction", "correctedLines": corrected})
         tabs = self.message_tabs(label, lines, measured)
         if tabs:
             lines = [*lines, *self.annotate(tabs, "template")]

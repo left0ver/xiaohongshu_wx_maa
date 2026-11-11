@@ -7,8 +7,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from hierarchy import HierarchyUnavailable, choose_snapshot, complete_for, field_evidence, refresh_target, text_lines
-from collection import parse_basic_info, parse_video
+from hierarchy import (HierarchyUnavailable, choose_snapshot, complete_for, correct_ocr, field_evidence,
+                       refresh_target, text_lines)
+from collection import parse_basic_info
 from test_collection import AUTHOR, DETAILS, INFO, PROFILE, line
 
 
@@ -26,6 +27,12 @@ def home():
         {"text": "通讯录", "bounds": "[400,2800][600,2900]"}), 1440, 3116)
 
 
+def control(text, x, y, width, height, attribute="text"):
+    """A control as text_lines returns it, in 720-wide coordinates."""
+    return {"text": text, "box": [x, y, width, height], "score": 1.0, "source": "hierarchy",
+            "selector": {"attribute": attribute, "value": text, "resource": "", "class": "android.widget.TextView"}}
+
+
 class HierarchyTests(unittest.TestCase):
     def test_visible_child_survives_an_invisible_parent(self):
         xml = '<hierarchy><node package="com.tencent.mm" visible-to-user="false" text="hidden" bounds="[0,0][1,1]">' \
@@ -33,63 +40,54 @@ class HierarchyTests(unittest.TestCase):
               '</node></hierarchy>'
         self.assertEqual([item["text"] for item in text_lines(xml, 720, 1558)], ["更多信息"])
 
-    def test_partial_work_reads_only_body_and_retains_semantic_metadata(self):
-        known = [{**item, "source": "hierarchy"} for item in DETAILS[:2]]
-        body = [{**item, "source": "ocr"} for item in DETAILS[2:]]
-        full, regional = Mock(), Mock(return_value=body)
-        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), full,
-                                        regional_ocr=regional, refresh=lambda: known)
-        self.assertEqual(source, "mixed")
-        self.assertGreaterEqual(regional.call_args.args[0][1], 596)
-        self.assertEqual(parse_video(lines, AUTHOR), parse_video(DETAILS, AUTHOR))
-        self.assertEqual(field_evidence(lines, "video-details", AUTHOR)["publishLocation"]["sources"], ["hierarchy"])
-        self.assertEqual(field_evidence(lines, "video-details", AUTHOR)["description"]["sources"], ["ocr"])
-        full.assert_not_called()
+    def test_basic_info_from_controls_alone_skips_ocr(self):
+        known = [control(item["text"], *item["box"]) for item in INFO]
+        templates, ocr = Mock(), Mock()
+        lines, source = choose_snapshot("author-basic-info", 1558, None, lambda: known, templates, ocr)
+        self.assertEqual(source, "hierarchy")
+        self.assertEqual(parse_basic_info(lines)["authorDouyinId"], "sphExample123")
+        ocr.assert_not_called()
 
-    def test_replaced_body_does_not_keep_duplicate_or_stale_fragments(self):
-        known = [*DETAILS[:2], line("旧的部分文案", 99, 604)]
-        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), Mock(),
-                                        regional_ocr=lambda _: DETAILS[2:], refresh=lambda: known)
-        self.assertEqual(source, "mixed")
-        self.assertNotIn("旧的部分文案", parse_video(lines, AUTHOR)["description"])
+    def test_drawer_is_never_read_from_control_bounds_alone(self):
+        # TextView bounds include padding and covered feed controls stay in the
+        # tree, so even a parseable drawer is read with OCR layout.
+        known = [control(item["text"], *item["box"]) for item in DETAILS]
+        ocr = Mock(return_value=DETAILS)
+        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), ocr)
+        ocr.assert_called_once()
+        self.assertEqual((lines, source), (DETAILS, "ocr"))
 
-    def test_changed_anchor_discards_mixed_page_and_reads_fresh_frame(self):
-        known = DETAILS[:2]
-        changed = [DETAILS[0], line("另一个作者作者福建8月1日", 99, 568)]
-        full = Mock(return_value=changed)
-        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), full,
-                                        regional_ocr=lambda _: DETAILS[2:], refresh=lambda: changed)
-        self.assertEqual((lines, source), (changed, "ocr"))
-        full.assert_called_once()
-
-    def test_missing_id_is_read_without_discarding_known_location(self):
-        known = INFO[:-1]
-        full = Mock()
-        lines, source = choose_snapshot("author-basic-info", 1558, None, lambda: known, Mock(), full,
-                                        regional_ocr=lambda _: INFO[-2:], refresh=lambda: known)
+    def test_misread_characters_are_corrected_without_moving_ocr_lines(self):
+        recognized = [line("这是封离别信#吉他弹唱#Le", 98, 604, 594), line("ttinggo", 99, 643, 58)]
+        caption = control("这是一封离别信#吉他弹唱#Lettinggo", 96, 590, 600, 90)
+        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: [caption], Mock(), lambda: recognized)
         self.assertEqual(source, "mixed")
-        self.assertEqual(parse_basic_info(lines), parse_basic_info(INFO))
-        full.assert_not_called()
+        self.assertEqual([item["text"] for item in lines], ["这是一封离别信#吉他弹唱#Le", "ttinggo"])
+        self.assertEqual([item["box"] for item in lines], [item["box"] for item in recognized])
+        self.assertEqual((lines[0]["source"], lines[0]["ocrText"]), ("hierarchy", "这是封离别信#吉他弹唱#Le"))
 
-    def test_missing_metadata_reads_header_without_repeating_description(self):
-        known = [DETAILS[0], line(AUTHOR + "作者", 99, 568), *DETAILS[2:]]
-        regional, full = Mock(return_value=[DETAILS[1]]), Mock()
-        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), full,
-                                        regional_ocr=regional, refresh=lambda: known)
-        self.assertEqual(source, "mixed")
-        x, y, width, height = regional.call_args.args[0]
-        self.assertLessEqual(y + height, DETAILS[2]["box"][1])
-        self.assertEqual(parse_video(lines, AUTHOR), parse_video(DETAILS, AUTHOR))
-        full.assert_not_called()
+    def test_one_ocr_row_is_corrected_from_several_controls(self):
+        recognized = [line("歪不歪Uv.作者福建6天前", 98, 535, 350, 31)]
+        controls = [control("歪不歪Uu.", 100, 513, 113, 77), control("作者", 261, 536, 50, 34),
+                    control("福建", 322, 536, 50, 34), control("6天前", 383, 536, 133, 34)]
+        lines = correct_ocr(recognized, controls)
+        self.assertEqual(lines[0]["text"], "歪不歪Uu.作者福建6天前")
+        self.assertEqual(lines[0]["box"], recognized[0]["box"])
 
-    def test_profile_missing_bio_preserves_nickname_and_controls(self):
-        known = [PROFILE[0], *PROFILE[-2:]]
-        full = Mock()
-        lines, source = choose_snapshot("author-profile", 1558, AUTHOR, lambda: known, Mock(), full,
-                                        regional_ocr=lambda _: PROFILE[1:-2], refresh=lambda: known)
-        self.assertEqual(source, "mixed")
-        self.assertEqual(field_evidence(lines, "author-profile", AUTHOR)["authorBio"]["value"], "作者简介")
-        full.assert_not_called()
+    def test_covered_controls_and_icon_placeholders_do_not_inject_text(self):
+        composer = line("AI吕哥说发表评论：", 112, 1539, 261, 29)
+        advert = line("广告", 591, 1367, 94, 44)
+        controls = [control("AI吕哥说#\xa0发表评论:", 100, 1515, 458, 79),
+                    control("20", 359, 1529, 26, 29),
+                    control("胖人脖子黑咋回事？家里人一定要注意！", 29, 1363, 662, 77)]
+        lines = correct_ocr([composer, advert], controls)
+        self.assertEqual(lines, [composer, advert])
+
+    def test_description_controls_are_not_used_for_correction(self):
+        recognized = [line("私信", 494, 756, 58, 36)]
+        button = control("私信按钮", 420, 734, 363, 79, attribute="content-desc")
+        self.assertEqual(choose_snapshot("author-profile", 1558, AUTHOR, lambda: [button], Mock(),
+                                         lambda: recognized), (recognized, "ocr"))
 
     def test_container_text_summary_does_not_duplicate_child_labels(self):
         xml = '<hierarchy><node package="com.tencent.mm" text="更多信息" bounds="[0,0][500,500]">' \

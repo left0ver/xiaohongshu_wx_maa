@@ -10,6 +10,35 @@ from readiness import framework_directory, wait_basic_info
 from test_collection import INFO
 
 
+class Clock:
+    """Monotonic time that only moves when the code sleeps or a reader takes time."""
+
+    def __init__(self, now=100.0):
+        self.now = now
+        self.patches = [patch("readiness.time.monotonic", self.monotonic), patch("readiness.time.sleep", self.sleep)]
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+    def taking(self, seconds, read):
+        def timed(*args):
+            self.now += seconds
+            return read(*args)
+        return timed
+
+    def __enter__(self):
+        for item in self.patches:
+            item.start()
+        return self
+
+    def __exit__(self, *exc):
+        for item in self.patches:
+            item.stop()
+
+
 class ReadinessTests(unittest.TestCase):
     def test_framework_can_be_provided_by_host_instead_of_agent_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -31,38 +60,59 @@ class ReadinessTests(unittest.TestCase):
 
     def test_ready_semantics_skip_ocr(self):
         ocr = Mock()
-        with patch("readiness.time.monotonic", return_value=100):
+        with Clock():
             self.assertEqual(wait_basic_info(lambda _: INFO, ocr), (INFO, "hierarchy"))
+        ocr.assert_not_called()
+
+    def test_panel_that_loads_after_the_click_is_read_from_controls(self):
+        reads = iter([[], [], INFO])
+        ocr = Mock()
+        with Clock() as clock:
+            self.assertEqual(wait_basic_info(clock.taking(0.5, lambda _: next(reads)), ocr), (INFO, "hierarchy"))
         ocr.assert_not_called()
 
     def test_empty_tree_gives_ocr_only_remaining_budget(self):
         ocr = Mock(return_value=INFO)
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 101.2, 107.9]):
-            self.assertEqual(wait_basic_info(lambda _: [], ocr), (INFO, "local-ocr"))
-        self.assertAlmostEqual(ocr.call_args.args[0], 6.8)
+        with Clock() as clock:
+            self.assertEqual(wait_basic_info(clock.taking(1.2, lambda _: []), ocr), (INFO, "local-ocr"))
+        # Controls are re-read for at most half the budget: 3 reads and 2 pauses.
+        self.assertAlmostEqual(ocr.call_args.args[0], 3.8)
+
+    def test_skipped_probe_goes_straight_to_ocr(self):
+        error = ValueError("probe skipped")
+        error.skipped = True
+        semantic, ocr = Mock(side_effect=error), Mock(return_value=INFO)
+        with Clock():
+            self.assertEqual(wait_basic_info(semantic, ocr)[1], "local-ocr")
+        semantic.assert_called_once()
+        self.assertAlmostEqual(ocr.call_args.args[0], 8)
 
     def test_semantic_timeout_can_use_remaining_budget(self):
-        semantic = Mock(side_effect=subprocess.TimeoutExpired("dump", 1.2))
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 104]):
-            self.assertEqual(wait_basic_info(semantic, lambda _: INFO)[1], "local-ocr")
+        with Clock() as clock:
+            semantic = clock.taking(1.2, Mock(side_effect=subprocess.TimeoutExpired("dump", 1.2)))
+            ocr = Mock(return_value=INFO)
+            self.assertEqual(wait_basic_info(semantic, ocr)[1], "local-ocr")
+        self.assertAlmostEqual(ocr.call_args.args[0], 6.8)
 
     def test_expired_budget_does_not_start_ocr(self):
         ocr = Mock()
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 108, 108]):
+        with Clock() as clock:
             with self.assertRaisesRegex(ValueError, "within 8 seconds"):
-                wait_basic_info(lambda _: INFO, ocr)
+                wait_basic_info(clock.taking(8, lambda _: INFO), ocr)
         ocr.assert_not_called()
 
     def test_late_success_is_not_accepted(self):
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101, 101, 109]):
+        error = ValueError("probe skipped")
+        error.skipped = True
+        with Clock() as clock:
             with self.assertRaisesRegex(ValueError, "within 8 seconds"):
-                wait_basic_info(lambda _: [], lambda _: INFO)
+                wait_basic_info(Mock(side_effect=error), clock.taking(9, lambda _: INFO))
 
     def test_ocr_timeout_is_not_retried_with_a_fresh_budget(self):
         ocr = Mock(side_effect=subprocess.TimeoutExpired("ocr", 3.8))
-        with patch("readiness.time.monotonic", side_effect=[100, 100, 101.2, 101.2]):
+        with Clock() as clock:
             with self.assertRaisesRegex(ValueError, "within 8 seconds"):
-                wait_basic_info(lambda _: [], ocr)
+                wait_basic_info(clock.taking(1.2, lambda _: []), ocr)
         self.assertEqual(ocr.call_count, 1)
 
     def test_cancellation_and_wrong_foreground_do_not_fall_back(self):
