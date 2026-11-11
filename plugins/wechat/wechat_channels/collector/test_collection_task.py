@@ -64,6 +64,14 @@ class FilterWordTests(unittest.TestCase):
         self.assertEqual(matched_words(None, ["AI"]), [])
 
 
+class FeedAuthorTests(unittest.TestCase):
+    def test_a_new_video_notice_is_not_part_of_the_name(self):
+        from collection import author_in_feed
+        for notice in ("6小时前有新视频", " 3天前有新视频", "有新视频"):
+            feed = [line("王林的化凡生涯" + notice, 118, 1478, 300, 34)]
+            self.assertEqual(author_in_feed(feed, 1605)["text"], "王林的化凡生涯")
+
+
 class StoredVideoTests(unittest.TestCase):
     def test_video_is_saved_in_the_agreed_upload_shape(self):
         with tempfile.TemporaryDirectory() as root:

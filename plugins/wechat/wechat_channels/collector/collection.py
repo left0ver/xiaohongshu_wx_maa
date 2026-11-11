@@ -80,13 +80,22 @@ def author_in_feed(lines, height):
         first, second = candidates
         gap = second["box"][1] - (first["box"][1] + first["box"][3])
         if abs(first["box"][0] - second["box"][0]) <= 20 and -5 <= gap <= 20:
-            return {
+            return _without_new_video_notice({
                 **first,
                 "text": first["text"].strip() + second["text"].strip(),
-            }
+            })
     if len(candidates) != 1:
         raise ValueError("The feed author is missing or ambiguous")
-    return candidates[0]
+    return _without_new_video_notice(candidates[0])
+
+
+# The feed can draw "6小时前有新视频" right after the author's name (V2131A run bff74863).
+NEW_VIDEO_NOTICE = re.compile(r"\s*(?:\d+\s*(?:秒|分钟|小时|天)前)?\s*有新视频$")
+
+
+def _without_new_video_notice(line):
+    text = NEW_VIDEO_NOTICE.sub("", line["text"])
+    return {**line, "text": text} if text.strip() else line
 
 
 def feed_video_preview(lines, height=1605) -> dict:
