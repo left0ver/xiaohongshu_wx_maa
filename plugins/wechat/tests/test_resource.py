@@ -99,7 +99,7 @@ class ResourceFlowTests(unittest.TestCase):
         profile = tomllib.loads((PROJECT.parent / "profile.toml").read_text(encoding="utf-8"))
         self.assertEqual(profile["pi_assets"], PROJECT.name)
         self.assertIn("collector", profile["pi_include"])
-        self.assertEqual(profile["agent"]["timeout_ms"], 21600000)
+        self.assertEqual(profile["agent"]["timeout_ms"], 600000)
         runtime = profile["agent"]["runtimes"][0]
         self.assertEqual(runtime["args"][1], INTERFACE["agent"]["child_args"][0])
         self.assertIn("{abi}", runtime["env"]["MAAFW_BINARY_PATH"])

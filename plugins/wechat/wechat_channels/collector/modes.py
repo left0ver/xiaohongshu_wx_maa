@@ -1885,6 +1885,8 @@ def run_tab_feed_mode(
         if already_processed(seen, purposes, (
             preview["previewKey"],
             compute_work_key(author=preview["author"], title=preview["captionPreview"]),
+            # Saved videos are recorded by their bare dedupe key (author + full description).
+            identity(preview["author"], preview["captionPreview"] or preview["author"]),
         )):
             skipped_items.append(
                 {

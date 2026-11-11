@@ -28,7 +28,7 @@ App 任务（0.12.0，2026-11-11 重新设计）：每个任务都能单独运�
 3. **视频号消息巡检**（`InteractWechatWork` 只开启 `inspectMessages`）：行为不变。
 多入口自动运行（`RunWechatMode`）暂未放回 App。
 
-本地数据格式按以后上报 `content_discovery_event` 的约定保存：去重键为 64 位十六进制摘要，`collected_at` 为毫秒时间戳，`platform` 为 `wechat`；作品的 `videoUrl` 为分享链接（每次复制都会变，不作去重用，重复采集保留第一次的链接），`awemeId` 为空，作者视频号 ID 存 `author_wechat_channels_id`、`authorDouyinId` 为空，搜索入口的作品带 `searchKeyword`/`matchedKeyword`；评论带 `commentId`（空）、`collectionComplete`、`contentMatched`/`commentMatchedKeywords`（命中的评论过滤词）；用户的 `douyinId` 为空、视频号 ID 存 `wechat_channels_id`，采集时 `touchStatus` 为 `UNTOUCHED`。2026-11-11 前保存的草稿仍是旧格式。Agent 单次调用上限由 10 分钟放宽到 6 小时，供全量评论采集使用。
+本地数据格式按以后上报 `content_discovery_event` 的约定保存：去重键为 64 位十六进制摘要，`collected_at` 为毫秒时间戳，`platform` 为 `wechat`；作品的 `videoUrl` 为分享链接（每次复制都会变，不作去重用，重复采集保留第一次的链接），`awemeId` 为空，作者视频号 ID 存 `author_wechat_channels_id`、`authorDouyinId` 为空，搜索入口的作品带 `searchKeyword`/`matchedKeyword`；评论带 `commentId`（空）、`collectionComplete`、`contentMatched`/`commentMatchedKeywords`（命中的评论过滤词）；用户的 `douyinId` 为空、视频号 ID 存 `wechat_channels_id`，采集时 `touchStatus` 为 `UNTOUCHED`。2026-11-11 前保存的草稿仍是旧格式。Agent 超时保持 10 分钟：宿主只接受 1–600000 毫秒，且 MaaFramework 按每条消息的等待计时，不限制整个动作的时长。
 
 基础信息页面使用 8 秒就绪重试窗口（2026-11-08 由 5 秒放宽：vivo V2131A 正常约 2.7 秒就绪，曾连续超出原窗口），识别到标题和有效视频号 ID 立即继续。窗口含点击后的等待，不重复点击菜单；同步 OCR 无法中途取消，实际步骤耗时可能超过窗口。该版本需要重新打包，尚未真机验收，不能沿用旧版本耗时作为优化成绩。
 

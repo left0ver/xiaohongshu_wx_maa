@@ -955,17 +955,25 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
     quota_store.require_quota("like")
     check_stopped(ui)
     ui.click({"text": "like_comment", "box": comment["_likeBox"]})
-    after_lines = ui.snapshot("comments-after-like")
-    after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
-    after_drawer = parse_comment_drawer(after_lines, ui.height, parent_event_id=work_key)
-    updated = next(
-        (
-            c
-            for c in after_drawer["comments"]
-            if c["key"] == comment["key"] or nickname_matches(comment["nickname"], c["nickname"])
-        ),
-        comment,
-    )
+    # A liked comment gains a 推荐 button that moves its count and thumb left,
+    # so the state is read where the fresh page puts them, not at the old box.
+    updated = None
+    for attempt in range(2):
+        after_lines = ui.snapshot("comments-after-like")
+        after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+        after_drawer = parse_comment_drawer(after_lines, ui.height, parent_event_id=work_key)
+        updated = next(
+            (
+                c
+                for c in after_drawer["comments"]
+                if c["key"] == comment["key"] or nickname_matches(comment["nickname"], c["nickname"])
+            ),
+            None,
+        )
+        if updated is not None:
+            break
+        time.sleep(0.5)
+    updated = updated or comment
     after = comment_like_state(updated, after_frame, quota_store=None, work_key=work_key)
     verified = bool(after["badgeLiked"] or after["redActive"] or after["count"] > before["count"])
     if not verified:

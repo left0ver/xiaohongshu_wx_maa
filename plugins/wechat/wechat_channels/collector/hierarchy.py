@@ -469,13 +469,14 @@ CONTROL_PAGES = {
     **dict.fromkeys(("search-filter-panel", "search-filter-panel-reopen", "search-filter-after-"), _search_filter_ready),
     **dict.fromkeys(("search-duration-sheet", "search-scope-sheet"), _search_sheet_ready),
     **dict.fromkeys(("share-sheet", "share-sheet-scrolled"), _share_sheet_ready),
-    "share-closed": _known_page, "share-link-paste": _search_box_ready,
+    "share-closed": _known_page, "share-link-paste": _search_box_ready, "share-feed": _feed_ready,
+    "share-paste-drawer": _comments_ready, "share-link-paste-composer": _chat_ready, "share-link-cleared": _chat_ready,
     **dict.fromkeys(("share-return-", "share-recover-"), _feed_or_search_ready),
     "link-after-dm-": _known_page,
     **dict.fromkeys(("link-home", "link-home-"), _home_ready),
     **dict.fromkeys(("link-search", "link-search-typed"), _chat_search_ready),
-    **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent"),
-                    _chat_ready),
+    **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent",
+                     "dm-chat-after-notice", "link-chat-after-notice"), _chat_ready),
     **dict.fromkeys(("link-video", "link-video-"), _feed_ready),
 }
 

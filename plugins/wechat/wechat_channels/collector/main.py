@@ -14,7 +14,7 @@ from maa.custom_action import CustomAction
 
 from accessibility import expose_controls
 from android_ui import MaaUi, foreground
-from collection import LocalStore, Timings, collect, ensure_feed
+from collection import LocalStore, Timings, collect, ensure_feed, find
 from comments import COMMENT_LIMIT_KEYS, collect_visible_comments, comment_limits
 from interactions import (
     INTERACTION_ACTIONS,
@@ -105,7 +105,11 @@ def start_on_feed(ui):
     first. Navigating re-selects 推荐 and may refresh the feed, which is why a
     work already showing in the feed is not navigated away from.
     """
-    if not wechat_in_front() or classify_page_state(ui.snapshot("interact-start"), ui.height) != "channels_feed":
+    lines = ui.snapshot("interact-start") if wechat_in_front() else []
+    # A video opened from a share link looks like the feed but has no top tabs.
+    on_feed = (classify_page_state(lines, ui.height) == "channels_feed"
+               and find(lines, r"^推荐$", lambda line: line["box"][1] < 250))
+    if not on_feed:
         ensure_feed(ui, launch=True)
 
 
@@ -215,7 +219,8 @@ class CollectChannelsAction(CustomAction):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
-                start_on_feed(ui)
+                # Always through 发现 → 视频号 → 推荐, so the entry is the real feed.
+                ensure_feed(ui, launch=True)
                 result = run_collection_task(ui, root, config, timings=timings)
                 (run_dir / "collection.json").write_text(json.dumps(result, ensure_ascii=False, indent=2),
                                                          encoding="utf-8")

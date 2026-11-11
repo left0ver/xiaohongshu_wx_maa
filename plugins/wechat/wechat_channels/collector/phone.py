@@ -4,13 +4,17 @@ import json
 import sys
 import uuid
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+
+from accessibility import expose_controls
+from links import LinkLedger, run_link_task
 
 from android_ui import phone_ui
 from collection import LocalStore, Timings, collect, ensure_feed
 from comments import collect_visible_comments, comment_limits
 from interactions import DailyQuotaStore, interact_work_and_comments
-from modes import run_mode
+from modes import run_collection_task, run_mode
 
 
 def _load_flag_config(argv, flag):
@@ -74,16 +78,42 @@ def main():
         except Exception as error:
             timings.emit({"kind": "modeCompleted", "outcome": "failed", "error": str(error)})
             raise
+    if "--collect" in sys.argv or "--link" in sys.argv:
+        # The two App tasks of 2026-11-11, with controls exposed as the App does.
+        collect = "--collect" in sys.argv
+        config = _load_flag_config(sys.argv, "--collect" if collect else "--link")
+        try:
+            with ExitStack() as stack:
+                exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
+                ui = phone_ui(root, run_dir, controls_exposed=exposed)
+                if collect:
+                    ensure_feed(ui, launch=True)
+                    result = run_collection_task(ui, root, config, timings=timings)
+                    name, kind = "collection.json", "collectionCompleted"
+                else:
+                    result = run_link_task(ui, DailyQuotaStore(root / "data/daily_quotas.json"),
+                                           LinkLedger(root / "data/link_actions.json"), config)
+                    name, kind = "link-task.json", "linkTaskCompleted"
+            (run_dir / name).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            timings.emit({"kind": kind, "outcome": "succeeded", "status": result.get("status"),
+                          "endReason": result.get("endReason")})
+            return
+        except Exception as error:
+            timings.emit({"kind": "collectionCompleted" if collect else "linkTaskCompleted",
+                          "outcome": "failed", "error": str(error)})
+            raise
     if "--interact" in sys.argv:
         config = _load_interact_config(sys.argv)
         try:
-            ui = phone_ui(root, run_dir)
-            if config.get("ensureFeed"):
-                ensure_feed(ui, launch=launch)
-            quota_path = Path(config.get("quotaPath") or (root / "data/daily_quotas.json"))
-            quota_store = DailyQuotaStore(quota_path, limits=config.get("limits"))
-            with timings.phase("interact_work_and_comments"):
-                result = interact_work_and_comments(ui, quota_store, config)
+            with ExitStack() as stack:
+                exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
+                ui = phone_ui(root, run_dir, controls_exposed=exposed)
+                if config.get("ensureFeed"):
+                    ensure_feed(ui, launch=launch)
+                quota_path = Path(config.get("quotaPath") or (root / "data/daily_quotas.json"))
+                quota_store = DailyQuotaStore(quota_path, limits=config.get("limits"))
+                with timings.phase("interact_work_and_comments"):
+                    result = interact_work_and_comments(ui, quota_store, config)
             (run_dir / "interactions.json").write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
             )

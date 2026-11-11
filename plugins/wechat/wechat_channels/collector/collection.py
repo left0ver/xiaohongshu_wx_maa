@@ -80,13 +80,22 @@ def author_in_feed(lines, height):
         first, second = candidates
         gap = second["box"][1] - (first["box"][1] + first["box"][3])
         if abs(first["box"][0] - second["box"][0]) <= 20 and -5 <= gap <= 20:
-            return {
+            return _without_new_video_notice({
                 **first,
                 "text": first["text"].strip() + second["text"].strip(),
-            }
+            })
     if len(candidates) != 1:
         raise ValueError("The feed author is missing or ambiguous")
-    return candidates[0]
+    return _without_new_video_notice(candidates[0])
+
+
+# The feed can draw "6小时前有新视频" right after the author's name (V2131A run bff74863).
+NEW_VIDEO_NOTICE = re.compile(r"\s*(?:\d+\s*(?:秒|分钟|小时|天)前)?\s*有新视频$")
+
+
+def _without_new_video_notice(line):
+    text = NEW_VIDEO_NOTICE.sub("", line["text"])
+    return {**line, "text": text} if text.strip() else line
 
 
 def feed_video_preview(lines, height=1605) -> dict:
@@ -369,8 +378,54 @@ def share_geometry(lines, height):
 
 
 def _feed_search_button(ui):
-    found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
-    return found or {"text": "搜索", "box": [555, 70, 65, 80]}
+    return control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
+
+
+def _edit_box(lines):
+    return next((line for line in lines if line.get("selector", {}).get("class", "").endswith("EditText")), None)
+
+
+def _read_pasted_link(lines):
+    box = control(lines, SHARE_LINK.pattern)
+    return SHARE_LINK.search(box["text"]).group(0) if box else None
+
+
+def _paste_into_search(ui, search):
+    """Channels search box: paste, read, clear. Returns the link or None."""
+    ui.click(search)
+    time.sleep(0.8)
+    ui.key(PASTE_KEY)
+    time.sleep(0.6)
+    link = _read_pasted_link(ui.snapshot("share-link-paste"))
+    clear = control(ui.controls_now(), r"^清除搜索词$")
+    if clear:
+        ui.click(clear)
+    return link
+
+
+def _paste_into_composer(ui, lines):
+    """A video opened from search results has no search button; its comment box
+    takes the paste instead. The box is emptied before leaving, nothing is sent."""
+    target = comment_control_in_feed(lines, ui.height, ui)
+    if not target:
+        return None
+    ui.click(target)
+    drawer = ui.snapshot("share-paste-drawer")
+    box = _edit_box(drawer) or find(drawer, r"发表评论|说点什么|写评论")
+    if not box:
+        return None
+    ui.click(box)
+    time.sleep(0.6)
+    ui.key(PASTE_KEY)
+    time.sleep(0.6)
+    link = _read_pasted_link(ui.snapshot("share-link-paste-composer"))
+    # Never leave the link behind as a comment draft: WeChat keeps unsent text.
+    ui.clear_text()
+    if _read_pasted_link(ui.snapshot("share-link-cleared")):
+        ui.clear_text()
+        if _read_pasted_link(ui.snapshot("share-link-cleared")):
+            raise RuntimeError("The pasted link could not be removed from the comment box")
+    return link
 
 
 def back_to_video(ui, author, label):
@@ -379,13 +434,13 @@ def back_to_video(ui, author, label):
     Back from Channels search always lands on the video it was opened from;
     the nickname is not compared because its OCR reading varies between frames.
     """
-    for attempt in range(3):
+    from interactions import classify_page_state
+
+    for attempt in range(4):
         lines = ui.snapshot(f"{label}-{attempt + 1}")
-        try:
-            author_in_feed(lines, ui.height)
+        # A comment drawer still shows the feed author below it; only the bare video counts.
+        if not _edit_box(lines) and classify_page_state(lines, ui.height) == "channels_feed":
             return lines
-        except ValueError:
-            pass
         ui.back()
     raise ValueError(f"Did not return to the video of {author} after reading its share link")
 
@@ -414,16 +469,11 @@ def copy_share_link(ui, lines, previous_link=None):
     time.sleep(0.8)
     if find(ui.snapshot("share-closed"), r"^复制链接$|^转发给朋友$"):
         ui.back()
-    ui.click(_feed_search_button(ui))
-    time.sleep(0.8)
-    ui.key(PASTE_KEY)
-    time.sleep(0.6)
-    pasted = ui.snapshot("share-link-paste")
-    box = control(pasted, SHARE_LINK.pattern)
-    link = SHARE_LINK.search(box["text"]).group(0) if box else None
-    clear = control(ui.controls_now(), r"^清除搜索词$")
-    if clear:
-        ui.click(clear)
+    search = _feed_search_button(ui)
+    if search:
+        link = _paste_into_search(ui, search)
+    else:
+        link = _paste_into_composer(ui, ui.snapshot("share-feed"))
     back_to_video(ui, author, "share-return")
     if not link:
         raise ValueError("The copied share link could not be read")
@@ -434,7 +484,12 @@ def copy_share_link(ui, lines, previous_link=None):
 
 def ensure_feed(ui, launch=True):
     if launch:
-        ui.start_wechat()
+        # Earlier runs can leave several pages (chats, profiles, shared videos)
+        # above WeChat's tabs; start from the tabs instead of backing out of them.
+        if hasattr(ui, "start_wechat_home"):
+            ui.start_wechat_home()
+        else:
+            ui.start_wechat()
     ready_deadline = getattr(ui, "startup_deadline", None) or time.monotonic() + 10
     waiting_for_start = launch
     navigation_steps = 0
@@ -467,6 +522,11 @@ def ensure_feed(ui, launch=True):
             navigation_label = "navigation-top"
         elif is_profile_grid or is_comment_drawer or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             ui.back()
+        elif len(lines) >= 3:
+            # A drawn page that is not on the way to 推荐 (a video opened from a
+            # share link, a chat): leave it instead of waiting for it.
+            ui.back()
+            navigation_label = "navigation-bottom"
         else:
             if waiting_for_start:
                 remaining = ready_deadline - time.monotonic()

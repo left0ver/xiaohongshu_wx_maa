@@ -39,6 +39,9 @@ class ShareUi(FakeModeUi):
     def key(self, code):
         self.keys.append(code)
 
+    def clear_text(self):
+        self.cleared = getattr(self, "cleared", 0) + 1
+
     def swipe(self, *args):
         self.swipes.append(args)
 
@@ -59,6 +62,14 @@ class FilterWordTests(unittest.TestCase):
     def test_matching_ignores_case_width_and_spacing(self):
         self.assertEqual(matched_words("学ａｉ 做 副 业", ["AI", "副业", "创业"]), ["AI", "副业"])
         self.assertEqual(matched_words(None, ["AI"]), [])
+
+
+class FeedAuthorTests(unittest.TestCase):
+    def test_a_new_video_notice_is_not_part_of_the_name(self):
+        from collection import author_in_feed
+        for notice in ("6小时前有新视频", " 3天前有新视频", "有新视频"):
+            feed = [line("王林的化凡生涯" + notice, 118, 1478, 300, 34)]
+            self.assertEqual(author_in_feed(feed, 1605)["text"], "王林的化凡生涯")
 
 
 class StoredVideoTests(unittest.TestCase):
@@ -146,6 +157,27 @@ class ShareLinkTests(unittest.TestCase):
         self.assertEqual(ui.keys, [279])
         self.assertEqual([c["text"] for c in ui.clicks], ["share", "复制链接", "搜索", "清除搜索词"])
 
+    def test_without_a_search_button_the_comment_box_reads_the_link_and_is_emptied(self):
+        drawer = [line("评论19", 27, 482, 110, 32), control("发表评论", 101, 1537, 458, 34, cls="android.widget.EditText")]
+        pasted = [control(LINK, 101, 900, 458, 60, cls="android.widget.EditText")]
+        emptied = [control("发表评论", 101, 900, 458, 60, cls="android.widget.EditText")]
+        ui = ShareUi([self.SHEET_SCROLLED, FEED_SECOND, FEED_SECOND, drawer, pasted, emptied, drawer, FEED_SECOND])
+        with patch("collection.time.sleep"):
+            link = copy_share_link(ui, FEED_SECOND)
+        self.assertEqual(link, LINK)
+        self.assertEqual(ui.keys, [279])
+        self.assertEqual(ui.cleared, 1)
+        self.assertEqual([c["text"] for c in ui.clicks], ["share", "复制链接", "19", "发表评论"])
+        self.assertEqual(ui.backs, 1)
+
+    def test_a_link_that_stays_in_the_comment_box_stops_the_run(self):
+        drawer = [line("评论19", 27, 482, 110, 32), control("发表评论", 101, 1537, 458, 34, cls="android.widget.EditText")]
+        pasted = [control(LINK, 101, 900, 458, 60, cls="android.widget.EditText")]
+        ui = ShareUi([self.SHEET_SCROLLED, FEED_SECOND, FEED_SECOND, drawer, pasted, pasted, pasted])
+        with patch("collection.time.sleep"), self.assertRaisesRegex(RuntimeError, "could not be removed"):
+            copy_share_link(ui, FEED_SECOND)
+        self.assertEqual(ui.cleared, 2)
+
     def test_an_ocr_reading_or_a_stale_clipboard_is_not_saved(self):
         with self.assertRaisesRegex(ValueError, "could not be read"):
             self.run_copy([line(LINK, 72, 81, 440, 86)])
@@ -164,6 +196,19 @@ class CollectionTaskTests(unittest.TestCase):
                                 ({"entry": "friends"}, "Unsupported")):
             with self.assertRaisesRegex(ValueError, message):
                 collection_task_config(config)
+
+    def test_a_video_saved_by_an_earlier_run_is_skipped(self):
+        # Huawei run 251ba8b0 collected 与琪说o again: saved videos are recorded
+        # under their bare dedupe key, which the feed check did not look for.
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            key = identity("阿星探店", "今天分享一道快手家常菜#美食")
+            (Path(root) / "seen.json").write_text(json.dumps([f"collect:{key}", f"comments:{key}"]))
+            ui = FakeModeUi([FEED_SECOND])
+            with patch("modes.time.sleep"):
+                report = run_tab_feed_mode(ui, Path(root), tab="recommend", count=1, max_swipes=0,
+                                           inspect_comments=True)
+            self.assertEqual(report["processedCount"], 0)
+            self.assertEqual([s["kind"] for s in report["skippedItems"]], ["already_seen"])
 
     def test_filtered_videos_do_not_count_and_misses_end_the_run(self):
         with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):

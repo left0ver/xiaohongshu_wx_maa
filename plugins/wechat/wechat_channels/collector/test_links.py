@@ -77,7 +77,8 @@ class OpenByLinkTests(unittest.TestCase):
         self.assertEqual(clicked, ["微信", "搜索", "文件传输助手", "可按住 转文字", "发送", LINK])
         # The contact under 功能 is opened, not a web-search suggestion below it.
         self.assertEqual(ui.clicks[2]["box"][1], 298)
-        self.assertEqual(ui.clicks[-1]["box"][1], 267)
+        # The link text, not the gap between its two lines, is tapped.
+        self.assertEqual(ui.clicks[-1]["box"], [287, 328, 20, 20])
 
     def test_a_missing_file_transfer_contact_stops_the_task(self):
         ui = LinkUi([HOME, HOME, SEARCH[:2]])
@@ -96,6 +97,15 @@ class PrivateMessageTests(unittest.TestCase):
         self.assertIs(lines, PROFILE_TWO)
         self.assertEqual([c["text"] for c in ui.clicks], ["私信", "可按住 转文字", "发送"])
         self.assertEqual(ui.backs, 2)
+
+    def test_the_first_message_notice_is_acknowledged(self):
+        notice = [line("视频号私信消息安全保护提醒", 157, 1113, 403, 33), line("我知道了", 292, 1369, 128, 37)]
+        sent = [line("你好", 420, 300, 100, 60), *CHAT]
+        ui = LinkUi([CHAT, notice, CHAT, self.DM_TYPED, sent, PROFILE_TWO])
+        with patch("links.time.sleep"):
+            send_private_message(ui, PROFILE_TWO, "你好")
+        self.assertEqual([c["text"] for c in ui.clicks], ["私信", "可按住 转文字", "我知道了", "可按住 转文字", "发送"])
+        self.assertEqual(ui.texts_set, ["你好", "你好"])
 
     def test_a_message_that_does_not_appear_fails(self):
         sent = [line("对方回复前，仅可发1条消息。", 100, 190, 400, 40), *CHAT]
