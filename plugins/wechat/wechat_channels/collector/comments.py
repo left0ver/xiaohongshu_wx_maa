@@ -7,13 +7,15 @@ import sqlite3
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
 from collection import (
+    PLATFORM,
     comment_control_in_feed,
     find,
     identity,
+    matched_words,
+    now_ms,
     open_basic_info,
     parse_author,
     profile_bio_expand,
@@ -452,6 +454,11 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
     }
 
 
+def stored_key(key):
+    """Saved drafts use the bare 64-hex digest the server expects as dedupeKey."""
+    return key.split(":", 1)[1] if key and key.startswith("wxch-") else key
+
+
 def _public_comment(comment):
     return {k: v for k, v in comment.items() if not k.startswith("_") and k != "inlineReplies"}
 
@@ -698,6 +705,11 @@ def save_comments(path, video_event, comments):
             key = comment.pop("key", None) or comment_key(saved["event_id"], comment)
             if not key.startswith("wxch-comment:"):
                 key = comment_key(saved["event_id"], comment)
+            key = stored_key(key)
+            for field in ("parentCommentKey", "replyToCommentKey"):
+                if comment.get(field):
+                    comment[field] = stored_key(comment[field])
+            comment = {"commentId": None, "platform": PLATFORM, **comment}
             previous = db.execute("SELECT event_json FROM comment_drafts WHERE dedupe_key=?", (key,)).fetchone()
             if previous:
                 event = json.loads(previous[0])
@@ -720,7 +732,7 @@ def save_comments(path, video_event, comments):
                 "parent_event_id": saved["event_id"],
                 "device_id": saved["device_id"],
                 "source_mode": saved["source_mode"],
-                "collected_at": datetime.now(timezone.utc).isoformat(),
+                "collected_at": now_ms(),
                 "upload_status": "local_only",
                 "payload": comment,
             }
@@ -752,7 +764,7 @@ def save_users(path, comment_events, profiles):
             if not profile.get("profileVisited") or not profile.get("nickname"):
                 continue
             parent_event = (
-                by_dedupe.get(profile.get("commentKey"))
+                by_dedupe.get(stored_key(profile.get("commentKey")))
                 or by_nick.get(profile.get("commentNickname"))
                 or by_nick.get(profile.get("nickname"))
                 or (comment_events[0] if comment_events else None)
@@ -760,10 +772,11 @@ def save_users(path, comment_events, profiles):
             if not parent_event:
                 continue
             parent_id = parent_event["event_id"]
-            if profile.get("douyinId"):
-                key = "wxch-user:" + identity("channels", profile["douyinId"])
+            channels_id = profile.get("douyinId")
+            if channels_id:
+                key = identity("channels", channels_id)
             else:
-                key = "wxch-user:" + identity(
+                key = identity(
                     "wechat-user",
                     parent_id,
                     profile["nickname"],
@@ -772,14 +785,18 @@ def save_users(path, comment_events, profiles):
             payload = {
                 "nickname": profile["nickname"],
                 "commentNickname": profile.get("commentNickname") or profile["nickname"],
-                "douyinId": profile.get("douyinId"),
+                "platform": PLATFORM,
+                # Commenters' Channels IDs have their own field; douyinId stays empty.
+                "douyinId": None,
+                "wechat_channels_id": channels_id or None,
                 "identityMethod": profile.get("identityMethod"),
                 "accountType": profile.get("accountType"),
                 "authorBio": profile.get("authorBio"),
                 "authorCertification": profile.get("authorCertification"),
                 "ipLocation": profile.get("ipLocation"),
                 "profileLocation": profile.get("profileLocation"),
-                "touchStatus": profile.get("touchStatus", "visited"),
+                # Collection only looks at a profile; touching it is a separate task.
+                "touchStatus": "TOUCHED" if profile.get("profileActionsPerformed") else "UNTOUCHED",
                 "profileActionsPerformed": profile.get("profileActionsPerformed", []),
                 "returnVerified": bool(profile.get("returnVerified", True)),
             }
@@ -800,7 +817,7 @@ def save_users(path, comment_events, profiles):
                 "parent_event_id": parent_id,
                 "device_id": parent_event["device_id"],
                 "source_mode": parent_event["source_mode"],
-                "collected_at": datetime.now(timezone.utc).isoformat(),
+                "collected_at": now_ms(),
                 "upload_status": "local_only",
                 "payload": payload,
             }
@@ -899,6 +916,20 @@ def same_person(a, b):
     return not (region_a and region_b and region_a != region_b)
 
 
+def filter_comments(comments, words, complete):
+    """Comments to save, marked with the filter words they contain and the drawer coverage."""
+    words = list(words or ())
+    kept = []
+    for comment in comments:
+        matched = matched_words(comment.get("content"), words)
+        if words and not matched:
+            continue
+        kept.append({**comment, "collectionComplete": complete,
+                     "contentMatched": True if words else None,
+                     "commentMatchedKeywords": matched if words else None})
+    return kept
+
+
 COMMENT_LIMIT_KEYS = {
     "maxPages": "max_pages",
     "maxReplyExpansions": "max_reply_expansions",
@@ -938,11 +969,13 @@ def collect_visible_comments(
     max_pages=5,
     max_reply_expansions=1,
     max_profiles=2,
+    comment_filter_words=(),
 ):
     """Read the comment drawer page by page.
 
     Each limit is a non-negative count or None for no limit. max_profiles
     counts commenter visits, whether or not the visit yields a profile.
+    With filter words, only comments whose text contains one are saved.
     """
     with timings.phase("collect_visible_comments"):
         feed = ui.snapshot("feed")
@@ -1171,6 +1204,8 @@ def collect_visible_comments(
                 raise ValueError("No complete visible comments were recognized")
 
             resolve_reply_targets(ordered_comments, profiles)
+            read_count = len(ordered_comments)
+            ordered_comments = filter_comments(ordered_comments, comment_filter_words, complete)
             with timings.phase("persist_comment_drafts"):
                 events = save_comments(path, video_event, ordered_comments)
                 user_events = save_users(path, events, profiles)
@@ -1186,6 +1221,8 @@ def collect_visible_comments(
                 "repliesCollected": has_replies,
                 "limits": {"maxPages": max_pages, "maxReplyExpansions": max_reply_expansions,
                            "maxProfiles": max_profiles},
+                "commentsRead": read_count,
+                "filterWords": list(comment_filter_words or ()),
                 "profiles": profiles,
                 "skippedProfiles": skipped_profiles,
                 "events": events,

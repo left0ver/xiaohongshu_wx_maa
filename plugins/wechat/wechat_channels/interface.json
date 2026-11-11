@@ -2,7 +2,7 @@
   "interface_version": 2,
   "name": "wechat_channels",
   "label": "$project_name",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "$project_description",
   "languages": {
     "zh_cn": "locale/zh_cn.json",
@@ -26,513 +26,335 @@
   ],
   "task": [
     {
-      "name": "collect_video",
-      "label": "$collect_task_name",
-      "description": "$collect_task_description",
-      "entry": "CollectWechatVideo",
-      "default_check": true
-    },
-    {
-      "name": "collect_comments",
-      "label": "$collect_comments_name",
-      "description": "$collect_comments_description",
-      "entry": "CollectWechatComments",
-      "default_check": false,
+      "name": "collect_channels",
+      "label": "$collect_channels_name",
+      "description": "$collect_channels_description",
+      "entry": "CollectWechatChannels",
+      "default_check": true,
       "option": [
-        "collect_comments_unlimited",
-        "collect_comments_limits"
+        "collect_entry",
+        "collect_count",
+        "collect_video_filter",
+        "collect_comment_filter"
       ]
     },
     {
-      "name": "interact_work",
-      "label": "$interact_work_name",
-      "description": "$interact_work_description",
-      "entry": "InteractWechatWork",
+      "name": "link_like_comment",
+      "label": "$link_like_comment_name",
+      "description": "$link_like_comment_description",
+      "entry": "WechatLinkLikeComment",
       "default_check": false,
-      "pipeline_override": {
-        "InteractWechatWork": {
-          "custom_action_param": {
-            "ensureFeed": true
-          }
-        }
-      },
       "option": [
-        "interact_work_actions",
-        "interact_comment_actions",
-        "interact_author_profile",
-        "interact_messages",
-        "interact_self_nickname"
+        "link_like_comment_input"
       ]
     },
     {
-      "name": "like_and_visit",
-      "label": "$task_name",
-      "description": "$task_description",
-      "entry": "StartWeChat",
-      "default_check": false
+      "name": "link_reply_comment",
+      "label": "$link_reply_comment_name",
+      "description": "$link_reply_comment_description",
+      "entry": "WechatLinkReplyComment",
+      "default_check": false,
+      "option": [
+        "link_reply_comment_input"
+      ]
     },
     {
-      "name": "open_wechat",
-      "label": "$open_wechat_label",
-      "description": "$open_wechat_description",
-      "entry": "StartWeChat",
+      "name": "link_message_commenter",
+      "label": "$link_message_commenter_name",
+      "description": "$link_message_commenter_description",
+      "entry": "WechatLinkMessageCommenter",
       "default_check": false,
-      "pipeline_override": {
-        "StartWeChat": {
-          "next": []
-        }
-      }
+      "option": [
+        "link_message_commenter_input"
+      ]
     },
     {
-      "name": "open_discover",
-      "label": "$open_discover_label",
-      "description": "$open_discover_description",
-      "entry": "OpenDiscover",
+      "name": "inspect_messages",
+      "label": "$inspect_messages_name",
+      "description": "$inspect_messages_description",
+      "entry": "InspectWechatMessages",
       "default_check": false,
-      "pipeline_override": {
-        "OpenDiscover": {
-          "next": [
-            "DiscoverReady"
-          ]
-        }
-      }
+      "option": [
+        "messages_like",
+        "messages_settings"
+      ]
     },
     {
-      "name": "open_channels",
-      "label": "$open_channels_label",
-      "description": "$open_channels_description",
-      "entry": "OpenChannels",
+      "name": "link_like_video",
+      "label": "$link_like_video_name",
+      "description": "$link_like_video_description",
+      "entry": "WechatLinkLikeVideo",
       "default_check": false,
-      "pipeline_override": {
-        "OpenChannels": {
-          "next": [
-            "FeedReady"
-          ]
-        },
-        "FeedReady": {
-          "next": []
-        }
-      }
+      "option": [
+        "link_like_video_input"
+      ]
     },
     {
-      "name": "open_author",
-      "label": "$open_author_label",
-      "description": "$open_author_description",
-      "entry": "OpenVisibleAuthor",
+      "name": "link_follow_author",
+      "label": "$link_follow_author_name",
+      "description": "$link_follow_author_description",
+      "entry": "WechatLinkFollowAuthor",
       "default_check": false,
-      "pipeline_override": {}
+      "option": [
+        "link_follow_author_input"
+      ]
     },
     {
-      "name": "open_author_video",
-      "label": "$open_author_video_label",
-      "description": "$open_author_video_description",
-      "entry": "OpenAuthorVideo",
+      "name": "link_message_author",
+      "label": "$link_message_author_name",
+      "description": "$link_message_author_description",
+      "entry": "WechatLinkMessageAuthor",
       "default_check": false,
-      "pipeline_override": {}
+      "option": [
+        "link_message_author_input"
+      ]
     },
     {
-      "name": "like_video",
-      "label": "$like_video_label",
-      "description": "$like_video_description",
-      "entry": "LikeVideo",
+      "name": "link_comment_video",
+      "label": "$link_comment_video_name",
+      "description": "$link_comment_video_description",
+      "entry": "WechatLinkCommentVideo",
       "default_check": false,
-      "pipeline_override": {}
-    },
-    {
-      "name": "return_to_author",
-      "label": "$return_to_author_label",
-      "description": "$return_to_author_description",
-      "entry": "ReturnToAuthor",
-      "default_check": false,
-      "pipeline_override": {}
-    },
-    {
-      "name": "return_to_feed",
-      "label": "$return_to_feed_label",
-      "description": "$return_to_feed_description",
-      "entry": "ReturnToFeed",
-      "default_check": false,
-      "pipeline_override": {
-        "ReturnToFeed": {
-          "next": [
-            "FeedReady"
-          ]
-        },
-        "FeedReady": {
-          "next": []
-        }
-      }
-    },
-    {
-      "name": "open_personal",
-      "label": "$open_personal_label",
-      "description": "$open_personal_description",
-      "entry": "OpenPersonal",
-      "default_check": false,
-      "pipeline_override": {
-        "OpenPersonal": {
-          "all_of": [
-            {
-              "recognition": "And",
-              "all_of": [
-                "FeedHeader"
-              ],
-              "sub_name": "feedHeader"
-            },
-            "PersonalIcon"
-          ],
-          "box_index": 1
-        }
-      }
-    },
-    {
-      "name": "profile_video_like",
-      "label": "$profile_video_like_label",
-      "description": "$profile_video_like_description",
-      "entry": "OpenVisibleAuthor",
-      "default_check": false,
-      "pipeline_override": {
-        "OpenVisibleAuthor": {
-          "next": [
-            "OpenAuthorVideo"
-          ]
-        },
-        "OpenAuthorVideo": {
-          "next": [
-            "LikeVideo"
-          ]
-        }
-      }
+      "option": [
+        "link_comment_video_input"
+      ]
     }
   ],
   "option": {
-    "interact_work_actions": {
-      "type": "checkbox",
-      "label": "$interact_work_actions_label",
-      "description": "$interact_work_actions_description",
+    "collect_entry": {
+      "type": "select",
+      "label": "$collect_entry_label",
       "cases": [
         {
-          "name": "like",
-          "label": "$interact_case_like_work",
+          "name": "recommend",
+          "label": "$collect_entry_recommend",
           "pipeline_override": {
-            "InteractWechatWork": {
+            "CollectWechatChannels": {
               "custom_action_param": {
-                "likeWork": true
+                "entry": "recommend"
               }
             }
           }
         },
         {
-          "name": "collect",
-          "label": "$interact_case_collect_work",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "collectWork": true
-              }
-            }
-          }
-        },
-        {
-          "name": "comment",
-          "label": "$interact_case_comment_work",
+          "name": "search",
+          "label": "$collect_entry_search",
           "option": [
-            "interact_comment_text"
+            "collect_keyword"
           ],
-          "pipeline_override": {}
+          "pipeline_override": {
+            "CollectWechatChannels": {
+              "custom_action_param": {
+                "entry": "search"
+              }
+            }
+          }
+        },
+        {
+          "name": "city",
+          "label": "$collect_entry_city",
+          "pipeline_override": {
+            "CollectWechatChannels": {
+              "custom_action_param": {
+                "entry": "city"
+              }
+            }
+          }
         }
       ]
     },
-    "interact_comment_text": {
+    "collect_keyword": {
       "type": "input",
-      "label": "$interact_comment_text_label",
+      "label": "$collect_keyword_label",
       "inputs": [
         {
-          "name": "text",
-          "label": "$interact_comment_text_field",
-          "placeholder": "$interact_comment_text_placeholder",
+          "name": "keyword",
+          "label": "$collect_keyword_field",
           "default": "",
           "verify": "\\S",
-          "pattern_msg": "$interact_comment_text_required"
+          "pattern_msg": "$collect_keyword_required"
         }
       ],
       "pipeline_override": {
-        "InteractWechatWork": {
+        "CollectWechatChannels": {
           "custom_action_param": {
-            "commentText": "{text}"
+            "keyword": "{keyword}"
           }
         }
       }
     },
-    "interact_comment_actions": {
-      "type": "checkbox",
-      "label": "$interact_comment_actions_label",
-      "description": "$interact_comment_actions_description",
-      "cases": [
+    "collect_count": {
+      "type": "input",
+      "label": "$collect_count_label",
+      "description": "$collect_count_description",
+      "inputs": [
         {
-          "name": "like",
-          "label": "$interact_case_like_comment",
-          "option": [
-            "interact_target_comment"
-          ],
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "likeComment": true
-              }
-            }
-          }
-        },
-        {
-          "name": "reply",
-          "label": "$interact_case_reply_comment",
-          "option": [
-            "interact_target_comment",
-            "interact_reply_text"
-          ],
-          "pipeline_override": {}
-        },
-        {
-          "name": "visit",
-          "label": "$interact_case_visit_commenter",
-          "option": [
-            "interact_target_comment",
-            "interact_commenter_actions"
-          ],
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchCommenterProfile": {
-                  "follow": false,
-                  "likeFirstWork": false,
-                  "collectFirstWork": false
-                }
-              }
-            }
+          "name": "count",
+          "label": "$collect_count_field",
+          "default": "10",
+          "pipeline_type": "int",
+          "verify": "^(?:[1-9]\\d?|[1-4]\\d\\d|500)$",
+          "pattern_msg": "$collect_count_invalid"
+        }
+      ],
+      "pipeline_override": {
+        "CollectWechatChannels": {
+          "custom_action_param": {
+            "count": "{count}"
           }
         }
-      ]
+      }
     },
-    "interact_target_comment": {
+    "collect_video_filter": {
       "type": "input",
-      "label": "$interact_target_comment_label",
-      "description": "$interact_target_comment_description",
+      "label": "$collect_video_filter_label",
+      "description": "$collect_video_filter_description",
       "inputs": [
+        {
+          "name": "words",
+          "label": "$collect_video_filter_field",
+          "default": ""
+        }
+      ],
+      "pipeline_override": {
+        "CollectWechatChannels": {
+          "custom_action_param": {
+            "videoFilter": "{words}"
+          }
+        }
+      }
+    },
+    "collect_comment_filter": {
+      "type": "input",
+      "label": "$collect_comment_filter_label",
+      "description": "$collect_comment_filter_description",
+      "inputs": [
+        {
+          "name": "words",
+          "label": "$collect_comment_filter_field",
+          "default": ""
+        }
+      ],
+      "pipeline_override": {
+        "CollectWechatChannels": {
+          "custom_action_param": {
+            "commentFilter": "{words}"
+          }
+        }
+      }
+    },
+    "link_like_comment_input": {
+      "type": "input",
+      "label": "$link_input_label",
+      "inputs": [
+        {
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
+        },
         {
           "name": "nickname",
-          "label": "$interact_target_nickname_field",
-          "default": ""
-        },
-        {
-          "name": "content",
-          "label": "$interact_target_content_field",
-          "default": ""
-        }
-      ],
-      "pipeline_override": {
-        "InteractWechatWork": {
-          "custom_action_param": {
-            "targetComment": {
-              "nickname": "{nickname}",
-              "content": "{content}"
-            }
-          }
-        }
-      }
-    },
-    "interact_reply_text": {
-      "type": "input",
-      "label": "$interact_reply_text_label",
-      "inputs": [
-        {
-          "name": "text",
-          "label": "$interact_reply_text_field",
-          "placeholder": "$interact_reply_text_placeholder",
+          "label": "$link_nickname_field",
           "default": "",
           "verify": "\\S",
-          "pattern_msg": "$interact_reply_text_required"
+          "pattern_msg": "$link_nickname_required"
         }
       ],
       "pipeline_override": {
-        "InteractWechatWork": {
+        "WechatLinkLikeComment": {
           "custom_action_param": {
-            "replyText": "{text}"
+            "link": "{link}",
+            "nickname": "{nickname}"
           }
         }
       }
     },
-    "interact_commenter_actions": {
-      "type": "checkbox",
-      "label": "$interact_commenter_actions_label",
-      "description": "$interact_profile_actions_description",
-      "default_case": [
-        "follow",
-        "like_first",
-        "collect_first"
+    "link_reply_comment_input": {
+      "type": "input",
+      "label": "$link_input_label",
+      "inputs": [
+        {
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
+        },
+        {
+          "name": "nickname",
+          "label": "$link_nickname_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_nickname_required"
+        },
+        {
+          "name": "text",
+          "label": "$link_reply_comment_text_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_text_required"
+        }
       ],
-      "cases": [
-        {
-          "name": "follow",
-          "label": "$interact_case_follow",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchCommenterProfile": {
-                  "follow": true
-                }
-              }
-            }
-          }
-        },
-        {
-          "name": "like_first",
-          "label": "$interact_case_like_first",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchCommenterProfile": {
-                  "likeFirstWork": true
-                }
-              }
-            }
-          }
-        },
-        {
-          "name": "collect_first",
-          "label": "$interact_case_collect_first",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchCommenterProfile": {
-                  "collectFirstWork": true
-                }
-              }
-            }
+      "pipeline_override": {
+        "WechatLinkReplyComment": {
+          "custom_action_param": {
+            "link": "{link}",
+            "nickname": "{nickname}",
+            "text": "{text}"
           }
         }
-      ]
+      }
     },
-    "interact_author_profile": {
-      "type": "switch",
-      "label": "$interact_author_profile_label",
-      "description": "$interact_author_profile_description",
-      "default_case": "No",
-      "cases": [
+    "link_message_commenter_input": {
+      "type": "input",
+      "label": "$link_input_label",
+      "inputs": [
         {
-          "name": "Yes",
-          "option": [
-            "interact_author_actions"
-          ],
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchAuthorProfile": {
-                  "follow": false,
-                  "likeFirstWork": false,
-                  "collectFirstWork": false
-                }
-              }
-            }
-          }
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
         },
         {
-          "name": "No",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchAuthorProfile": false
-              }
-            }
-          }
+          "name": "nickname",
+          "label": "$link_nickname_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_nickname_required"
+        },
+        {
+          "name": "text",
+          "label": "$link_message_commenter_text_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_text_required"
         }
-      ]
-    },
-    "interact_author_actions": {
-      "type": "checkbox",
-      "label": "$interact_author_actions_label",
-      "description": "$interact_profile_actions_description",
-      "default_case": [
-        "follow",
-        "like_first",
-        "collect_first"
       ],
-      "cases": [
-        {
-          "name": "follow",
-          "label": "$interact_case_follow",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchAuthorProfile": {
-                  "follow": true
-                }
-              }
-            }
-          }
-        },
-        {
-          "name": "like_first",
-          "label": "$interact_case_like_first",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchAuthorProfile": {
-                  "likeFirstWork": true
-                }
-              }
-            }
-          }
-        },
-        {
-          "name": "collect_first",
-          "label": "$interact_case_collect_first",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "touchAuthorProfile": {
-                  "collectFirstWork": true
-                }
-              }
-            }
+      "pipeline_override": {
+        "WechatLinkMessageCommenter": {
+          "custom_action_param": {
+            "link": "{link}",
+            "nickname": "{nickname}",
+            "text": "{text}"
           }
         }
-      ]
+      }
     },
-    "interact_messages": {
+    "messages_like": {
       "type": "switch",
-      "label": "$interact_messages_label",
-      "description": "$interact_messages_description",
-      "default_case": "No",
-      "cases": [
-        {
-          "name": "Yes",
-          "option": [
-            "interact_messages_like",
-            "interact_messages_settings"
-          ],
-          "pipeline_override": {}
-        },
-        {
-          "name": "No",
-          "pipeline_override": {
-            "InteractWechatWork": {
-              "custom_action_param": {
-                "inspectMessages": false
-              }
-            }
-          }
-        }
-      ]
-    },
-    "interact_messages_like": {
-      "type": "switch",
-      "label": "$interact_messages_like_label",
+      "label": "$messages_like_label",
       "default_case": "Yes",
       "cases": [
         {
           "name": "Yes",
           "pipeline_override": {
-            "InteractWechatWork": {
+            "InspectWechatMessages": {
               "custom_action_param": {
                 "inspectMessages": {
                   "like": true
@@ -544,7 +366,7 @@
         {
           "name": "No",
           "pipeline_override": {
-            "InteractWechatWork": {
+            "InspectWechatMessages": {
               "custom_action_param": {
                 "inspectMessages": {
                   "like": false
@@ -555,26 +377,26 @@
         }
       ]
     },
-    "interact_messages_settings": {
+    "messages_settings": {
       "type": "input",
-      "label": "$interact_messages_settings_label",
+      "label": "$messages_settings_label",
       "inputs": [
         {
           "name": "count",
-          "label": "$interact_messages_count_field",
+          "label": "$messages_count_field",
           "default": "1",
           "pipeline_type": "int",
           "verify": "^([1-9]|10)$"
         },
         {
           "name": "reply",
-          "label": "$interact_messages_reply_field",
-          "description": "$interact_messages_reply_description",
+          "label": "$messages_reply_field",
+          "description": "$messages_reply_description",
           "default": ""
         }
       ],
       "pipeline_override": {
-        "InteractWechatWork": {
+        "InspectWechatMessages": {
           "custom_action_param": {
             "inspectMessages": {
               "maxMessages": "{count}",
@@ -584,73 +406,102 @@
         }
       }
     },
-    "interact_self_nickname": {
+    "link_like_video_input": {
       "type": "input",
-      "label": "$interact_self_nickname_label",
-      "description": "$interact_self_nickname_description",
+      "label": "$link_input_label",
       "inputs": [
         {
-          "name": "nickname",
-          "label": "$interact_self_nickname_field",
-          "default": ""
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
         }
       ],
       "pipeline_override": {
-        "InteractWechatWork": {
+        "WechatLinkLikeVideo": {
           "custom_action_param": {
-            "selfNickname": "{nickname}"
+            "link": "{link}"
           }
         }
       }
     },
-    "collect_comments_unlimited": {
-      "type": "checkbox",
-      "label": "$collect_comments_unlimited_label",
-      "description": "$collect_comments_unlimited_description",
-      "cases": [
-        {
-          "name": "unlimited",
-          "label": "$collect_comments_unlimited_case",
-          "pipeline_override": {
-            "CollectWechatComments": {
-              "custom_action_param": {
-                "unlimited": true
-              }
-            }
-          }
-        }
-      ]
-    },
-    "collect_comments_limits": {
+    "link_follow_author_input": {
       "type": "input",
-      "label": "$collect_comments_limits_label",
-      "description": "$collect_comments_limits_description",
+      "label": "$link_input_label",
       "inputs": [
         {
-          "name": "max_pages",
-          "label": "$collect_comments_max_pages",
-          "default": "5",
-          "verify": "^[1-9]\\d*$"
-        },
-        {
-          "name": "max_reply_expansions",
-          "label": "$collect_comments_max_reply_expansions",
-          "default": "1",
-          "verify": "^\\d+$"
-        },
-        {
-          "name": "max_profiles",
-          "label": "$collect_comments_max_profiles",
-          "default": "2",
-          "verify": "^\\d+$"
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
         }
       ],
       "pipeline_override": {
-        "CollectWechatComments": {
+        "WechatLinkFollowAuthor": {
           "custom_action_param": {
-            "maxPages": "{max_pages}",
-            "maxReplyExpansions": "{max_reply_expansions}",
-            "maxProfiles": "{max_profiles}"
+            "link": "{link}"
+          }
+        }
+      }
+    },
+    "link_message_author_input": {
+      "type": "input",
+      "label": "$link_input_label",
+      "inputs": [
+        {
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
+        },
+        {
+          "name": "text",
+          "label": "$link_message_author_text_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_text_required"
+        }
+      ],
+      "pipeline_override": {
+        "WechatLinkMessageAuthor": {
+          "custom_action_param": {
+            "link": "{link}",
+            "text": "{text}"
+          }
+        }
+      }
+    },
+    "link_comment_video_input": {
+      "type": "input",
+      "label": "$link_input_label",
+      "inputs": [
+        {
+          "name": "link",
+          "label": "$link_url_field",
+          "placeholder": "$link_url_placeholder",
+          "default": "",
+          "verify": "https://(?:weixin\\.qq\\.com/sph/|channels\\.weixin\\.qq\\.com/)",
+          "pattern_msg": "$link_url_invalid"
+        },
+        {
+          "name": "text",
+          "label": "$link_comment_video_text_field",
+          "default": "",
+          "verify": "\\S",
+          "pattern_msg": "$link_text_required"
+        }
+      ],
+      "pipeline_override": {
+        "WechatLinkCommentVideo": {
+          "custom_action_param": {
+            "link": "{link}",
+            "text": "{text}"
           }
         }
       }
@@ -658,64 +509,11 @@
   },
   "preset": [
     {
-      "name": "single_run",
-      "label": "$preset_single",
+      "name": "daily_collect",
+      "label": "$preset_collect",
       "task": [
         {
-          "name": "like_and_visit"
-        }
-      ]
-    },
-    {
-      "name": "compose_visit",
-      "label": "$preset_compose_visit",
-      "description": "$preset_compose_description",
-      "task": [
-        {
-          "name": "open_wechat"
-        },
-        {
-          "name": "open_discover"
-        },
-        {
-          "name": "open_channels"
-        },
-        {
-          "name": "like_video"
-        },
-        {
-          "name": "open_author"
-        },
-        {
-          "name": "return_to_feed"
-        },
-        {
-          "name": "open_personal"
-        }
-      ]
-    },
-    {
-      "name": "compose_profile_like",
-      "label": "$preset_compose_profile",
-      "description": "$preset_compose_description",
-      "task": [
-        {
-          "name": "open_wechat"
-        },
-        {
-          "name": "open_discover"
-        },
-        {
-          "name": "open_channels"
-        },
-        {
-          "name": "open_author"
-        },
-        {
-          "name": "open_author_video"
-        },
-        {
-          "name": "like_video"
+          "name": "collect_channels"
         }
       ]
     }

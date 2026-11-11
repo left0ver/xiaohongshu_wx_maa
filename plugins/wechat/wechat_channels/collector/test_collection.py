@@ -337,7 +337,7 @@ class CollectionTests(unittest.TestCase):
             timings = Timings(Path(root) / "timings.jsonl", "names")
             event = collect(ui, store, timings)
             self.assertEqual(event["payload"]["authorNickname"], "李可q")
-            self.assertEqual(event["dedupe_key"], "wxch-video:" + identity("李可q", event["payload"]["description"]))
+            self.assertEqual(event["dedupe_key"], identity("李可q", event["payload"]["description"]))
             self.assertIs(event["payload"]["returnVerified"], False)
             with store.connect() as db:
                 self.assertEqual(json.loads(db.execute("SELECT event_json FROM video_drafts").fetchone()[0]), event)

@@ -514,6 +514,33 @@ class MaaUi:
             run(cmd, timeout=timeout, stopped=self.stopped)
         time.sleep(0.5)
 
+    def controls_now(self):
+        """Fresh controls, icons included; empty when WeChat hides its controls."""
+        if not self.controls_exposed:
+            return []
+        try:
+            return self.hierarchy(force=True)
+        except HierarchyUnavailable:
+            return []
+
+    def key(self, keycode):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        if not self.controller.post_click_key(keycode).wait().succeeded:
+            raise RuntimeError(f"Key {keycode} failed")
+        self.navigation_stage = None
+        time.sleep(0.3)
+
+    def swipe(self, x1, y1, x2, y2, duration):
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        if not self.controller.post_swipe(x1, y1, x2, y2, duration).wait().succeeded:
+            raise RuntimeError("Swipe failed")
+        self.navigation_stage = None
+        time.sleep(0.8)
+
     def scroll_feed_next(self):
         if self.stopped():
             raise InterruptedError("Collection was stopped")

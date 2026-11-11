@@ -8,7 +8,6 @@ import time
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from layout import REGION, WorkHeaderMissing, label_values, line_height, profile_name, video_values, work_region
@@ -242,16 +241,24 @@ class LocalStore:
         finally:
             db.close()
 
-    def save(self, payload, source_mode="RECOMMEND"):
-        if not payload.get("authorNickname") or not payload.get("description") or not payload.get("authorDouyinId"):
+    def save(self, payload, source_mode="RECOMMEND", video_url=None, search_keyword=None):
+        """Save a VIDEO draft in the shape agreed for the later server upload.
+
+        The dedupe key is the 64-hex digest of nickname + description (the
+        share link changes on every copy, so it cannot identify the video).
+        A repeat keeps the first event ID, share link and collection time.
+        """
+        if not payload.get("authorNickname") or not payload.get("description"):
             raise ValueError("Cannot save an incomplete VIDEO")
-        key = "wxch-video:" + identity(payload["authorNickname"], payload["description"])
+        key = identity(payload["authorNickname"], payload["description"])
+        payload = video_payload(payload, video_url, search_keyword)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             previous = db.execute("SELECT event_json FROM video_drafts WHERE dedupe_key=?", (key,)).fetchone()
             if previous:
                 event = json.loads(previous[0])
-                event["payload"] = {**payload, "videoUrl": event["payload"]["videoUrl"]}
+                first_url = event["payload"].get("videoUrl")
+                event["payload"] = {**payload, "videoUrl": first_url or payload["videoUrl"]}
                 db.execute("UPDATE video_drafts SET event_json=? WHERE dedupe_key=?",
                            (json.dumps(event, ensure_ascii=False), key))
                 return event, True
@@ -259,15 +266,31 @@ class LocalStore:
             event = {
                 "event_id": str(uuid.uuid4()), "event_type": "VIDEO", "dedupe_key": key,
                 "device_id": device, "source_mode": source_mode or "RECOMMEND",
-                "collected_at": datetime.now(timezone.utc).isoformat(),
-                "upload_status": "local_only",
-                "payload": {**payload, "videoUrl": "wechat-channels://video/" + key.split(":", 1)[1]},
+                "collected_at": now_ms(), "upload_status": "local_only", "payload": payload,
             }
-            # No authorization code or transport is fabricated. These are local drafts,
-            # to be mapped to the real server contract once supplied.
+            # Local drafts only; the upload queue is not built yet.
             db.execute("INSERT INTO video_drafts VALUES (?, ?, ?, 'local_only', ?)",
                        (key, event["event_id"], event["collected_at"], json.dumps(event, ensure_ascii=False)))
             return event, False
+
+
+PLATFORM = "wechat"
+
+
+def now_ms():
+    return time.time_ns() // 1_000_000
+
+
+def video_payload(payload, video_url=None, search_keyword=None):
+    """Upload field names: the author's Channels ID has its own field, never authorDouyinId."""
+    payload = dict(payload)
+    channels_id = payload.pop("authorDouyinId", None)
+    if payload.get("authorIdentityMethod") != "wechat-channel-id":
+        channels_id = None
+    keyword = (search_keyword or "").strip() or None
+    return {**payload, "platform": PLATFORM, "authorDouyinId": None,
+            "author_wechat_channels_id": channels_id, "awemeId": None,
+            "videoUrl": video_url or None, "searchKeyword": keyword, "matchedKeyword": keyword}
 
 
 class Timings:
@@ -306,6 +329,107 @@ def navigation_roi(label, height):
     if label in ("feed", "before-author"):
         return [0, height - 250, 720, 250]
     return [0, 0, 0, 0]
+
+
+WORD_SEPARATORS = r"[\s,，、;；|/]+"
+SHARE_LINK = re.compile(r"https://weixin\.qq\.com/sph/[A-Za-z0-9_-]{4,64}")
+PASTE_KEY = 279
+
+
+def filter_words(value):
+    """Filter words typed by the user: separated by spaces, commas, 、 or semicolons."""
+    if isinstance(value, (list, tuple)):
+        value = " ".join(str(item) for item in value)
+    words = []
+    for word in re.split(WORD_SEPARATORS, str(value or "")):
+        if word and word not in words:
+            words.append(word)
+    return words
+
+
+def matched_words(text, words):
+    """The filter words contained in text, ignoring case, width and spacing."""
+    body = normalize(text or "").lower()
+    return [word for word in words if normalize(word).lower() in body]
+
+
+def control(lines, pattern, predicate=lambda line: True):
+    """A control read from the hierarchy (icons included), never an OCR guess."""
+    return find([line for line in lines if line.get("source") == "hierarchy"], pattern, predicate)
+
+
+def share_geometry(lines, height):
+    """The 转发 button: its count (or label) sits under the icon in the bottom bar."""
+    count = find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?\+?|转发|分享)$",
+                 lambda line: 420 <= line["box"][0] + line["box"][2] / 2 <= 510 and line["box"][1] > height - 115)
+    if count:
+        x, y, w, h = count["box"]
+        return {"text": "share", "box": [x + w // 2 - 24, max(0, y - 48), 48, 44]}
+    return {"text": "share", "box": [442, height - 132, 48, 48]}
+
+
+def _feed_search_button(ui):
+    found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
+    return found or {"text": "搜索", "box": [555, 70, 65, 80]}
+
+
+def back_to_video(ui, author, label):
+    """Back out of search (keyboard first, then the page) to the video.
+
+    Back from Channels search always lands on the video it was opened from;
+    the nickname is not compared because its OCR reading varies between frames.
+    """
+    for attempt in range(3):
+        lines = ui.snapshot(f"{label}-{attempt + 1}")
+        try:
+            author_in_feed(lines, ui.height)
+            return lines
+        except ValueError:
+            pass
+        ui.back()
+    raise ValueError(f"Did not return to the video of {author} after reading its share link")
+
+
+def copy_share_link(ui, lines, previous_link=None):
+    """转发 → 复制链接, then paste into Channels search to read the clipboard.
+
+    WeChat makes a new short link on every copy. Only a link read from the
+    controls is kept: OCR would confuse letters inside the code.
+    """
+    author = author_in_feed(lines, ui.height)["text"].strip()
+    ui.click(share_geometry(lines, ui.height))
+    sheet = ui.snapshot("share-sheet")
+    for swipe in range(3):
+        copy = find(sheet, r"^复制链接$")
+        if copy:
+            break
+        second_row = find(sheet, r"^(?:浮窗|倍速播放|不感兴趣|投诉|背景声音|自动上滑|关闭弹幕)$")
+        if not second_row or swipe == 2:
+            ui.back()
+            raise ValueError("复制链接 is not in the share sheet")
+        y = second_row["box"][1] - 40
+        ui.swipe(640, y, 80, y, 500)
+        sheet = ui.snapshot("share-sheet-scrolled")
+    ui.click(copy)
+    time.sleep(0.8)
+    if find(ui.snapshot("share-closed"), r"^复制链接$|^转发给朋友$"):
+        ui.back()
+    ui.click(_feed_search_button(ui))
+    time.sleep(0.8)
+    ui.key(PASTE_KEY)
+    time.sleep(0.6)
+    pasted = ui.snapshot("share-link-paste")
+    box = control(pasted, SHARE_LINK.pattern)
+    link = SHARE_LINK.search(box["text"]).group(0) if box else None
+    clear = control(ui.controls_now(), r"^清除搜索词$")
+    if clear:
+        ui.click(clear)
+    back_to_video(ui, author, "share-return")
+    if not link:
+        raise ValueError("The copied share link could not be read")
+    if link == previous_link:
+        raise ValueError("The clipboard still holds the previous video's link")
+    return link
 
 
 def ensure_feed(ui, launch=True):

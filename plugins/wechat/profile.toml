@@ -5,7 +5,8 @@ virtual_display_orientation = "portrait"
 pi_include = ["collector"]
 
 [agent]
-timeout_ms = 600000
+# A collection run reads every comment of up to 500 videos; one agent call may take hours.
+timeout_ms = 21600000
 
 [[agent.runtimes]]
 bundle = "dist/wechat-channels-agent-runtime-{abi}.zip"

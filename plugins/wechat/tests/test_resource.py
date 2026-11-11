@@ -15,7 +15,9 @@ NODES = {k: v for path in sorted((BASE / "pipeline").glob("*.json"))
 INTERFACE = json.loads((PROJECT / "interface.json").read_text(encoding="utf-8"))
 OPTIONS = INTERFACE.get("option", {})
 sys.path.insert(0, str(PROJECT / "collector"))
-from interactions import INTERACTION_ACTIONS, validate_interaction_config  # noqa: E402
+from interactions import validate_interaction_config  # noqa: E402
+from links import LINK_ACTIONS, validate_link_task  # noqa: E402
+from modes import collection_task_config  # noqa: E402
 
 
 def merge(target, source):
@@ -89,15 +91,15 @@ class ResourceFlowTests(unittest.TestCase):
 
     def test_collector_is_the_only_default_task_and_has_an_agent(self):
         defaults = [task for task in INTERFACE["task"] if task["default_check"]]
-        self.assertEqual([task["name"] for task in defaults], ["collect_video"])
-        self.assertEqual(NODES[defaults[0]["entry"]]["custom_action"], "CollectWechatVideo")
+        self.assertEqual([task["name"] for task in defaults], ["collect_channels"])
+        self.assertEqual(NODES[defaults[0]["entry"]]["custom_action"], "CollectWechatChannels")
         self.assertTrue((PROJECT / INTERFACE["agent"]["child_args"][0]).is_file())
         self.assertEqual(INTERFACE["agent"]["child_args"][0], "agent/main.py")
         self.assertTrue((PROJECT / "collector/main.py").is_file())
         profile = tomllib.loads((PROJECT.parent / "profile.toml").read_text(encoding="utf-8"))
         self.assertEqual(profile["pi_assets"], PROJECT.name)
         self.assertIn("collector", profile["pi_include"])
-        self.assertEqual(profile["agent"]["timeout_ms"], 600000)
+        self.assertEqual(profile["agent"]["timeout_ms"], 21600000)
         runtime = profile["agent"]["runtimes"][0]
         self.assertEqual(runtime["args"][1], INTERFACE["agent"]["child_args"][0])
         self.assertIn("{abi}", runtime["env"]["MAAFW_BINARY_PATH"])
@@ -123,16 +125,14 @@ class ResourceFlowTests(unittest.TestCase):
                     visit(successor, path)
             visit(task["entry"], [])
 
-    def test_atomic_task_overrides_do_not_leak_into_the_next_task(self):
-        tasks = {t["name"]: t for t in INTERFACE["task"]}
-        for name, entry in [("open_wechat", "StartWeChat"), ("open_discover", "OpenDiscover"), ("open_channels", "OpenChannels")]:
-            atomic = copy.deepcopy(NODES)
-            merge(atomic, tasks[name]["pipeline_override"])
-            self.assertNotEqual(atomic[entry]["next"], NODES[entry]["next"])
-        self.assertEqual(tasks["profile_video_like"]["pipeline_override"], {
-            "OpenVisibleAuthor": {"next": ["OpenAuthorVideo"]},
-            "OpenAuthorVideo": {"next": ["LikeVideo"]},
-        })
+    def test_app_offers_the_agreed_tasks_and_each_has_its_own_entry(self):
+        names = [task["name"] for task in INTERFACE["task"]]
+        self.assertEqual(names, ["collect_channels", "link_like_comment", "link_reply_comment",
+                                 "link_message_commenter", "inspect_messages", "link_like_video",
+                                 "link_follow_author", "link_message_author", "link_comment_video"])
+        entries = [task["entry"] for task in INTERFACE["task"]]
+        self.assertEqual(len(set(entries)), len(entries))
+        self.assertFalse(any(task.get("pipeline_override") for task in INTERFACE["task"]))
         self.assertFalse(any(t["default_check"] for t in INTERFACE["task"][1:]))
 
     def test_standalone_like_is_idempotent_and_verifies_the_clicked_thumb(self):
@@ -227,78 +227,73 @@ class ResourceFlowTests(unittest.TestCase):
             self.assertIsNone(re.fullmatch(pattern, label))
         self.assertIsNotNone(re.fullmatch(pattern, "腾讯娱乐"))
 
-    def test_presets_only_reference_known_operations_in_declared_order(self):
+    def test_presets_only_reference_known_tasks(self):
         tasks = {task["name"] for task in INTERFACE["task"]}
-        presets = {preset["name"]: preset for preset in INTERFACE["preset"]}
-        for preset in presets.values():
+        for preset in INTERFACE["preset"]:
             for task in preset["task"]:
                 self.assertIn(task["name"], tasks)
                 self.assertTrue(task.get("enabled", True))
-        self.assertEqual([task["name"] for task in presets["compose_profile_like"]["task"]],
-                         ["open_wechat", "open_discover", "open_channels", "open_author", "open_author_video", "like_video"])
 
-    def interact_param(self, values):
-        task = next(task for task in INTERFACE["task"] if task["name"] == "interact_work")
-        self.assertEqual(NODES[task["entry"]]["custom_action"], "InteractWechatWork")
-        self.assertEqual(NODES[task["entry"]]["custom_action_param"], {})
-        return resolve_task(task, values)["InteractWechatWork"]["custom_action_param"]
+    def task_param(self, name, values):
+        task = next(task for task in INTERFACE["task"] if task["name"] == name)
+        base = copy.deepcopy(NODES[task["entry"]].get("custom_action_param", {}))
+        merge(base, resolve_task(task, values).get(task["entry"], {}).get("custom_action_param", {}))
+        return base
 
-    def test_interact_task_defaults_enable_no_action(self):
-        param = self.interact_param({})
-        self.assertEqual(param, {"ensureFeed": True, "touchAuthorProfile": False, "inspectMessages": False,
-                                 "selfNickname": ""})
-        self.assertFalse(any(param.get(key) for key in INTERACTION_ACTIONS))
+    def test_collection_defaults_to_ten_recommended_videos_without_filters(self):
+        param = self.task_param("collect_channels", {})
+        self.assertEqual(param, {"entry": "recommend", "count": 10, "videoFilter": "", "commentFilter": ""})
+        self.assertEqual(collection_task_config(param), {
+            "entry": "recommend", "keyword": "", "count": 10, "videoFilterWords": [], "commentFilterWords": []})
 
-    def test_interact_task_options_build_the_agent_configuration(self):
-        param = self.interact_param({
-            "interact_work_actions": ["like", "collect", "comment"],
-            "interact_comment_text": {"text": "拍得真好"},
-            "interact_comment_actions": ["like", "reply", "visit"],
-            "interact_target_comment": {"nickname": "俊国", "content": ""},
-            "interact_reply_text": {"text": "同感"},
-            "interact_commenter_actions": ["follow"],
-            "interact_author_profile": "Yes",
-            "interact_messages": "Yes",
-            "interact_messages_like": "No",
-            "interact_messages_settings": {"count": "3", "reply": "谢谢"},
-            "interact_self_nickname": {"nickname": "我"},
-        })
-        self.assertEqual(param, {
-            "ensureFeed": True,
-            "likeWork": True,
-            "collectWork": True,
-            "commentText": "拍得真好",
-            "likeComment": True,
-            "replyText": "同感",
-            "targetComment": {"nickname": "俊国", "content": ""},
-            "touchCommenterProfile": {"follow": True, "likeFirstWork": False, "collectFirstWork": False},
-            "touchAuthorProfile": {"follow": True, "likeFirstWork": True, "collectFirstWork": True},
-            "inspectMessages": {"like": False, "maxMessages": 3, "replyText": "谢谢"},
-            "selfNickname": "我",
-        })
+    def test_collection_options_build_search_with_filters(self):
+        param = self.task_param("collect_channels", {
+            "collect_entry": "search", "collect_keyword": {"keyword": "创业"}, "collect_count": {"count": "25"},
+            "collect_video_filter": {"words": "创业, 副业"}, "collect_comment_filter": {"words": "想学 怎么做"}})
+        self.assertEqual(param, {"entry": "search", "keyword": "创业", "count": 25,
+                                 "videoFilter": "创业, 副业", "commentFilter": "想学 怎么做"})
+        settings = collection_task_config(param)
+        self.assertEqual(settings["videoFilterWords"], ["创业", "副业"])
+        self.assertEqual(settings["commentFilterWords"], ["想学", "怎么做"])
+
+    def test_collection_refuses_an_unusable_entry_or_count(self):
+        with self.assertRaisesRegex(ValueError, "collect_keyword_required"):
+            self.task_param("collect_channels", {"collect_entry": "search"})
+        with self.assertRaisesRegex(ValueError, "collect_count_invalid"):
+            self.task_param("collect_channels", {"collect_count": {"count": "0"}})
+        with self.assertRaisesRegex(ValueError, "同城"):
+            collection_task_config(self.task_param("collect_channels", {"collect_entry": "city"}))
+
+    def test_link_tasks_pass_their_action_link_and_inputs(self):
+        link = "https://weixin.qq.com/sph/ASkxIf0OkN"
+        expected = {
+            "link_like_comment": ("likeComment", {"nickname": "俊国"}),
+            "link_reply_comment": ("replyComment", {"nickname": "俊国", "text": "同感"}),
+            "link_message_commenter": ("messageCommenter", {"nickname": "俊国", "text": "你好"}),
+            "link_like_video": ("likeVideo", {}),
+            "link_follow_author": ("followAuthor", {}),
+            "link_message_author": ("messageAuthor", {"text": "你好"}),
+            "link_comment_video": ("commentVideo", {"text": "拍得真好"}),
+        }
+        self.assertEqual({action for action, _ in expected.values()}, set(LINK_ACTIONS))
+        for name, (action, inputs) in expected.items():
+            param = self.task_param(name, {name + "_input": {"link": "看看 " + link, **inputs}})
+            self.assertEqual(param, {"action": action, "link": "看看 " + link, **inputs})
+            validate_link_task(param)
+            with self.assertRaisesRegex(ValueError, "link_url_invalid"):
+                self.task_param(name, {name + "_input": {"link": "https://example.com", **inputs}})
+            for field in inputs:
+                with self.assertRaisesRegex(ValueError, "required"):
+                    self.task_param(name, {name + "_input": {"link": link, **inputs, field: " "}})
+
+    def test_message_inspection_runs_alone_and_likes_by_default(self):
+        param = self.task_param("inspect_messages", {})
+        self.assertEqual(param, {"ensureFeed": True,
+                                 "inspectMessages": {"like": True, "maxMessages": 1, "replyText": ""}})
         validate_interaction_config(param)
-
-    def test_interact_task_refuses_comment_actions_left_without_a_target(self):
-        param = self.interact_param({"interact_comment_actions": ["like"]})
-        self.assertEqual(param["targetComment"], {"nickname": "", "content": ""})
-        with self.assertRaisesRegex(ValueError, "targetComment"):
-            validate_interaction_config(param)
-        # A whitespace-only text is refused by the host already, and by the agent if it ever got through.
-        with self.assertRaisesRegex(ValueError, "interact_comment_text_required"):
-            self.interact_param({"interact_work_actions": ["comment"], "interact_comment_text": {"text": " "}})
-        with self.assertRaisesRegex(ValueError, "commentText is enabled but empty"):
-            validate_interaction_config({"commentText": " "})
-
-    def test_ticked_comment_and_reply_need_their_text_before_the_run_starts(self):
-        with self.assertRaisesRegex(ValueError, "interact_comment_text.text: \\$interact_comment_text_required"):
-            self.interact_param({"interact_work_actions": ["comment"]})
-        with self.assertRaisesRegex(ValueError, "interact_reply_text.text: \\$interact_reply_text_required"):
-            self.interact_param({"interact_comment_actions": ["reply"],
-                                 "interact_target_comment": {"nickname": "俊国", "content": ""}})
-        # Unticked, the empty text fields are not part of the run and do not block it.
-        self.interact_param({"interact_work_actions": ["like"]})
-        self.assertEqual(self.interact_param({"interact_work_actions": ["comment"],
-                                              "interact_comment_text": {"text": "拍得真好"}})["commentText"], "拍得真好")
+        param = self.task_param("inspect_messages", {"messages_like": "No",
+                                                     "messages_settings": {"count": "3", "reply": "谢谢"}})
+        self.assertEqual(param["inspectMessages"], {"like": False, "maxMessages": 3, "replyText": "谢谢"})
 
     def test_options_are_defined_localized_and_reachable(self):
         catalogs = [json.loads((PROJECT / path).read_text(encoding="utf-8")) for path in INTERFACE["languages"].values()]

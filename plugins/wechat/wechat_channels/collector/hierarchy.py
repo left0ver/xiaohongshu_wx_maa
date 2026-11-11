@@ -402,6 +402,39 @@ def _basic_info_ready(lines, height, author):
     return all(label_values(lines).values())
 
 
+def _share_sheet_ready(lines, height, author):
+    return bool(find(lines, r"^(?:转发给朋友|复制链接)$"))
+
+
+def _edit_box(lines, top=None):
+    """An input box; its class only survives in control selectors."""
+    return next((line for line in lines if line.get("selector", {}).get("class", "").endswith("EditText")
+                 and (top is None or line["box"][1] < top)), None)
+
+
+def _search_box_ready(lines, height, author):
+    return bool(_edit_box(lines, top=200))
+
+
+def _feed_or_search_ready(lines, height, author):
+    if _edit_box(lines, top=200):
+        return True
+    return _feed_ready(lines, height, author)
+
+
+def _home_ready(lines, height, author):
+    bottom = lambda line: line["box"][1] > height - 180
+    return bool(find(lines, r"^微信$", bottom) and find(lines, r"^通讯录$", bottom))
+
+
+def _chat_search_ready(lines, height, author):
+    return bool(_edit_box(lines, top=200))
+
+
+def _chat_ready(lines, height, author):
+    return bool(_edit_box(lines) or find(lines, r"^发送$"))
+
+
 # Pages read from controls, with OCR limited to empty text containers. Each
 # check is the parser the flow applies next; a page that fails it, or a label
 # not listed here, is read with full-screen OCR as before.
@@ -435,6 +468,15 @@ CONTROL_PAGES = {
                     _search_results_ready),
     **dict.fromkeys(("search-filter-panel", "search-filter-panel-reopen", "search-filter-after-"), _search_filter_ready),
     **dict.fromkeys(("search-duration-sheet", "search-scope-sheet"), _search_sheet_ready),
+    **dict.fromkeys(("share-sheet", "share-sheet-scrolled"), _share_sheet_ready),
+    "share-closed": _known_page, "share-link-paste": _search_box_ready,
+    **dict.fromkeys(("share-return-", "share-recover-"), _feed_or_search_ready),
+    "link-after-dm-": _known_page,
+    **dict.fromkeys(("link-home", "link-home-"), _home_ready),
+    **dict.fromkeys(("link-search", "link-search-typed"), _chat_search_ready),
+    **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent"),
+                    _chat_ready),
+    **dict.fromkeys(("link-video", "link-video-"), _feed_ready),
 }
 
 

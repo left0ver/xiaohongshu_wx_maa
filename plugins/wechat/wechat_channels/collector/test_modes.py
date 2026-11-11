@@ -589,14 +589,16 @@ class ModesUnitTests(unittest.TestCase):
             self.assertEqual(report["swipesUsed"], 2)
             self.assertEqual([s["kind"] for s in report["skippedItems"]], ["already_seen", "live_preview"])
             self.assertEqual(report["videos"][0]["author"], "阿星探店")
-            self.assertEqual(report["videos"][0]["authorDouyinId"], "sphFoodStar888")
+            self.assertEqual(report["videos"][0]["authorWechatChannelsId"], "sphFoodStar888")
             self.assertEqual(report["videos"][0]["sourceMode"], "RECOMMEND")
 
             store = LocalStore(root / "videos.sqlite3")
             with store.connect() as db:
                 saved = json.loads(db.execute("SELECT event_json FROM video_drafts").fetchone()[0])
             self.assertEqual(saved["source_mode"], "RECOMMEND")
-            self.assertEqual(saved["payload"]["authorDouyinId"], "sphFoodStar888")
+            self.assertIsNone(saved["payload"]["authorDouyinId"])
+            self.assertEqual(saved["payload"]["author_wechat_channels_id"], "sphFoodStar888")
+            self.assertEqual(saved["payload"]["platform"], "wechat")
 
     def test_run_search_mode_and_auto_mode_stage_switching(self):
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):

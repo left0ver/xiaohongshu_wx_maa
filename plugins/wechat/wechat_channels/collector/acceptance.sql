@@ -3,7 +3,8 @@ SELECT event_id, dedupe_key, collected_at, status,
        json_extract(event_json, '$.device_id') AS device_id,
        json_extract(event_json, '$.source_mode') AS source_mode,
        json_extract(event_json, '$.payload.authorNickname') AS author_nickname,
-       json_extract(event_json, '$.payload.authorDouyinId') AS channel_id,
+       json_extract(event_json, '$.payload.author_wechat_channels_id') AS channel_id,
+       json_extract(event_json, '$.payload.videoUrl') AS video_url,
        json_extract(event_json, '$.payload.description') AS description,
        json_extract(event_json, '$.payload.publishTimeText') AS publish_time_text,
        json_extract(event_json, '$.payload.publishLocation') AS publish_location,
@@ -11,8 +12,9 @@ SELECT event_id, dedupe_key, collected_at, status,
 FROM video_drafts
 ORDER BY collected_at;
 
--- Both queries must return no rows. New records intentionally set returnVerified
--- to false; historical records can still be true. Neither value certifies OCR accuracy.
+-- Both queries must return no rows. returnVerified may be true or false; neither
+-- certifies OCR accuracy. Drafts saved before 2026-11-11 use the old key and time
+-- format and are reported by the second query.
 SELECT dedupe_key, count(*) AS copies
 FROM video_drafts GROUP BY dedupe_key HAVING count(*) > 1;
 
@@ -20,6 +22,8 @@ SELECT event_id FROM video_drafts
 WHERE status <> 'local_only'
    OR coalesce(json_extract(event_json, '$.event_type'), '') <> 'VIDEO'
    OR coalesce(json_type(event_json, '$.payload.returnVerified'), '') NOT IN ('true', 'false')
-   OR coalesce(json_extract(event_json, '$.payload.authorDouyinId'), '') = ''
+   OR coalesce(json_extract(event_json, '$.payload.platform'), '') <> 'wechat'
+   OR length(dedupe_key) <> 64
+   OR json_type(event_json, '$.collected_at') <> 'integer'
    OR coalesce(json_extract(event_json, '$.payload.authorNickname'), '') = ''
    OR coalesce(json_extract(event_json, '$.payload.description'), '') = '';
