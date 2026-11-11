@@ -432,7 +432,7 @@ def _chat_search_ready(lines, height, author):
 
 
 def _chat_ready(lines, height, author):
-    return bool(_edit_box(lines) or find(lines, r"^发送$"))
+    return bool(_edit_box(lines) or find(lines, r"^发送$|可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息"))
 
 
 # Pages read from controls, with OCR limited to empty text containers. Each

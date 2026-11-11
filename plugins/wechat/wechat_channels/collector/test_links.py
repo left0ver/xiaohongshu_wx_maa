@@ -38,6 +38,22 @@ class LinkUi(ShareUi):
         self.started = True
 
 
+class AsciiUi(LinkUi):
+    fail_set_text = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.typed = []
+
+    def type_ascii(self, text):
+        self.typed.append(text)
+
+    def set_text(self, text):
+        if self.fail_set_text:
+            raise RuntimeError("set-text helper was killed")
+        super().set_text(text)
+
+
 class LinkInputTests(unittest.TestCase):
     def test_the_link_is_taken_from_pasted_share_text(self):
         self.assertEqual(share_link(f"复制这条视频 {LINK} 打开微信"), LINK)
@@ -79,6 +95,30 @@ class OpenByLinkTests(unittest.TestCase):
         self.assertEqual(ui.clicks[2]["box"][1], 298)
         # The link text, not the gap between its two lines, is tapped.
         self.assertEqual(ui.clicks[-1]["box"], [287, 328, 20, 20])
+
+    def test_a_slow_browser_is_waited_for_and_links_are_typed_as_ascii(self):
+        browser = [line("X", 12, 86, 44, 45), line("···", 649, 100, 38, 18)]
+        ui = AsciiUi([HOME, HOME, SEARCH, CHAT, TYPED, SENT, browser, browser, FEED_SECOND],
+                     controls=[control("搜索", 560, 80, 60, 60)])
+        with patch("links.time.sleep"):
+            self.assertIs(open_video_by_link(ui, LINK), FEED_SECOND)
+        self.assertEqual(ui.typed, [LINK])
+        self.assertEqual(ui.texts_set, ["文件传输助手"])
+        # One tap: the browser page was waited out, not tapped through.
+        self.assertEqual([c["text"] for c in ui.clicks].count(LINK), 1)
+
+    def test_search_falls_back_to_pinyin_when_set_text_hangs(self):
+        ui = AsciiUi([HOME, HOME, SEARCH, CHAT, TYPED, SENT, FEED_SECOND], controls=[control("搜索", 560, 80, 60, 60)])
+        ui.fail_set_text = True
+        with patch("links.time.sleep"):
+            open_video_by_link(ui, LINK)
+        self.assertEqual(ui.typed, ["wenjianchuanshuzhushou", LINK])
+
+    def test_an_ocr_read_chat_is_still_recognised(self):
+        from links import _is_chat
+        self.assertTrue(_is_chat([line("可按住 转文字", 253, 1492, 160, 31)]))
+        self.assertTrue(_is_chat([line("对方回复前，仅可发1条消息。", 91, 190, 338, 34)]))
+        self.assertFalse(_is_chat(FEED_SECOND))
 
     def test_a_missing_file_transfer_contact_stops_the_task(self):
         ui = LinkUi([HOME, HOME, SEARCH[:2]])
