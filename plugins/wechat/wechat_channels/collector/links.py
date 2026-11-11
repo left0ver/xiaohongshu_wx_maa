@@ -95,9 +95,13 @@ def _bottom(ui):
     return lambda line: line["box"][1] > ui.height - 180
 
 
-def open_wechat_home(ui, attempts=6):
-    """WeChat's 微信 tab; pages left open by an earlier run are closed with back."""
-    ui.start_wechat()
+def open_wechat_home(ui, attempts=10):
+    """WeChat's 微信 tab; pages an earlier run left open are closed first."""
+    if hasattr(ui, "start_wechat_home"):
+        ui.start_wechat_home()
+        time.sleep(1.0)
+    else:
+        ui.start_wechat()
     for attempt in range(attempts):
         check_stopped(ui)
         lines = ui.snapshot(f"link-home-{attempt + 1}")
@@ -144,18 +148,43 @@ def send_chat_text(ui, lines, text, label):
     ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
     ui.set_text(text)
     typed = ui.snapshot(f"{label}-typed")
+    notice = find(typed, r"^我知道了$")
+    if notice and not find(typed, r"^发送$"):
+        # The first Channels private message shows a one-time 消息安全保护提醒
+        # over the input box; it is acknowledged and the text typed again.
+        ui.click(notice)
+        lines = ui.snapshot(f"{label}-after-notice")
+        box = _edit_box(lines)
+        ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
+        ui.set_text(text)
+        typed = ui.snapshot(f"{label}-typed")
     send = find(typed, r"^发送$")
     if not send:
         raise ValueError("The 发送 button did not appear after typing")
     check_stopped(ui)
     ui.click(send)
+    # The keyboard opens after sending; it hides the chat's controls and
+    # covers the messages, and back would leave the chat if it were closed.
+    if hasattr(ui, "hide_keyboard"):
+        ui.hide_keyboard()
     return ui.snapshot(f"{label}-sent")
 
 
+_CONFUSABLE = str.maketrans({"I": "1", "l": "1", "|": "1", "O": "0", "o": "0"})
+
+
 def _sent_bubble(lines, text):
-    """The newest message showing text, never the input box."""
-    bubbles = [line for line in lines
-               if text in line["text"] and not line.get("selector", {}).get("class", "").endswith("EditText")]
+    """The newest message showing text, never the input box.
+
+    A link read by OCR can be split over two lines and mix up I/l/1 and O/0,
+    so the link's code alone, compared loosely, also identifies it.
+    """
+    lines = [line for line in lines if not line.get("selector", {}).get("class", "").endswith("EditText")]
+    bubbles = [line for line in lines if text in line["text"]]
+    if not bubbles and LINK_RE.fullmatch(text):
+        code = text.rstrip("/").rsplit("/", 1)[-1].translate(_CONFUSABLE)
+        bubbles = [line for line in lines
+                   if len(code) >= 6 and code in re.sub(r"\s+", "", line["text"]).translate(_CONFUSABLE)]
     return max(bubbles, key=lambda line: line["box"][1], default=None)
 
 
@@ -167,15 +196,27 @@ def open_video_by_link(ui, link):
     bubble = _sent_bubble(sent, link)
     if not bubble:
         raise ValueError("The link message did not appear in 文件传输助手")
-    ui.click(bubble)
-    time.sleep(2.0)
-    for attempt in range(4):
-        lines = ui.snapshot(f"link-video-{attempt + 1}")
-        try:
-            author_in_feed(lines, ui.height)
-            return lines
-        except ValueError:
-            time.sleep(1.0)
+    # Earlier runs leave the same link in the chat, so the bubble is tapped where
+    # it was just read instead of being looked up again by its text.
+    # Only the link's characters are tappable. The bubble wraps the link over two
+    # lines and its box centre falls between them (vivo V2131A ignored such taps),
+    # so the left part of the second line is tapped, then of the first.
+    x, y, w, h = bubble["box"]
+    for tap, offset in enumerate((16, -16)):
+        ui.click({"text": link, "box": [x + w // 4 - 10, y + h // 2 + offset - 10, 20, 20]})
+        time.sleep(2.0)
+        for attempt in range(3):
+            lines = ui.snapshot(f"link-video-{tap * 3 + attempt + 1}")
+            if _edit_box(lines):
+                # Still the chat: a keyboard that opened late swallowed the tap.
+                break
+            try:
+                author_in_feed(lines, ui.height)
+                return lines
+            except ValueError:
+                time.sleep(1.0)
+        if hasattr(ui, "hide_keyboard"):
+            ui.hide_keyboard()
     raise ValueError("The video did not open from its link")
 
 

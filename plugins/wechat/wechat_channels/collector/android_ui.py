@@ -74,9 +74,10 @@ class PhoneController(CustomController):
 
     def click_key(self, keycode):
         foreground()
-        if keycode != 4:
+        # Back, and paste for reading a copied share link.
+        if keycode not in (4, 279):
             return False
-        command("input", "keyevent", "4")
+        command("input", "keyevent", str(keycode))
         return True
 
     def swipe(self, x1, y1, x2, y2, duration):
@@ -135,7 +136,8 @@ class MaaUi:
         path = Path(__file__).resolve().parents[1] / "resource/base/pipeline/collect-video.json"
         self.nodes = json.loads(path.read_text(encoding="utf-8"))
 
-    def hierarchy(self, timeout=2, force=False):
+    # vivo V2131A often needs 1.5-2.2 s for a dump; a 2 s limit sent pages to full OCR.
+    def hierarchy(self, timeout=4, force=False):
         if self.tasker.stopping:
             raise InterruptedError("Collection was stopped")
         if self.hierarchy_unavailable and not force:
@@ -416,7 +418,13 @@ class MaaUi:
         if self.tasker.stopping:
             raise RuntimeError("Collection was stopped")
         if line.get("selector"):
-            line = refresh_target(self.hierarchy(force=True), line)
+            try:
+                controls = self.hierarchy(timeout=4, force=True)
+            except HierarchyUnavailable:
+                # A slow dump (vivo) is retried once; a missing control still sends no input.
+                time.sleep(0.5)
+                controls = self.hierarchy(timeout=4, force=True)
+            line = refresh_target(controls, line)
         elif line.get("templateNode"):
             current = self.match_navigation(line["templateNode"])
             if current:
@@ -523,12 +531,25 @@ class MaaUi:
         except HierarchyUnavailable:
             return []
 
+    def hide_keyboard(self):
+        """Close the input method if it is showing; back would otherwise leave the page."""
+        # The keyboard can open a moment after sending, so it is checked twice.
+        for check in range(2):
+            state = command("dumpsys", "input_method").decode("utf-8", "replace")
+            if re.search(r"\bmInputShown=true\b", state):
+                self.back()
+                return True
+            if check == 0:
+                time.sleep(0.6)
+        return False
+
     def key(self, keycode):
         if self.stopped():
             raise InterruptedError("Collection was stopped")
         foreground()
         if not self.controller.post_click_key(keycode).wait().succeeded:
-            raise RuntimeError(f"Key {keycode} failed")
+            # Some controllers only send back; the agent runs as shell and can inject keys itself.
+            command("input", "keyevent", str(keycode))
         self.navigation_stage = None
         time.sleep(0.3)
 
@@ -563,6 +584,24 @@ class MaaUi:
         self.navigation_stage = None
         time.sleep(0.9)
 
+    def start_wechat_home(self):
+        """Open WeChat on its main tabs, closing the pages an earlier run left above them."""
+        self.hierarchy_unavailable = False
+        self.navigation_stage = None
+        # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP: LauncherUI is brought
+        # back and every page opened on top of it is finished.
+        command("am", "start", "-f", "0x14000000", "-n", "com.tencent.mm/.ui.LauncherUI")
+        self.startup_deadline = time.monotonic() + 10
+        while True:
+            try:
+                foreground()
+                return
+            except RuntimeError:
+                remaining = self.startup_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("WeChat did not enter the foreground within 10 seconds")
+                time.sleep(min(0.25, remaining))
+
     def start_wechat(self):
         self.hierarchy_unavailable = False
         self.navigation_stage = None
@@ -580,7 +619,7 @@ class MaaUi:
                 time.sleep(min(0.25, remaining))
 
 
-def phone_ui(root, evidence_dir):
+def phone_ui(root, evidence_dir, controls_exposed=False):
     root = Path(root)
     Library.open(root / "runtime/lib")
     Tasker.set_log_dir(evidence_dir)
@@ -594,4 +633,4 @@ def phone_ui(root, evidence_dir):
     tasker = Tasker()
     if not tasker.bind(resource, controller):
         raise RuntimeError("Tasker binding failed")
-    return MaaUi(tasker, evidence_dir)
+    return MaaUi(tasker, evidence_dir, controls_exposed=controls_exposed)

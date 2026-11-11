@@ -200,7 +200,8 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
             (
                 item
                 for item in row["items"]
-                if item["box"][0] > 500 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip())
+                # OCR can merge the count into it ("9.8万推荐" from x≈482 on vivo).
+                if item["box"][0] > 460 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip())
             ),
             None,
         )
@@ -212,7 +213,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
             if item["box"][0] < 570
             and not re.search(r"已声明原创|都在搜", item["text"])
             and not (item["box"][0] > 400 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
-            and not (item["box"][0] > 500 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip()))
+            and not (item["box"][0] > 460 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip()))
             and not _is_avatar_noise(item, row["items"])
         ]
         if not pieces:

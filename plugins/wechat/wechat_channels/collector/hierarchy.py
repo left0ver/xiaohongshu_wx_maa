@@ -474,8 +474,8 @@ CONTROL_PAGES = {
     "link-after-dm-": _known_page,
     **dict.fromkeys(("link-home", "link-home-"), _home_ready),
     **dict.fromkeys(("link-search", "link-search-typed"), _chat_search_ready),
-    **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent"),
-                    _chat_ready),
+    **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent",
+                     "dm-chat-after-notice", "link-chat-after-notice"), _chat_ready),
     **dict.fromkeys(("link-video", "link-video-"), _feed_ready),
 }
 

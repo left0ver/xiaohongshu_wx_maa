@@ -434,7 +434,12 @@ def copy_share_link(ui, lines, previous_link=None):
 
 def ensure_feed(ui, launch=True):
     if launch:
-        ui.start_wechat()
+        # Earlier runs can leave several pages (chats, profiles, shared videos)
+        # above WeChat's tabs; start from the tabs instead of backing out of them.
+        if hasattr(ui, "start_wechat_home"):
+            ui.start_wechat_home()
+        else:
+            ui.start_wechat()
     ready_deadline = getattr(ui, "startup_deadline", None) or time.monotonic() + 10
     waiting_for_start = launch
     navigation_steps = 0
@@ -467,6 +472,11 @@ def ensure_feed(ui, launch=True):
             navigation_label = "navigation-top"
         elif is_profile_grid or is_comment_drawer or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             ui.back()
+        elif len(lines) >= 3:
+            # A drawn page that is not on the way to 推荐 (a video opened from a
+            # share link, a chat): leave it instead of waiting for it.
+            ui.back()
+            navigation_label = "navigation-bottom"
         else:
             if waiting_for_start:
                 remaining = ready_deadline - time.monotonic()
