@@ -120,6 +120,7 @@ class MaaUi:
         self.sequence = 0
         self.observation = 0
         self.hierarchy_unavailable = False
+        self.controls = []
         self.navigation_stage = None
         # Debug only: keep the exact frames behind each recognition for box overlays.
         self.dump_frames = os.environ.get("WECHAT_DUMP_FRAMES") == "1"
@@ -164,7 +165,10 @@ class MaaUi:
         except subprocess.TimeoutExpired as error:
             raise HierarchyUnavailable("Hierarchy foreground confirmation timed out") from error
         try:
-            return self.annotate(text_lines(xml, self.width, self.physical_height), "hierarchy")
+            lines = self.annotate(text_lines(xml, self.width, self.physical_height, containers=True), "hierarchy")
+            # Icons and empty containers are not page text, but locate controls.
+            self.controls = lines
+            return lines
         except HierarchyUnavailable:
             self.hierarchy_unavailable = not self.controls_exposed
             raise
@@ -263,7 +267,8 @@ class MaaUi:
         lines, source = choose_snapshot(label, self.height, author,
             lambda: measured("hierarchy", self.hierarchy),
             lambda: measured("template", lambda: self.template_navigation(label)),
-            lambda: measured("ocr", lambda: self.ocr_snapshot(label)))
+            lambda: measured("ocr", lambda: self.ocr_snapshot(label)),
+            regional_ocr=lambda roi: measured("ocr-region", lambda: self.ocr_snapshot(label, roi)))
         corrected = sum(1 for line in lines if "ocrText" in line)
         if corrected:
             attempts.append({"source": "hierarchy-correction", "correctedLines": corrected})
@@ -373,6 +378,19 @@ class MaaUi:
 
     def profile_more(self, name):
         roi = [540, max(0, name["box"][1] - 15), 180, name["box"][3] + 80]
+        # The menu button is a control described as 设置 beside the name.
+        controls = []
+        if self.controls_exposed:
+            try:
+                controls = self.hierarchy(force=True)
+            except HierarchyUnavailable:
+                pass
+        button = next((line for line in controls if line.get("text") == "设置" and line.get("selector")
+                       and line["box"][0] >= roi[0] and roi[1] <= line["box"][1] + line["box"][3] / 2 <= roi[1] + roi[3]),
+                      None)
+        if button:
+            self.click(button)
+            return
         if self.context:
             result = self.context.run_task("BatchProfileMore", {
                 "BatchProfileMore": {"recognition": "TemplateMatch", "template": ["profile-more.png", "profile-more-dark.png"],

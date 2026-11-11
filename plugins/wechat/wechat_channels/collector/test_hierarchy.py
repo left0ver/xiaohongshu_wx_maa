@@ -8,7 +8,8 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 from hierarchy import (HierarchyUnavailable, choose_snapshot, complete_for, correct_ocr, field_evidence,
-                       refresh_target, text_lines)
+                       fill_containers, page_lines, refresh_target, text_lines)
+from layout import reading_rows
 from collection import parse_basic_info
 from test_collection import AUTHOR, DETAILS, INFO, PROFILE, line
 
@@ -33,6 +34,42 @@ def control(text, x, y, width, height, attribute="text"):
             "selector": {"attribute": attribute, "value": text, "resource": "", "class": "android.widget.TextView"}}
 
 
+def label(text, resource, bounds, **attributes):
+    return {"text": text, "resource-id": "com.tencent.mm:id/" + resource, "bounds": bounds, **attributes}
+
+
+def box(resource, bounds, *children, **attributes):
+    return ({"resource-id": "com.tencent.mm:id/" + resource, "bounds": bounds, "class": "android.widget.FrameLayout",
+             **attributes}, list(children))
+
+
+def sheet(*children):
+    return box("", "[0,960][1440,3116]", *children)
+
+
+def layer(resource, *children):
+    return box(resource, "[0,0][1440,3116]", *children)
+
+
+def screen(*layers):
+    return box("", "[0,0][1440,3116]", *layers)
+
+
+def tree(root):
+    """Nested hierarchy XML: a node is (attributes, children) or an attribute dict."""
+    document = ET.Element("hierarchy")
+
+    def add(parent, item):
+        attributes, children = item if isinstance(item, tuple) else (item, [])
+        node = ET.SubElement(parent, "node", {"package": "com.tencent.mm", "enabled": "true",
+                                              "class": "android.widget.TextView", **attributes})
+        for child in children:
+            add(node, child)
+
+    add(document, root)
+    return ET.tostring(document, encoding="unicode")
+
+
 class HierarchyTests(unittest.TestCase):
     def test_visible_child_survives_an_invisible_parent(self):
         xml = '<hierarchy><node package="com.tencent.mm" visible-to-user="false" text="hidden" bounds="[0,0][1,1]">' \
@@ -48,14 +85,129 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual(parse_basic_info(lines)["authorDouyinId"], "sphExample123")
         ocr.assert_not_called()
 
-    def test_drawer_is_never_read_from_control_bounds_alone(self):
-        # TextView bounds include padding and covered feed controls stay in the
-        # tree, so even a parseable drawer is read with OCR layout.
-        known = [control(item["text"], *item["box"]) for item in DETAILS]
-        ocr = Mock(return_value=DETAILS)
-        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), ocr)
-        ocr.assert_called_once()
-        self.assertEqual((lines, source), (DETAILS, "ocr"))
+    def test_drawer_is_read_from_controls_with_ocr_only_inside_comment_bodies(self):
+        # The work, the commenter row and the like count are controls; the
+        # comment body is an empty container, so only it is recognized.
+        xml = tree(screen(
+            layer("ean", sheet(
+                label("评论 294", "d4v", "[60,964][300,1020]"),
+                label(AUTHOR, "kbf", "[198,1100][520,1232]"), label("作者", "a8r", "[530,1140][600,1190]"),
+                label("福建", "hgh", "[610,1140][680,1190]"), label("8月1日", "cgp", "[690,1140][860,1190]"),
+                label("完整的作品文案", "c1_", "[198,1208][1384,1270]"),
+                label("评论者", "kbf", "[198,1460][400,1590]"), label("四川", "hgh", "[420,1500][500,1550]"),
+                label("8月1日", "c85", "[520,1500][900,1550]"), label("12", "aa0", "[1250,1500][1300,1552]"),
+                box("c6d", "[58,1600][1384,1660]"),
+                label("帮她上热门", "x1", "[240,1400][700,1440]"))),
+            layer("nsv", label("被盖住的推荐流文案", "o45", "[98,1600][1384,1700]")),
+        ))
+        lines = text_lines(xml, 1440, 3116, containers=True)
+        body = line("不能采集成作品文案", 99, 803, 300)
+        regional, full = Mock(return_value=[body]), Mock()
+        result, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: lines, Mock(), full, regional_ocr=regional)
+        full.assert_not_called()
+        self.assertEqual(source, "mixed")
+        texts = [item["text"] for item in result]
+        self.assertIn("不能采集成作品文案", texts)
+        self.assertNotIn("被盖住的推荐流文案", texts)
+        x, y, width, height = regional.call_args.args[0]
+        self.assertEqual((x, y, height), (29, 800, 30))
+
+    def test_visible_layer_does_not_depend_on_sibling_order(self):
+        drawer = layer("ean", sheet(label("评论 3", "d4v", "[60,964][300,1020]")))
+        feed = layer("nsv", label("推荐流文案", "o45", "[98,2600][1384,2700]"))
+        for layers in ((feed, drawer), (drawer, feed)):
+            with self.subTest(order=[item[0]["resource-id"] for item in layers]):
+                texts = [item["text"] for item in text_lines(tree(screen(*layers)), 1440, 3116)]
+                self.assertEqual(texts, ["评论 3"])
+
+    def test_profile_sheet_covers_drawer_and_feed(self):
+        profile = box("", "[0,0][1440,3116]", sheet(label("浙江 宁波 男", "ov9", "[388,1050][680,1210]")))
+        xml = tree(screen(layer("ean", sheet(label("评论 3", "d4v", "[60,964][300,1020]"))), profile,
+                          layer("nsv", label("推荐流文案", "o45", "[98,2600][1384,2700]"))))
+        self.assertEqual([item["text"] for item in text_lines(xml, 1440, 3116)], ["浙江 宁波 男"])
+
+    def test_sheet_beside_the_video_pager_hides_the_pager(self):
+        content = box("content", "[0,0][1440,3116]",
+                      box("", "[0,0][1440,3116]", sheet(label("广东 韶关 男", "ov9", "[388,1050][680,1210]"))),
+                      layer("jlt", label("热评", "ehh", "[60,2600][200,2680]")))
+        texts = [item["text"] for item in text_lines(tree(layer("nsv", content)), 1440, 3116)]
+        self.assertEqual(texts, ["广东 韶关 男"])
+
+    def test_padded_labels_share_one_reading_row(self):
+        xml = tree(screen(label("评论者", "kbf", "[198,1460][400,1590]"), label("四川", "hgh", "[420,1500][500,1550]")))
+        rows = reading_rows(text_lines(xml, 1440, 3116))
+        self.assertEqual([row["text"] for row in rows], ["评论者四川"])
+
+    def test_icon_names_are_not_page_text(self):
+        xml = tree(screen(label("", "a_4", "[54,1460][190,1600]", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                          label("评论者", "kbf", "[198,1460][400,1590]")))
+        lines = text_lines(xml, 1440, 3116)
+        self.assertEqual([item["text"] for item in page_lines(lines)], ["评论者"])
+        self.assertTrue(next(item for item in lines if item["text"] == "头像")["icon"])
+
+    def test_container_description_without_labelled_children_is_text(self):
+        xml = tree(screen(box("jdo", "[108,1960][840,2200]", box("", "[108,1960][400,2200]"),
+                              **{"content-desc": "公众号: 小琦的House"})))
+        self.assertEqual([item["text"] for item in text_lines(xml, 1440, 3116)], ["公众号: 小琦的House"])
+
+    def test_ocr_fills_containers_but_never_repeats_or_replaces_control_text(self):
+        controls = [control("广东 韶关 男", 194, 549, 146, 34), {"text": "", "container": "profile-name", "box": [194, 488, 339, 77]}]
+        recognized = [line("林逸cut", 190, 501, 135, 44), line("广东韶关男", 190, 546, 144, 35), line("页面别处", 30, 1200)]
+        texts = [item["text"] for item in fill_containers(controls, recognized)]
+        self.assertEqual(sorted(texts), ["广东 韶关 男", "林逸cut"])
+
+    def test_description_inside_container_is_replaced_by_drawn_text(self):
+        button = control("私信按钮", 367, 805, 317, 79, attribute="content-desc")
+        holes = [{"text": "", "container": "message-button", "box": [367, 805, 317, 79]}]
+        texts = [item["text"] for item in fill_containers([button, *holes], [line("私信", 494, 825, 59, 36)])]
+        self.assertEqual(texts, ["私信"])
+
+    def test_bio_keeps_the_more_complete_reading(self):
+        hole = {"text": "", "container": "bio", "box": [36, 640, 580, 150]}
+        partial = control("第一行", 36, 643, 580, 30)
+        ocr = [line("第一行", 36, 643), line("第二行更多内容", 36, 680), line("第三行", 36, 717)]
+        self.assertEqual([item["text"] for item in fill_containers([partial, hole], ocr)],
+                         ["第一行", "第二行更多内容", "第三行"])
+        full = control("第一行\n第二行更多内容\n第三行", 36, 643, 580, 110)
+        self.assertEqual([item["text"] for item in fill_containers([full, hole], ocr[:1])],
+                         ["第一行\n第二行更多内容\n第三行"])
+
+    def test_one_ocr_line_fills_one_container(self):
+        holes = [{"text": "", "container": "bio", "box": [36, 643, 50, 100]},
+                 {"text": "", "container": "bio", "box": [22, 643, 79, 100]}]
+        self.assertEqual(len(fill_containers(holes, [line("同名", 28, 706, 62, 39)])), 1)
+
+    def test_comment_body_ignores_the_avatar_column(self):
+        name = control("Allan宅寳", 101, 872, 110, 34)
+        hole = {"text": "", "container": "comment-body", "box": [29, 912, 663, 35]}
+        ocr = [line("100", 42, 912, 25, 17), line("你血糖不高真的很幸运了", 99, 915, 298, 28)]
+        self.assertEqual([item["text"] for item in fill_containers([name, hole], ocr)],
+                         ["Allan宅寳", "你血糖不高真的很幸运了"])
+
+    def test_labels_with_a_dynamic_suffix_share_their_page_check(self):
+        from hierarchy import page_check
+        self.assertIs(page_check("search-after-sort-最新"), page_check("search-after-"))
+        self.assertIsNone(page_check("unknown-label"))
+
+    def test_reply_button_is_an_ocr_container(self):
+        holes = [item for item in text_lines(tree(screen(label("狼王", "kbq", "[308,321][602,498]"),
+                                                         box("lz3", "[308,736][523,915]"))), 1620, 3612, containers=True)
+                 if item.get("container")]
+        self.assertEqual([hole["container"] for hole in holes], ["reply-button"])
+
+    def test_failed_page_check_falls_back_to_full_ocr(self):
+        known = [control("评论294", 27, 482, 160, 28)]
+        full = Mock(return_value=DETAILS)
+        lines, source = choose_snapshot("video-details", 1558, AUTHOR, lambda: known, Mock(), full,
+                                        regional_ocr=Mock())
+        full.assert_called_once()
+        self.assertEqual(lines, DETAILS)
+
+    def test_pages_not_yet_checked_against_controls_keep_full_ocr(self):
+        known = [control("消息", 40, 300, 60, 34)]
+        full = Mock(return_value=[line("消息", 40, 300)])
+        choose_snapshot("messages-center", 1558, None, lambda: known, Mock(), full, regional_ocr=Mock())
+        full.assert_called_once()
 
     def test_misread_characters_are_corrected_without_moving_ocr_lines(self):
         recognized = [line("这是封离别信#吉他弹唱#Le", 98, 604, 594), line("ttinggo", 99, 643, 58)]
@@ -110,7 +262,8 @@ class HierarchyTests(unittest.TestCase):
             {"text": "停用", "bounds": "[0,0][100,100]", "enabled": "false"},
             {"text": "越界", "bounds": "[0,0][2000,100]"}), 1440, 3116)
         self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["box"], [400, 1400, 100, 50])
+        # Scaled to 720 wide; the padded single line keeps its centre at text height.
+        self.assertEqual(lines[0]["box"], [400, 1408, 100, 34])
 
     def test_leaf_description_is_available_without_container_duplication(self):
         xml = '<hierarchy><node package="com.tencent.mm" content-desc="汇总" bounds="[0,0][500,500]">' \

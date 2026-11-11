@@ -70,6 +70,15 @@ class FakeUi:
         pass
 
 
+class ControlProfileTests(unittest.TestCase):
+    def test_space_separated_profile_location_from_controls(self):
+        for location in ("北京 男 已实名", "河北 邯郸", "广东 韶关 男"):
+            with self.subTest(location=location):
+                lines = [line("作者", 192, 501, 135, 44), line(location, 194, 549, 146, 34),
+                         line("简介", 35, 644), line("关注", 162, 760, 56), line("私信", 496, 760, 56)]
+                self.assertEqual(parse_author(lines, "作者")["authorProfileLocation"], location)
+
+
 class CollectionTests(unittest.TestCase):
     def test_already_in_channels_can_use_top_template_after_bottom_miss(self):
         target = {"text": "推荐", "navigation": "recommend", "box": [440, 90, 50, 30]}

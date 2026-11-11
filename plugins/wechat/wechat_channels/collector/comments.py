@@ -62,6 +62,11 @@ def clean_comment_nickname(raw):
     elif re.search(r"(?<=[\u4e00-\u9fff）】》\s])W$", text):
         text = re.sub(r"(?<=[\u4e00-\u9fff）】》\s])W$", "", text).strip()
         has_badge = True
+    if not has_badge and len(text) > 1 and text.endswith("#"):
+        # Controls report the same badge as an image placeholder '#'
+        # (input bar: "昵称#\xa0发表评论:").
+        text = text[:-1].strip()
+        has_badge = True
     text = re.sub(r"[.…⋯·]{2,}$", "...", text).strip()
     return text, has_badge
 
@@ -553,6 +558,12 @@ def parse_wechat_user_card(lines, expected_nickname, height):
         txt = extra["text"].strip()
         if re.search(rf"(?:{REGION})|[男女]$", txt):
             location = txt
+            # Controls draw the gender as its own label on the location row.
+            gender = next((item for item in candidates
+                           if item is not extra and item["text"].strip() in ("男", "女")
+                           and abs(item["box"][1] - extra["box"][1]) <= 12 and item["box"][0] > extra["box"][0]), None)
+            if gender and not re.search(r"[男女]$", txt):
+                location = f"{txt} {gender['text'].strip()}"
             break
     return {
         "nickname": nickname,

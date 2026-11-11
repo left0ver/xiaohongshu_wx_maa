@@ -25,7 +25,8 @@ class WorkHeaderMissing(ValueError):
 
 
 def compact(text):
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+    # Controls interleave zero-width spaces; they are not text to compare.
+    return re.sub(r"[\s\u200b-\u200d\u2060\ufeff]+", "", unicodedata.normalize("NFKC", text))
 
 
 # Captions and comments are OCR text: the same one can read slightly differently each time.

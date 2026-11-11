@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from collection import LocalStore, identity
 from interactions import DailyQuotaStore
 from modes import (
+    parse_search_video_cards,
+    is_search_results_page,
     active_top_tab,
     apply_search_filters,
     bounded_recover_to_target,
@@ -278,6 +280,27 @@ class FakeModeUi:
         if not basic_info_ready(lines):
             raise ValueError("Author basic information was not ready within 8 seconds")
         return lines
+
+
+class ControlSearchTests(unittest.TestCase):
+    @staticmethod
+    def desc(text, x, y, w, h):
+        return {"text": text, "box": [x, y, w, h], "score": 1.0, "source": "hierarchy",
+                "selector": {"attribute": "content-desc", "value": text, "resource": "", "class": "android.view.View"}}
+
+    def test_tab_descriptions_identify_the_results_page(self):
+        lines = [self.desc("全部\n第 1 个标签，共 5 个", 0, 182, 108, 68), self.desc("视频\n第 2 个标签，共 5 个", 108, 182, 108, 68)]
+        self.assertTrue(is_search_results_page(lines))
+
+    def test_card_descriptions_are_parsed_as_reported(self):
+        card = self.desc("10万+\n“人群太吵了 我想去见山”\n小\u200b白\u200b呦\u2006y\n2\u2006个\u200b月\u200b前", 15, 351, 339, 610)
+        truncated = self.desc("720\n...全景展现亚马逊河热带雨林风光", 367, 351, 339, 610)
+        cards = parse_search_video_cards([card, truncated], 1559)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual((cards[0]["author"], cards[0]["likeCountText"], cards[0]["publishTime"]),
+                         ("小\u200b白\u200b呦\u2006y", "10万+", "2\u2006个\u200b月\u200b前"))
+        x, y, w, h = cards[0]["clickBox"]
+        self.assertTrue(15 <= x and x + w <= 354 and 351 <= y and y + h <= 961)
 
 
 class ModesUnitTests(unittest.TestCase):

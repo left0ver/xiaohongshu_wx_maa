@@ -16,7 +16,8 @@ from readiness import BASIC_INFO_TIMEOUT
 
 
 def normalize(text):
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).strip()
+    # Identity ignores zero-width spaces that controls interleave with text.
+    return re.sub(r"[\s\u200b-\u200d\u2060\ufeff]+", "", unicodedata.normalize("NFKC", text)).strip()
 
 
 def identity(*parts):
@@ -156,7 +157,9 @@ def parse_author(lines, author):
     location = next((line for line in area
                      if line["box"][0] >= name["box"][0] - 15
                      and line["box"][1] - name["box"][1] < line_height(lines) * 4
-                     and re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:已实名)?", line["text"])
+                     and (re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:\\s*已实名)?", line["text"])
+                          # The profile control separates province, city and gender with spaces.
+                          or re.fullmatch(f"(?:{REGION})(?:\\s+[\u4e00-\u9fff]{{1,8}}){{0,3}}\\s*", line["text"]))
                      and line is not ip and line is not certification), None)
     # Profile statistics and feature rows follow the biography. Stop at their
     # structural boundary, rather than collecting everything above Follow.

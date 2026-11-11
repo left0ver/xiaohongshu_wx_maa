@@ -134,6 +134,11 @@ _LIVE_PREVIEW_RE = re.compile(
 _AD_CARD_RE = re.compile(
     r"^(?:广告|推广|赞助)$|了解详情|立即下载|点击咨询|去看看|立即购买|查看详情"
 )
+# Search tabs are drawn text for OCR and "视频\n第 2 个标签，共 5 个" for controls.
+SEARCH_VIDEO_TAB = r"^视频(?:\n第\s*\d+\s*个标签[^\n]*)?$"
+SEARCH_OTHER_TABS = r"^(?:全部|账号|直播|商品)(?:\n第\s*\d+\s*个标签[^\n]*)?$"
+# A result card control describes the whole card: "likes\ntitle\nauthor[\ntime]".
+_CONTROL_CARD_RE = re.compile(r"^(\d+(?:\.\d+)?[万wW]?\+?)\n([^\n]+)\n([^\n]+)(?:\n([^\n]+))?$")
 _CARD_DATE_RE = re.compile(
     rf"^(?:{DATE}|\d+\s*(?:分钟|小时|天|周|个?月|年)前|刚刚|昨天|前天)$"
 )
@@ -526,9 +531,9 @@ def detect_feed_skip_item(lines, height=1605) -> dict:
 
 def is_search_results_page(lines, expected_keyword: str | None = None) -> bool:
     """Return True if `lines` represent the WeChat Channels Search Results page."""
-    has_video_tab = bool(find(lines, r"^视频$", lambda l: 140 <= l["box"][1] <= 245))
+    has_video_tab = bool(find(lines, SEARCH_VIDEO_TAB, lambda l: 140 <= l["box"][1] <= 245))
     has_other_tab = bool(
-        find(lines, r"^(?:全部|账号|直播|商品)$", lambda l: 140 <= l["box"][1] <= 245)
+        find(lines, SEARCH_OTHER_TABS, lambda l: 140 <= l["box"][1] <= 245)
         or find(lines, r"筛选", lambda l: 140 <= l["box"][1] <= 245)
     )
     if not (has_video_tab and has_other_tab):
@@ -963,7 +968,7 @@ def search_keyword(
 
     if is_search_results_page(lines, expected_keyword=target_kw):
         if switch_to_video_tab and not find(lines, r"^(?:不限|最新|最热)$", lambda l: 240 <= l["box"][1] <= 325):
-            video_tab = find(lines, r"^视频$", lambda l: 95 <= l["box"][0] <= 230 and 150 <= l["box"][1] <= 240)
+            video_tab = find(lines, SEARCH_VIDEO_TAB, lambda l: 95 <= l["box"][0] <= 230 and 150 <= l["box"][1] <= 240)
             if video_tab:
                 ui.click(video_tab)
                 time.sleep(1.2)
@@ -1017,7 +1022,7 @@ def search_keyword(
     if switch_to_video_tab:
         video_tab = find(
             result_lines,
-            r"^视频$",
+            SEARCH_VIDEO_TAB,
             lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240,
         )
         if video_tab:
@@ -1101,7 +1106,7 @@ def apply_search_filters(
     )
 
     if not has_inline_video_bar and not use_filter_panel:
-        video_tab = find(lines, r"^视频$", lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240)
+        video_tab = find(lines, SEARCH_VIDEO_TAB, lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240)
         if video_tab:
             ui.click(video_tab)
             time.sleep(1.4)
@@ -1239,10 +1244,46 @@ def apply_search_filters(
     }
 
 
+def _control_search_cards(lines, height):
+    """Cards described by their controls; the description is kept as reported."""
+    cards = []
+    for line in lines:
+        match = _CONTROL_CARD_RE.match(line.get("text", ""))
+        if not match or line.get("selector", {}).get("attribute") != "content-desc":
+            continue
+        x, y, w, h = line["box"]
+        if y < 300 or y >= height - 25:
+            continue
+        like_text, title, author, published = match.groups()
+        if re.fullmatch(r"已关注|关注|广告|推广|赞助", author.strip()) or _AD_CARD_RE.search(title):
+            continue
+        column = 0 if x + w / 2 < 360 else 1
+        # Tap the cover, not the title/author footer.
+        click_box = [x + w // 4, y + max(10, h // 4), max(1, w // 2), max(1, h // 3)]
+        clean_title_prefix = re.sub(r"[.…·•]+$", "", title).strip()
+        cards.append({
+            "cardKey": "wxch-card:" + identity(author, clean_title_prefix),
+            "column": column,
+            "author": author.strip(),
+            "rawAuthor": author,
+            "title": title,
+            "publishTime": published,
+            "duration": None,
+            "likeCountText": like_text,
+            "clickBox": click_box,
+            "footerY": y + h,
+        })
+    cards.sort(key=lambda c: (c["footerY"] // 60, c["column"]))
+    return cards
+
+
 def parse_search_video_cards(lines, height=1605) -> list[dict]:
     """Parse 2-column video cards on the WeChat Channels Search Results page."""
     if not lines:
         return []
+    controlled = _control_search_cards(lines, height)
+    if controlled:
+        return controlled
 
     # Exclude non-video section rows (`脱口秀 - 视频号`, `更多 >`, `看过的视频`)
     non_video_ys = [

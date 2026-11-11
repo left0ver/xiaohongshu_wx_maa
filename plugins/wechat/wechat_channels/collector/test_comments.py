@@ -19,6 +19,7 @@ from comments import (
     collect_visible_comments,
     parse_comment_drawer,
     parse_comments,
+    parse_wechat_user_card,
     reply_target_name,
     resolve_reply_targets,
     save_comments,
@@ -345,6 +346,20 @@ class CommentTests(unittest.TestCase):
 
 def fixture(name):
     return json.loads((Path(__file__).parent / "testdata" / name).read_text(encoding="utf-8"))
+
+
+class ControlTextTests(unittest.TestCase):
+    def test_badge_placeholder_from_input_bar_control_is_not_part_of_the_nickname(self):
+        self.assertEqual(clean_comment_nickname("AI吕哥说#"), ("AI吕哥说", True))
+        self.assertEqual(clean_comment_nickname("AI吕哥说W"), ("AI吕哥说", True))
+        self.assertEqual(clean_comment_nickname("佳一讲商业"), ("佳一讲商业", False))
+
+    def test_user_card_location_includes_the_separate_gender_label(self):
+        lines = [line("设置", 1150, 600, 60, 34), line("Mr. 陈", 1180, 187, 87, 41),
+                 line("陕西 安康", 1228, 187, 108, 34), line("男", 1228, 303, 25, 34),
+                 line("财富是对认知的补偿，而不是对勤奋的嘉奖！", 1269, 187, 460, 34)]
+        card = parse_wechat_user_card(lines, "Mr. 陈", 1605)
+        self.assertEqual((card["nickname"], card["profileLocation"]), ("Mr. 陈", "陕西 安康 男"))
 
 
 class CommentPagingTests(unittest.TestCase):
