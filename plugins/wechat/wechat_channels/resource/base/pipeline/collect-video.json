@@ -31,7 +31,10 @@
   },
   "BatchProfileMore": {
     "recognition": "TemplateMatch",
-    "template": ["profile-more.png", "profile-more-dark.png"],
+    "template": [
+      "profile-more.png",
+      "profile-more-dark.png"
+    ],
     "threshold": 0.88
   },
   "BatchBasicTitle": {
@@ -50,12 +53,22 @@
   },
   "BatchMessagesLikeTab": {
     "recognition": "And",
-    "all_of": [{
-      "recognition": "TemplateMatch",
-      "template": ["messages-like.png", "messages-like-inactive.png"],
-      "threshold": 0.88,
-      "roi": [120, 60, 400, 100]
-    }],
+    "all_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": [
+          "messages-like.png",
+          "messages-like-inactive.png"
+        ],
+        "threshold": 0.88,
+        "roi": [
+          120,
+          60,
+          400,
+          100
+        ]
+      }
+    ],
     "box_index": 0,
     "action": "DoNothing",
     "next": [],
@@ -65,12 +78,22 @@
   },
   "BatchMessagesCommentTab": {
     "recognition": "And",
-    "all_of": [{
-      "recognition": "TemplateMatch",
-      "template": ["messages-comment.png", "messages-comment-active.png"],
-      "threshold": 0.88,
-      "roi": [120, 60, 400, 100]
-    }],
+    "all_of": [
+      {
+        "recognition": "TemplateMatch",
+        "template": [
+          "messages-comment.png",
+          "messages-comment-active.png"
+        ],
+        "threshold": 0.88,
+        "roi": [
+          120,
+          60,
+          400,
+          100
+        ]
+      }
+    ],
     "box_index": 0,
     "action": "DoNothing",
     "next": [],
@@ -196,5 +219,111 @@
     "rate_limit": 0,
     "pre_delay": 0,
     "post_delay": 0
+  },
+  "CollectWechatChannels": {
+    "$comment": "Options fill custom_action_param; see modes.collection_task_config.",
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "CollectWechatChannels",
+    "custom_action_param": {
+      "entry": "recommend",
+      "count": 10
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkLikeComment": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "likeComment"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkReplyComment": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "replyComment"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkMessageCommenter": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "messageCommenter"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "InspectWechatMessages": {
+    "$comment": "Message inspection only; options fill inspectMessages.",
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "InteractWechatWork",
+    "custom_action_param": {
+      "ensureFeed": true,
+      "inspectMessages": {
+        "like": true,
+        "maxMessages": 1
+      }
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkLikeVideo": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "likeVideo"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkFollowAuthor": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "followAuthor"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkMessageAuthor": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "messageAuthor"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
+  },
+  "WechatLinkCommentVideo": {
+    "recognition": "DirectHit",
+    "action": "Custom",
+    "custom_action": "WechatLinkTask",
+    "custom_action_param": {
+      "action": "commentVideo"
+    },
+    "pre_delay": 0,
+    "post_delay": 0,
+    "next": []
   }
 }

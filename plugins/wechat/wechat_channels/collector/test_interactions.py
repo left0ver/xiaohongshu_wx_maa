@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from interactions import (
+    message_done,
     _work_matches_spec,
     DailyQuotaStore,
     QuotaExceededError,
@@ -926,6 +927,16 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertEqual(empty_res["status"], "no_work_found")
         self.assertFalse(empty_res["opened"])
         self.assertTrue(empty_res["returnedToProfile"])
+
+    def test_message_liked_earlier_still_gets_a_requested_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DailyQuotaStore(Path(tmp) / "q.json")
+            store.record("like", "comment_like", "msg-1")
+            store.mark_action("message_handled", "msg-1")
+            self.assertTrue(message_done(store, "msg-1", do_like=True))
+            self.assertFalse(message_done(store, "msg-1", do_like=True, reply_text="谢谢"))
+            store.record("comment", "comment_reply", "msg-1")
+            self.assertTrue(message_done(store, "msg-1", do_like=True, reply_text="谢谢"))
 
     def test_message_center_does_not_require_follow_tab(self):
         lines = [{"text": "点赞", "box": [270, 98, 55, 30]},

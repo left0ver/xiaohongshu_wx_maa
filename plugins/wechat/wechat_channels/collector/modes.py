@@ -17,27 +17,32 @@ from collection import (
     LocalStore,
     Timings,
     author_in_feed,
+    back_to_video,
     collect_current_video,
     comment_control_in_feed,
+    copy_share_link,
     ensure_feed,
     feed_video_preview,
     find,
     identity,
+    matched_words,
     open_basic_info,
     parse_author,
     parse_basic_info,
     profile_bio_expand,
     video_details,
 )
-from comments import collect_visible_comments, nickname_matches
+from comments import collect_visible_comments, comment_limits, nickname_matches
 from interactions import (
     DailyQuotaStore,
     check_stopped,
     classify_page_state,
     compute_work_key,
     ensure_clean_page_on_resume,
+    failed_interactions,
     inspect_and_handle_messages,
     interact_work_and_comments,
+    validate_interaction_config,
 )
 from layout import DATE, compact, line_height, profile_name, reading_rows
 
@@ -134,6 +139,11 @@ _LIVE_PREVIEW_RE = re.compile(
 _AD_CARD_RE = re.compile(
     r"^(?:广告|推广|赞助)$|了解详情|立即下载|点击咨询|去看看|立即购买|查看详情"
 )
+# Search tabs are drawn text for OCR and "视频\n第 2 个标签，共 5 个" for controls.
+SEARCH_VIDEO_TAB = r"^视频(?:\n第\s*\d+\s*个标签[^\n]*)?$"
+SEARCH_OTHER_TABS = r"^(?:全部|账号|直播|商品)(?:\n第\s*\d+\s*个标签[^\n]*)?$"
+# A result card control describes the whole card: "likes\ntitle\nauthor[\ntime]".
+_CONTROL_CARD_RE = re.compile(r"^(\d+(?:\.\d+)?[万wW]?\+?)\n([^\n]+)\n([^\n]+)(?:\n([^\n]+))?$")
 _CARD_DATE_RE = re.compile(
     rf"^(?:{DATE}|\d+\s*(?:分钟|小时|天|周|个?月|年)前|刚刚|昨天|前天)$"
 )
@@ -173,6 +183,87 @@ def load_seen_keys(data_dir: Path, sqlite_path: Path | None = None) -> tuple[Pat
 
 def save_seen_keys(seen_file: Path, seen: set[str]):
     _atomic_write_json(seen_file, sorted(seen))
+
+
+# What a mode run does to each video. seen.json records each one separately, so
+# collecting a video never makes a later interaction run skip it.
+SEEN_PURPOSES = ("collect", "comments", "interact")
+
+
+def run_purposes(collect_video, inspect_comments, interaction_options) -> tuple[str, ...]:
+    return tuple(purpose for purpose, wanted in zip(SEEN_PURPOSES, (collect_video, inspect_comments, interaction_options))
+                 if wanted)
+
+
+def seen_done(seen: set[str], purpose: str, key: str) -> bool:
+    if f"{purpose}:{key}" in seen:
+        return True
+    # Records written before purposes were kept are collected videos. Author
+    # records never meant this video was processed.
+    return purpose == "collect" and key in seen and not key.startswith("wxch-author:")
+
+
+def already_processed(seen: set[str], purposes, keys) -> bool:
+    keys = [key for key in keys if key]
+    return bool(purposes) and all(any(seen_done(seen, purpose, key) for key in keys) for purpose in purposes)
+
+
+def mark_processed(seen: set[str], purposes, keys):
+    for purpose in purposes:
+        for key in keys:
+            if key:
+                seen.add(f"{purpose}:{key}")
+
+
+def mode_comment_limits(comment_options: dict | None) -> dict:
+    """Mode defaults overridden by the same limits, including unlimited, as the comment task."""
+    options = dict(comment_options or {})
+    limits = {"max_pages": 2, "max_reply_expansions": 1, "max_profiles": 1}
+    limits.update(comment_limits(options))
+    if options.get("visitProfiles") is False:
+        limits["max_profiles"] = 0
+    return limits
+
+
+def validate_mode_spec(spec: dict, where: str = "mode"):
+    """Reject a run that cannot do what it asks before the phone is touched."""
+    collect_video = bool(spec.get("collectVideo", True))
+    inspect_comments = bool(spec.get("inspectComments", False))
+    interactions = spec.get("interactionOptions")
+    if inspect_comments and not collect_video:
+        raise ValueError(f"{where}: collecting comments needs the video collected first (collectVideo)")
+    if not run_purposes(collect_video, inspect_comments, interactions):
+        raise ValueError(f"{where}: nothing to do; enable collection or an interaction")
+    if inspect_comments:
+        mode_comment_limits(spec.get("commentOptions"))
+    if interactions:
+        validate_interaction_config(interactions)
+
+
+def validate_mode_config(config: dict):
+    raw_mode = (config.get("mode") or "recommend").strip().lower()
+    mode = TAB_ALIASES.get(raw_mode, raw_mode)
+    if mode == "auto":
+        for index, spec in enumerate(config.get("stages") or []):
+            stage = TAB_ALIASES.get((spec.get("stage") or spec.get("mode") or "").strip().lower(),
+                                    (spec.get("stage") or spec.get("mode") or "").strip().lower())
+            if stage not in ("recommend", "friends", "follow", "city", "search", "messages"):
+                raise ValueError(f"stage {index + 1}: unsupported stage {stage!r}")
+            if stage != "messages":
+                validate_mode_spec(spec, f"stage {index + 1}")
+    elif mode in ("recommend", "friends", "follow", "city", "search"):
+        validate_mode_spec(config)
+    else:
+        raise ValueError(f"Unsupported mode: {raw_mode!r}")
+
+
+def mode_failures(result: dict) -> list[str]:
+    """Interactions that failed anywhere in a mode or auto-mode result."""
+    failures = []
+    for stage in result.get("stages") or [result]:
+        for video in stage.get("videos") or []:
+            failures += [f"{video.get('dedupeKey')}:{action}" for action in video.get("failedActions") or []]
+    return failures
 
 
 # ---------------------------------------------------------------------------
@@ -526,9 +617,9 @@ def detect_feed_skip_item(lines, height=1605) -> dict:
 
 def is_search_results_page(lines, expected_keyword: str | None = None) -> bool:
     """Return True if `lines` represent the WeChat Channels Search Results page."""
-    has_video_tab = bool(find(lines, r"^视频$", lambda l: 140 <= l["box"][1] <= 245))
+    has_video_tab = bool(find(lines, SEARCH_VIDEO_TAB, lambda l: 140 <= l["box"][1] <= 245))
     has_other_tab = bool(
-        find(lines, r"^(?:全部|账号|直播|商品)$", lambda l: 140 <= l["box"][1] <= 245)
+        find(lines, SEARCH_OTHER_TABS, lambda l: 140 <= l["box"][1] <= 245)
         or find(lines, r"筛选", lambda l: 140 <= l["box"][1] <= 245)
     )
     if not (has_video_tab and has_other_tab):
@@ -963,7 +1054,7 @@ def search_keyword(
 
     if is_search_results_page(lines, expected_keyword=target_kw):
         if switch_to_video_tab and not find(lines, r"^(?:不限|最新|最热)$", lambda l: 240 <= l["box"][1] <= 325):
-            video_tab = find(lines, r"^视频$", lambda l: 95 <= l["box"][0] <= 230 and 150 <= l["box"][1] <= 240)
+            video_tab = find(lines, SEARCH_VIDEO_TAB, lambda l: 95 <= l["box"][0] <= 230 and 150 <= l["box"][1] <= 240)
             if video_tab:
                 ui.click(video_tab)
                 time.sleep(1.2)
@@ -1017,7 +1108,7 @@ def search_keyword(
     if switch_to_video_tab:
         video_tab = find(
             result_lines,
-            r"^视频$",
+            SEARCH_VIDEO_TAB,
             lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240,
         )
         if video_tab:
@@ -1101,7 +1192,7 @@ def apply_search_filters(
     )
 
     if not has_inline_video_bar and not use_filter_panel:
-        video_tab = find(lines, r"^视频$", lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240)
+        video_tab = find(lines, SEARCH_VIDEO_TAB, lambda l: 95 <= l["box"][0] <= 235 and 145 <= l["box"][1] <= 240)
         if video_tab:
             ui.click(video_tab)
             time.sleep(1.4)
@@ -1239,10 +1330,46 @@ def apply_search_filters(
     }
 
 
+def _control_search_cards(lines, height):
+    """Cards described by their controls; the description is kept as reported."""
+    cards = []
+    for line in lines:
+        match = _CONTROL_CARD_RE.match(line.get("text", ""))
+        if not match or line.get("selector", {}).get("attribute") != "content-desc":
+            continue
+        x, y, w, h = line["box"]
+        if y < 300 or y >= height - 25:
+            continue
+        like_text, title, author, published = match.groups()
+        if re.fullmatch(r"已关注|关注|广告|推广|赞助", author.strip()) or _AD_CARD_RE.search(title):
+            continue
+        column = 0 if x + w / 2 < 360 else 1
+        # Tap the cover, not the title/author footer.
+        click_box = [x + w // 4, y + max(10, h // 4), max(1, w // 2), max(1, h // 3)]
+        clean_title_prefix = re.sub(r"[.…·•]+$", "", title).strip()
+        cards.append({
+            "cardKey": "wxch-card:" + identity(author, clean_title_prefix),
+            "column": column,
+            "author": author.strip(),
+            "rawAuthor": author,
+            "title": title,
+            "publishTime": published,
+            "duration": None,
+            "likeCountText": like_text,
+            "clickBox": click_box,
+            "footerY": y + h,
+        })
+    cards.sort(key=lambda c: (c["footerY"] // 60, c["column"]))
+    return cards
+
+
 def parse_search_video_cards(lines, height=1605) -> list[dict]:
     """Parse 2-column video cards on the WeChat Channels Search Results page."""
     if not lines:
         return []
+    controlled = _control_search_cards(lines, height)
+    if controlled:
+        return controlled
 
     # Exclude non-video section rows (`脱口秀 - 视频号`, `更多 >`, `看过的视频`)
     non_video_ys = [
@@ -1374,14 +1501,22 @@ def scroll_search_results(ui):
         time.sleep(0.9)
 
 
+class SearchCardsExhausted(RuntimeError):
+    pass
+
+
 def select_search_card(
     ui,
-    seen: set[str],
+    seen,
     *,
     max_screens: int = 5,
     lines=None,
 ) -> tuple[dict, list[dict], list[dict]]:
-    """Find the first unseen video card in Search Results across up to `max_screens` scrolls."""
+    """Find the first unprocessed video card in Search Results across up to `max_screens` scrolls.
+
+    `seen` is a predicate on a card, or a set of processed card keys.
+    """
+    processed = seen if callable(seen) else (lambda card: card["cardKey"] in seen)
     if lines is None:
         lines = ui.snapshot("search-cards")
 
@@ -1389,15 +1524,14 @@ def select_search_card(
         check_stopped(ui)
         cards = parse_search_video_cards(lines, ui.height)
         for card in cards:
-            author_key = "wxch-author:" + identity(card["author"])
-            if card["cardKey"] not in seen and author_key not in seen:
+            if not processed(card):
                 return card, cards, lines
         if screen_idx + 1 >= max_screens:
             break
         scroll_search_results(ui)
         lines = ui.snapshot(f"search-cards-scroll-{screen_idx + 2}")
 
-    raise RuntimeError("No unseen search video cards found within max_screens")
+    raise SearchCardsExhausted("No unseen search video cards found within max_screens")
 
 
 # ---------------------------------------------------------------------------
@@ -1413,12 +1547,21 @@ def collect_video_in_mode(
     *,
     source_mode: str = "RECOMMEND",
     allow_fallback_identity: bool = True,
-) -> dict:
+    video_filter_words=(),
+    search_keyword: str | None = None,
+    copy_link: bool = False,
+    previous_link: str | None = None,
+) -> dict | None:
     """Collect the currently open video into `LocalStore` (`videos.sqlite3`) with `source_mode`.
-    If a personal account in Search/Friends does not expose a public `视频号 ID` in `基础信息`,
-    gracefully falls back to `wechat-author-fallback` when `allow_fallback_identity=True`."""
+
+    With filter words, a video whose full description contains none of them is
+    left unsaved and None is returned. With copy_link, the share link is copied
+    and saved as videoUrl; a link that cannot be read is listed in missingFields.
+    If a personal account does not expose a public `视频号 ID` in `基础信息`,
+    falls back to `wechat-author-fallback` when `allow_fallback_identity=True`."""
     phase = timings.phase if timings is not None else (lambda _name: nullcontext())
     emit = timings.emit if timings is not None else (lambda _row: None)
+    words = list(video_filter_words or ())
 
     with phase("collect_video_total"):
         with phase("collect_author_nickname"):
@@ -1438,6 +1581,18 @@ def collect_video_in_mode(
                     "publishTimeText": None,
                     "publishLocation": None,
                 }
+        matched = matched_words(video["description"], words)
+        if words and not matched:
+            emit({"kind": "videoFiltered", "author": author, "filterWords": words})
+            return None
+        video_url = None
+        if copy_link:
+            with phase("copy_share_link"):
+                try:
+                    video_url = copy_share_link(ui, ui.snapshot("feed"), previous_link=previous_link)
+                except ValueError as error:
+                    emit({"kind": "shareLinkMissing", "author": author, "error": str(error)})
+                    back_to_video(ui, author, "share-recover")
         with phase("collect_author_profile"):
             feed = ui.snapshot("before-author")
             target = author_in_feed(feed, ui.height)
@@ -1486,7 +1641,12 @@ def collect_video_in_mode(
             payload["missingFields"] += [
                 key for key in ("publishTimeText", "publishLocation") if not payload.get(key)
             ]
-            event, duplicate = store.save(payload, source_mode=source_mode)
+            if copy_link and not video_url:
+                payload["missingFields"].append("videoUrl")
+            if words:
+                payload["videoMatchedKeywords"] = matched
+            event, duplicate = store.save(payload, source_mode=source_mode, video_url=video_url,
+                                          search_keyword=search_keyword)
             emit(
                 {
                     "kind": "videoCollected",
@@ -1494,6 +1654,7 @@ def collect_video_in_mode(
                     "dedupeKey": event["dedupe_key"],
                     "sourceMode": source_mode,
                     "duplicate": duplicate,
+                    "videoUrl": event["payload"].get("videoUrl"),
                     "missingFields": payload["missingFields"],
                     "uploadStatus": "local_only",
                 }
@@ -1514,10 +1675,14 @@ def _process_open_video_item(
     inspect_comments: bool = False,
     comment_options: dict | None = None,
     interaction_options: dict | None = None,
+    collect_options: dict | None = None,
 ) -> dict:
+    """collect_options: videoFilterWords, commentFilterWords, searchKeyword,
+    copyShareLink and previousLink for the collection task."""
     check_stopped(ui)
     preview = feed_video_preview(lines, ui.height)
     video_event = None
+    options = collect_options or {}
     if collect_video:
         video_event = call_with_captcha_pause(
             ui,
@@ -1527,7 +1692,15 @@ def _process_open_video_item(
             timings,
             lines,
             source_mode=source_mode,
+            video_filter_words=options.get("videoFilterWords") or (),
+            search_keyword=options.get("searchKeyword"),
+            copy_link=bool(options.get("copyShareLink")),
+            previous_link=options.get("previousLink"),
         )
+        if video_event is None:
+            return {"filtered": True, "completedPurposes": [], "failedActions": [],
+                    "author": preview["author"], "previewKey": preview["previewKey"],
+                    "authorKey": preview["authorKey"], "sourceMode": source_mode}
     else:
         work_key = compute_work_key(author=preview["author"], title=preview["captionPreview"] or preview["author"])
         video_event = {
@@ -1543,7 +1716,6 @@ def _process_open_video_item(
 
     comments_report = None
     if inspect_comments:
-        copts = dict(comment_options or {})
         comments_report = call_with_captcha_pause(
             ui,
             collect_visible_comments,
@@ -1551,18 +1723,8 @@ def _process_open_video_item(
             store.path,
             video_event,
             timings,
-            max_pages=int(copts.get("maxPages", 2)),
-            max_replies_Wait=int(copts.get("maxReplyExpansions", 1)),
-            max_profiles=int(copts.get("maxProfiles", 1)),
-        ) if "max_replies_Wait" in collect_visible_comments.__code__.co_varnames else call_with_captcha_pause(
-            ui,
-            collect_visible_comments,
-            ui,
-            store.path,
-            video_event,
-            timings,
-            max_pages=int(copts.get("maxPages", 2)),
-            max_profiles=int(copts.get("maxProfiles", 1)),
+            **mode_comment_limits(comment_options),
+            comment_filter_words=options.get("commentFilterWords") or (),
         )
 
     interaction_report = None
@@ -1577,13 +1739,20 @@ def _process_open_video_item(
             video_event=video_event,
         )
 
+    failed = failed_interactions(interaction_report) if interaction_report else []
+    # Only what finished is recorded, so a later run retries a failed interaction.
+    completed = [purpose for purpose, done in zip(SEEN_PURPOSES, (
+        collect_video, comments_report is not None, bool(interaction_options) and not failed)) if done]
     return {
+        "completedPurposes": completed,
+        "failedActions": failed,
         "eventId": video_event["event_id"],
         "dedupeKey": video_event["dedupe_key"],
         "sourceMode": source_mode,
         "author": video_event["payload"].get("authorNickname") or preview["author"],
         "description": video_event["payload"].get("description"),
-        "authorDouyinId": video_event["payload"].get("authorDouyinId"),
+        "authorWechatChannelsId": video_event["payload"].get("author_wechat_channels_id"),
+        "videoUrl": video_event["payload"].get("videoUrl"),
         "previewKey": preview["previewKey"],
         "authorKey": preview["authorKey"],
         "videoEvent": video_event,
@@ -1607,14 +1776,19 @@ def run_tab_feed_mode(
     require_location_permission: bool = False,
     quota_store: DailyQuotaStore | None = None,
     timings: Timings | None = None,
+    collect_options: dict | None = None,
+    max_misses: int | None = None,
 ) -> dict:
     """Continuously process `count` videos on a Channels top-tab feed (`recommend`,
-    `friends`, `follow`, `city`), skipping seen videos, live streams, and ads."""
+    `friends`, `follow`, `city`), skipping seen videos, live streams, and ads.
+
+    Filtered-out videos do not count. With max_misses, the run ends after that
+    many videos in a row are skipped or filtered out."""
     norm_tab = TAB_ALIASES.get(str(tab).strip().lower(), str(tab).strip().lower())
     if norm_tab not in ("recommend", "friends", "follow", "city"):
         raise ValueError(f"Unsupported feed tab: {tab}")
-    if type(count) is not int or not 0 <= count <= 50:
-        raise ValueError("count must be between 0 and 50")
+    if type(count) is not int or not 0 <= count <= 500:
+        raise ValueError("count must be between 0 and 500")
 
     started = time.monotonic()
     root_dir = Path(root_dir)
@@ -1625,6 +1799,7 @@ def run_tab_feed_mode(
         quota_store = DailyQuotaStore(data_dir / "daily_quotas.json")
     seen_file, seen = load_seen_keys(data_dir)
     initial_seen_count = len(seen)
+    purposes = run_purposes(collect_video, inspect_comments, interaction_options)
     effective_source_mode = source_mode or STAGE_SOURCE_MODES[norm_tab]
 
     tab_state = call_with_captcha_pause(
@@ -1656,7 +1831,15 @@ def run_tab_feed_mode(
     videos = []
     skipped_items = []
     recovery_events = []
+    filtered_items = []
     swipes = 0
+    misses = 0
+    collect_options = dict(collect_options or {})
+
+    def missed():
+        nonlocal misses
+        misses += 1
+        return max_misses is not None and misses >= max_misses
 
     while len(videos) < count and swipes <= max_swipes:
         check_stopped(ui)
@@ -1677,7 +1860,7 @@ def run_tab_feed_mode(
                     "reason": skip_info["reason"],
                 }
             )
-            if swipes >= max_swipes:
+            if missed() or swipes >= max_swipes:
                 break
             ui.scroll_feed_next()
             swipes += 1
@@ -1693,17 +1876,16 @@ def run_tab_feed_mode(
                     "reason": str(err),
                 }
             )
-            if swipes >= max_swipes:
+            if missed() or swipes >= max_swipes:
                 break
             ui.scroll_feed_next()
             swipes += 1
             continue
 
-        if (
-            preview["previewKey"] in seen
-            or preview["authorKey"] in seen
-            or compute_work_key(author=preview["author"], title=preview["captionPreview"]) in seen
-        ):
+        if already_processed(seen, purposes, (
+            preview["previewKey"],
+            compute_work_key(author=preview["author"], title=preview["captionPreview"]),
+        )):
             skipped_items.append(
                 {
                     "swipeIndex": swipes,
@@ -1712,7 +1894,7 @@ def run_tab_feed_mode(
                     "previewKey": preview["previewKey"],
                 }
             )
-            if swipes >= max_swipes:
+            if missed() or swipes >= max_swipes:
                 break
             ui.scroll_feed_next()
             swipes += 1
@@ -1730,11 +1912,21 @@ def run_tab_feed_mode(
             inspect_comments=inspect_comments,
             comment_options=comment_options,
             interaction_options=interaction_options,
+            collect_options=collect_options,
         )
+        if item_report.get("filtered"):
+            filtered_items.append({"swipeIndex": swipes, "author": item_report["author"],
+                                   "previewKey": item_report["previewKey"]})
+            if missed() or swipes >= max_swipes:
+                break
+            ui.scroll_feed_next()
+            swipes += 1
+            continue
+        misses = 0
+        if item_report.get("videoUrl"):
+            collect_options["previousLink"] = item_report["videoUrl"]
         videos.append(item_report)
-        seen.add(item_report["dedupeKey"])
-        seen.add(item_report["previewKey"])
-        seen.add(item_report["authorKey"])
+        mark_processed(seen, item_report["completedPurposes"], (item_report["dedupeKey"], item_report["previewKey"]))
         save_seen_keys(seen_file, seen)
 
         if len(videos) < count:
@@ -1757,6 +1949,9 @@ def run_tab_feed_mode(
         "finalSeenCount": len(seen),
         "videos": videos,
         "skippedItems": skipped_items,
+        "filteredItems": filtered_items,
+        "endReason": "count_reached" if len(videos) >= count else (
+            "miss_limit" if max_misses is not None and misses >= max_misses else "swipe_limit"),
         "recoveryEvents": recovery_events,
         "elapsedMs": round((time.monotonic() - started) * 1000),
     }
@@ -1791,11 +1986,16 @@ def run_search_mode(
     interaction_options: dict | None = None,
     quota_store: DailyQuotaStore | None = None,
     timings: Timings | None = None,
+    collect_options: dict | None = None,
+    max_misses: int | None = None,
 ) -> dict:
     """Search `keyword`, apply sort/duration/scope filters, open video cards from the
-    2-column search results grid, process them, and verify return to the results list."""
-    if type(count) is not int or not 0 <= count <= 50:
-        raise ValueError("count must be between 0 and 50")
+    2-column search results grid, process them, and verify return to the results list.
+
+    Filtered-out videos do not count and their cards are not reopened. With
+    max_misses, the run ends after that many cards in a row are filtered out."""
+    if type(count) is not int or not 0 <= count <= 500:
+        raise ValueError("count must be between 0 and 500")
 
     started = time.monotonic()
     root_dir = Path(root_dir)
@@ -1806,6 +2006,7 @@ def run_search_mode(
         quota_store = DailyQuotaStore(data_dir / "daily_quotas.json")
     seen_file, seen = load_seen_keys(data_dir)
     initial_seen_count = len(seen)
+    purposes = run_purposes(collect_video, inspect_comments, interaction_options)
 
     search_state = call_with_captcha_pause(
         ui,
@@ -1828,9 +2029,16 @@ def run_search_mode(
     stage_check = verify_stage_page(ui, "search", expected_keyword=target_kw, lines=current_lines)
 
     videos = []
+    filtered_items = []
+    filtered_cards = set()
     recovery_events = []
+    collect_options = {**(collect_options or {}), "searchKeyword": target_kw}
+    misses = 0
+    idx = -1
+    end_reason = None
 
-    for idx in range(count):
+    while len(videos) < count and (max_misses is None or misses < max_misses):
+        idx += 1
         check_stopped(ui)
         if idx > 0:
             current_lines = call_with_captcha_pause(ui, ui.snapshot, f"search-grid-{idx + 1}")
@@ -1844,12 +2052,16 @@ def run_search_mode(
                 recovery_events.append(rec)
                 current_lines = ui.snapshot(f"search-grid-recovered-{idx + 1}")
 
-        card, visible_cards, current_lines = select_search_card(
-            ui,
-            seen,
-            max_screens=max_screens,
-            lines=current_lines,
-        )
+        try:
+            card, visible_cards, current_lines = select_search_card(
+                ui,
+                lambda card: card["cardKey"] in filtered_cards or already_processed(seen, purposes, (card["cardKey"],)),
+                max_screens=max_screens,
+                lines=current_lines,
+            )
+        except SearchCardsExhausted:
+            end_reason = "results_exhausted"
+            break
         check_stopped(ui)
         ui.click({"text": card["title"], "box": card["clickBox"]})
         time.sleep(1.2)
@@ -1871,6 +2083,7 @@ def run_search_mode(
             inspect_comments=inspect_comments,
             comment_options=comment_options,
             interaction_options=interaction_options,
+            collect_options=collect_options,
         )
 
         # Return from opened video back to 2-column Search Results list
@@ -1890,11 +2103,18 @@ def run_search_mode(
         returned_ok = is_search_results_page(after_back_lines)
         item_report["card"] = card
         item_report["returnedToSearchResults"] = returned_ok
+        current_lines = after_back_lines
+        if item_report.get("filtered"):
+            filtered_cards.add(card["cardKey"])
+            filtered_items.append({"author": item_report["author"], "cardKey": card["cardKey"]})
+            misses += 1
+            continue
+        misses = 0
+        if item_report.get("videoUrl"):
+            collect_options["previousLink"] = item_report["videoUrl"]
         videos.append(item_report)
 
-        seen.add(card["cardKey"])
-        seen.add(item_report["dedupeKey"])
-        seen.add(item_report["authorKey"])
+        mark_processed(seen, item_report["completedPurposes"], (card["cardKey"], item_report["dedupeKey"]))
         save_seen_keys(seen_file, seen)
         current_lines = after_back_lines
 
@@ -1911,6 +2131,8 @@ def run_search_mode(
         "initialSeenCount": initial_seen_count,
         "finalSeenCount": len(seen),
         "videos": videos,
+        "filteredItems": filtered_items,
+        "endReason": end_reason or ("count_reached" if len(videos) >= count else "miss_limit"),
         "recoveryEvents": recovery_events,
         "elapsedMs": round((time.monotonic() - started) * 1000),
     }
@@ -2028,6 +2250,7 @@ def run_mode(ui, root_dir: Path, config: dict, timings: Timings | None = None) -
     quota_path = Path(config.get("quotaPath") or (data_dir / "daily_quotas.json"))
     quota_store = DailyQuotaStore(quota_path, limits=config.get("limits"))
 
+    validate_mode_config(config)
     raw_mode = (config.get("mode") or "recommend").strip().lower()
     norm_mode = TAB_ALIASES.get(raw_mode, raw_mode)
 
@@ -2077,3 +2300,61 @@ def run_mode(ui, root_dir: Path, config: dict, timings: Timings | None = None) -
         )
 
     raise ValueError(f"Unsupported mode: {raw_mode!r}")
+
+
+# ---------------------------------------------------------------------------
+# 8. App task 1: 视频号采集
+# ---------------------------------------------------------------------------
+
+COLLECTION_ENTRIES = ("recommend", "city", "search")
+# A strict filter can match nothing for a long time; stop after this many misses in a row.
+COLLECTION_MAX_MISSES = 50
+
+
+def collection_task_config(config: dict) -> dict:
+    """Validated settings of the collection task, before the phone is touched."""
+    from collection import filter_words
+
+    raw_entry = str(config.get("entry") or "recommend").strip().lower()
+    entry = {**TAB_ALIASES, "搜索": "search"}.get(raw_entry, raw_entry)
+    if entry not in COLLECTION_ENTRIES:
+        raise ValueError(f"Unsupported collection entry: {config.get('entry')!r}")
+    if entry == "city":
+        raise ValueError("同城入口暂未实现：测试手机上没有同城页签")
+    keyword = str(config.get("keyword") or "").strip()
+    if entry == "search" and not keyword:
+        raise ValueError("搜索入口需要填写搜索关键词")
+    count = config.get("count", 10)
+    if not re.fullmatch(r"\d+", str(count).strip()) or not 1 <= int(count) <= 500:
+        raise ValueError(f"采集视频数需要是 1 到 500 的整数，收到 {count!r}")
+    return {
+        "entry": entry,
+        "keyword": keyword,
+        "count": int(count),
+        "videoFilterWords": filter_words(config.get("videoFilter")),
+        "commentFilterWords": filter_words(config.get("commentFilter")),
+    }
+
+
+def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | None = None) -> dict:
+    """Collect `count` videos that pass the video filter, each with all comments
+    (replies included) that pass the comment filter and the video's share link.
+    Commenter profiles are not visited."""
+    settings = collection_task_config(config)
+    common = dict(
+        count=settings["count"],
+        collect_video=True,
+        inspect_comments=True,
+        comment_options={"unlimited": True, "visitProfiles": False},
+        collect_options={"videoFilterWords": settings["videoFilterWords"],
+                         "commentFilterWords": settings["commentFilterWords"],
+                         "copyShareLink": True},
+        max_misses=COLLECTION_MAX_MISSES,
+        timings=timings,
+    )
+    if settings["entry"] == "search":
+        result = run_search_mode(ui, root_dir, keyword=settings["keyword"], max_screens=10, **common)
+    else:
+        result = run_tab_feed_mode(ui, root_dir, tab=settings["entry"], max_swipes=100_000, **common)
+    result["settings"] = settings
+    return result

@@ -25,7 +25,8 @@ class WorkHeaderMissing(ValueError):
 
 
 def compact(text):
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+    # Controls interleave zero-width spaces; they are not text to compare.
+    return re.sub(r"[\s\u200b-\u200d\u2060\ufeff]+", "", unicodedata.normalize("NFKC", text))
 
 
 # Captions and comments are OCR text: the same one can read slightly differently each time.
@@ -269,54 +270,3 @@ def label_values(lines):
 def basic_info_ready(lines):
     return (any(re.fullmatch(r"基础信息", item["text"].strip()) for item in lines)
             and "channel" in label_values(lines))
-
-
-def supplemental_roi(lines, label, height, author=None):
-    """Return a field group to replace; None means no reliable regional anchor."""
-    if label in ("video-details", "expanded-description") and author:
-        try:
-            region = work_region(lines)
-        except ValueError:
-            return None
-        missing_metadata = not all(metadata_values(region).values())
-        try:
-            video_values(lines, author)
-            missing_body = False
-        except ValueError:
-            missing_body = True
-        top = region["heading"]["bottom"] if missing_metadata else region["header"]["bottom"]
-        if not missing_body and region["body"]:
-            end = region["body"][0]["top"]
-        else:
-            end = region["boundary"]["bottom"] if region["boundary"] else height
-        return [0, int(top), 720, max(1, int(end - top))]
-    if label == "author-basic-info" and basic_info_ready(lines):
-        values = label_values(lines)
-        missing = [name for name in values if not values[name]]
-        if missing:
-            rows = reading_rows(lines)
-            absent = [row for row in rows if any(re.match("^" + LABELS[name], row["text"], re.I) for name in missing)]
-            row, last = absent[0], absent[-1]
-            end = next((other["top"] for other in rows if other["top"] > last["bottom"]
-                        and any(re.match("^" + pattern, other["text"]) for pattern in LABELS.values())), height)
-            top = max(0, int(row["top"] - line_height(lines) / 2))
-            return [0, top, 720, max(1, int(end - top))]
-    if label == "author-profile" and author:
-        try:
-            name = profile_name(lines, author)
-        except ValueError:
-            return None
-        controls = [item for item in lines if re.fullmatch(r"[√✓]?\s*(?:已关注|申请关注|关注|私信|客服)", item["text"])]
-        if name and len(controls) >= 2:
-            top, end = bottom(name), min(item["box"][1] for item in controls)
-            if end > top:
-                return [0, int(top), 720, int(end - top)]
-    return None
-
-
-def replace_region(lines, recognized, roi):
-    """Never mix old and new observations of the same field region."""
-    x, y, width, height = roi
-    retained = [item for item in lines if bottom(item) <= y or item["box"][1] >= y + height
-                or item["box"][0] + item["box"][2] <= x or item["box"][0] >= x + width]
-    return retained + recognized
