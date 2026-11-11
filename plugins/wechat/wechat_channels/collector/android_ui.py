@@ -136,8 +136,8 @@ class MaaUi:
         path = Path(__file__).resolve().parents[1] / "resource/base/pipeline/collect-video.json"
         self.nodes = json.loads(path.read_text(encoding="utf-8"))
 
-    # vivo V2131A often needs 1.5-2.2 s for a dump; a 2 s limit sent pages to full OCR.
-    def hierarchy(self, timeout=4, force=False):
+    # vivo V2131A needs 1.5-3.1 s for a dump and sometimes over 4 s on profiles.
+    def hierarchy(self, timeout=6, force=False):
         if self.tasker.stopping:
             raise InterruptedError("Collection was stopped")
         if self.hierarchy_unavailable and not force:
@@ -418,13 +418,17 @@ class MaaUi:
         if self.tasker.stopping:
             raise RuntimeError("Collection was stopped")
         if line.get("selector"):
-            try:
-                controls = self.hierarchy(timeout=4, force=True)
-            except HierarchyUnavailable:
-                # A slow dump (vivo) is retried once; a missing control still sends no input.
-                time.sleep(0.5)
-                controls = self.hierarchy(timeout=4, force=True)
-            line = refresh_target(controls, line)
+            controls = None
+            for timeout in (6, 8):
+                try:
+                    controls = self.hierarchy(timeout=timeout, force=True)
+                    break
+                except HierarchyUnavailable:
+                    time.sleep(0.5)
+            # A control that is gone or ambiguous still sends no input. Only when the
+            # dump itself keeps timing out (vivo) is the position just read used.
+            if controls is not None:
+                line = refresh_target(controls, line)
         elif line.get("templateNode"):
             current = self.match_navigation(line["templateNode"])
             if current:
@@ -505,7 +509,7 @@ class MaaUi:
         self.height = image.shape[0]
         return image
 
-    def set_text(self, text, timeout=10):
+    def set_text(self, text, timeout=20):
         if self.stopped():
             raise InterruptedError("Collection was stopped")
         foreground()
@@ -513,13 +517,18 @@ class MaaUi:
         if not helper.is_file():
             raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
         cmd = ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)]
-        try:
-            run(cmd, timeout=timeout, stopped=self.stopped)
-        except Exception:
-            if self.stopped():
-                raise InterruptedError("Collection was stopped")
-            time.sleep(0.4)
-            run(cmd, timeout=timeout, stopped=self.stopped)
+        # The helper occasionally hangs while connecting to UiAutomation (Hebe-BD00
+        # run ab7a1fa4 was killed at 10 s); a fresh process usually succeeds.
+        for attempt in range(3):
+            try:
+                run(cmd, timeout=timeout, stopped=self.stopped)
+                break
+            except Exception:
+                if self.stopped():
+                    raise InterruptedError("Collection was stopped")
+                if attempt == 2:
+                    raise
+                time.sleep(0.8)
         time.sleep(0.5)
 
     def controls_now(self):
@@ -542,6 +551,16 @@ class MaaUi:
             if check == 0:
                 time.sleep(0.6)
         return False
+
+    def clear_text(self, count=80):
+        """Empty the focused input: the set-text helper refuses empty text, so
+        the cursor is moved to the end (MOVE_END) and the text deleted (DEL)."""
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        foreground()
+        command("input", "keyevent", "123")
+        command("input", "keyevent", *["67"] * count, timeout=30)
+        time.sleep(0.4)
 
     def key(self, keycode):
         if self.stopped():
