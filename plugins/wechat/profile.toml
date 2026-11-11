@@ -5,8 +5,9 @@ virtual_display_orientation = "portrait"
 pi_include = ["collector"]
 
 [agent]
-# A collection run reads every comment of up to 500 videos; one agent call may take hours.
-timeout_ms = 21600000
+# The host accepts 1..600000 (AgentRuntimeManager.kt). MaaFramework applies it to the wait for each
+# message, not to a whole action, so long collection runs that keep tapping the phone are not cut off.
+timeout_ms = 600000
 
 [[agent.runtimes]]
 bundle = "dist/wechat-channels-agent-runtime-{abi}.zip"
