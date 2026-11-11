@@ -36,7 +36,15 @@
         "collect_count",
         "collect_video_filter",
         "collect_comment_filter"
-      ]
+      ],
+      "pipeline_override": {
+        "CollectWechatChannels": {
+          "custom_action_param": {
+            "entry": "recommend",
+            "count": 10
+          }
+        }
+      }
     },
     {
       "name": "link_like_comment",
@@ -46,7 +54,14 @@
       "default_check": false,
       "option": [
         "link_like_comment_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkLikeComment": {
+          "custom_action_param": {
+            "action": "likeComment"
+          }
+        }
+      }
     },
     {
       "name": "link_reply_comment",
@@ -56,7 +71,14 @@
       "default_check": false,
       "option": [
         "link_reply_comment_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkReplyComment": {
+          "custom_action_param": {
+            "action": "replyComment"
+          }
+        }
+      }
     },
     {
       "name": "link_message_commenter",
@@ -66,7 +88,14 @@
       "default_check": false,
       "option": [
         "link_message_commenter_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkMessageCommenter": {
+          "custom_action_param": {
+            "action": "messageCommenter"
+          }
+        }
+      }
     },
     {
       "name": "inspect_messages",
@@ -77,7 +106,18 @@
       "option": [
         "messages_like",
         "messages_settings"
-      ]
+      ],
+      "pipeline_override": {
+        "InspectWechatMessages": {
+          "custom_action_param": {
+            "ensureFeed": true,
+            "inspectMessages": {
+              "like": true,
+              "maxMessages": 1
+            }
+          }
+        }
+      }
     },
     {
       "name": "link_like_video",
@@ -87,7 +127,14 @@
       "default_check": false,
       "option": [
         "link_like_video_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkLikeVideo": {
+          "custom_action_param": {
+            "action": "likeVideo"
+          }
+        }
+      }
     },
     {
       "name": "link_follow_author",
@@ -97,7 +144,14 @@
       "default_check": false,
       "option": [
         "link_follow_author_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkFollowAuthor": {
+          "custom_action_param": {
+            "action": "followAuthor"
+          }
+        }
+      }
     },
     {
       "name": "link_message_author",
@@ -107,7 +161,14 @@
       "default_check": false,
       "option": [
         "link_message_author_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkMessageAuthor": {
+          "custom_action_param": {
+            "action": "messageAuthor"
+          }
+        }
+      }
     },
     {
       "name": "link_comment_video",
@@ -117,7 +178,14 @@
       "default_check": false,
       "option": [
         "link_comment_video_input"
-      ]
+      ],
+      "pipeline_override": {
+        "WechatLinkCommentVideo": {
+          "custom_action_param": {
+            "action": "commentVideo"
+          }
+        }
+      }
     }
   ],
   "option": {

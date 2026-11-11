@@ -122,8 +122,7 @@ class InteractWork(CustomAction):
         run_dir = root / "runs" / run_id
         run_dir.mkdir(parents=True)
         timings = Timings(run_dir / "timings.jsonl", run_id)
-        raw_param = getattr(argv, "custom_action_param", None)
-        config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
+        config = action_config(argv)
         try:
             # Fail on an unusable configuration before touching the phone. A
             # ticked action with blank text is reported as such, not as "nothing enabled".
@@ -195,15 +194,45 @@ class RunModeAction(CustomAction):
             return False
 
 
+# The defaults each entry node carries. MaaFramework replaces a node's
+# custom_action_param with the task's override as a whole (build 31 sent link
+# tasks without their action), so they are filled in again from the node name.
+NODE_DEFAULTS = {
+    "CollectWechatChannels": {"entry": "recommend", "count": 10},
+    "InspectWechatMessages": {"ensureFeed": True, "inspectMessages": {"like": True, "maxMessages": 1}},
+    "WechatLinkLikeComment": {"action": "likeComment"},
+    "WechatLinkReplyComment": {"action": "replyComment"},
+    "WechatLinkMessageCommenter": {"action": "messageCommenter"},
+    "WechatLinkLikeVideo": {"action": "likeVideo"},
+    "WechatLinkFollowAuthor": {"action": "followAuthor"},
+    "WechatLinkMessageAuthor": {"action": "messageAuthor"},
+    "WechatLinkCommentVideo": {"action": "commentVideo"},
+}
+
+
+def with_node_defaults(node_name, config):
+    merged = json.loads(json.dumps(NODE_DEFAULTS.get(node_name, {})))
+    for key, value in config.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def action_config(argv):
+    raw_param = getattr(argv, "custom_action_param", None)
+    config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
+    return with_node_defaults(getattr(argv, "node_name", ""), config)
+
+
 def _run_setup(argv):
     root = Path(os.environ["WECHAT_DATA_DIR"])
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     run_id = str(uuid.uuid4())
     run_dir = root / "runs" / run_id
     run_dir.mkdir(parents=True)
-    raw_param = getattr(argv, "custom_action_param", None)
-    config = json.loads(raw_param) if isinstance(raw_param, str) and raw_param.strip() else {}
-    return root, run_dir, Timings(run_dir / "timings.jsonl", run_id), config
+    return root, run_dir, Timings(run_dir / "timings.jsonl", run_id), action_config(argv)
 
 
 @AgentServer.custom_action("CollectWechatChannels")
