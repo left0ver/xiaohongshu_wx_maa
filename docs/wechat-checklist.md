@@ -100,6 +100,8 @@
 
 ## 上报与可靠性
 
+2026-11-12：`upload_wechat_events` 已完成函数封装，授权码由 `WECHAT_LICENSE_KEY` 提供。华为 Hebe-BD00 与 vivo V2131A 的手机 Python 3.13.15 各发送 1 VIDEO、1 COMMENT，首次调用与重传均收到 2/2 ACK；校验失败和输入保持不变检查通过。当前验收范围见[上报函数说明](wechat-upload.md)，下列持久化队列和完整任务验收继续按各自范围检查。
+
 - [ ] 作品、评论、用户事件统一持久化队列，按授权码隔离待发送记录，并与现有 `videos.sqlite3` 草稿平滑衔接。
 - [ ] 实时包及心跳携带 `discoveryEvents`（每包最多 200 条），仅在收到服务端 `discoveryAckIds` 后清理已确认事件；相同去重键重传保持相同 `event_id`。
 - [x] 微信安全验证/验证码检测零点击暂停保护，以及弹窗/意外页面有界返回归位防死循环。（2026-11-07，`modes.py` `wait_for_captcha_resolution` + `bounded_recover_to_target` 真机跨页归位与单元测试验证通过）

@@ -4,6 +4,8 @@
 
 PI v2 入口：`wechat_channels/interface.json`。共享识别与动作节点：`wechat_channels/resource/base/pipeline/channels.json`。
 
+数据上报函数：`collector/upload.py` 的 `upload_wechat_events` 从环境变量 `WECHAT_LICENSE_KEY` 读取授权码，接收现有微信视频号草稿并返回服务端 ACK。2026-11-12 已在华为和 vivo 的手机 Python 环境中验证真实 VIDEO、COMMENT 发送及重传，详见[调用说明与验证范围](../../docs/wechat-upload.md)。
+
 可组合操作：打开微信、进入发现、打开视频号、打开当前视频作者主页、打开主页中的视频、点赞当前视频、返回作者主页、返回推荐页、进入视频号个人页。点赞先识别状态，已点赞则跳过；点击后必须确认状态，不盲目重试。
 
 「点赞并访问」组合和独立点赞操作都定位白色拇指图标后点击一次，在相同识别位置验证红色状态；不使用固定视频区域坐标，不因校验失败反复点击。已点赞则跳过点赞动作。
