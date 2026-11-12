@@ -27,6 +27,7 @@ from interactions import (
 )
 from links import LinkLedger, run_link_task, validate_link_task
 from modes import collection_task_config, mode_failures, run_collection_task, run_mode, validate_mode_config
+from publisher import configure_upload
 
 
 @AgentServer.custom_action("CollectWechatVideo")
@@ -243,6 +244,7 @@ class CollectChannelsAction(CustomAction):
         root, run_dir, timings, config = _run_setup(argv)
         try:
             settings = collection_task_config(config)
+            configure_upload(root)
             timings.emit({"kind": "collectionSettings", **settings})
             with (root / "collection.lock").open("a") as lock, ExitStack() as stack:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

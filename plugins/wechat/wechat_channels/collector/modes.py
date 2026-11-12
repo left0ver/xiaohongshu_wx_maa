@@ -45,6 +45,7 @@ from interactions import (
     validate_interaction_config,
 )
 from layout import DATE, compact, line_height, profile_name, reading_rows
+from publisher import WechatPublisher
 
 SORT_ALIASES = {
     None: "不限",
@@ -1701,6 +1702,8 @@ def _process_open_video_item(
             return {"filtered": True, "completedPurposes": [], "failedActions": [],
                     "author": preview["author"], "previewKey": preview["previewKey"],
                     "authorKey": preview["authorKey"], "sourceMode": source_mode}
+        if options.get("publishEvents") is not None:
+            options["publishEvents"]([video_event])
     else:
         work_key = compute_work_key(author=preview["author"], title=preview["captionPreview"] or preview["author"])
         video_event = {
@@ -1725,6 +1728,7 @@ def _process_open_video_item(
             timings,
             **mode_comment_limits(comment_options),
             comment_filter_words=options.get("commentFilterWords") or (),
+            publish_events=options.get("publishEvents"),
         )
 
     interaction_report = None
@@ -2329,34 +2333,47 @@ def collection_task_config(config: dict) -> dict:
     count = config.get("count", 10)
     if not re.fullmatch(r"\d+", str(count).strip()) or not 1 <= int(count) <= 500:
         raise ValueError(f"采集视频数需要是 1 到 500 的整数，收到 {count!r}")
+    comment_options = config.get("commentOptions", {"unlimited": True})
+    if not isinstance(comment_options, dict):
+        raise ValueError("commentOptions 必须是配置对象")
+    comment_options = {"visitProfiles": True, **comment_options}
+    if type(comment_options["visitProfiles"]) is not bool:
+        raise ValueError("visitProfiles 必须是布尔值")
+    mode_comment_limits(comment_options)
     return {
         "entry": entry,
         "keyword": keyword,
         "count": int(count),
         "videoFilterWords": filter_words(config.get("videoFilter")),
         "commentFilterWords": filter_words(config.get("commentFilter")),
+        "commentOptions": comment_options,
     }
 
 
 def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | None = None) -> dict:
-    """Collect `count` videos that pass the video filter, each with all comments
-    (replies included) that pass the comment filter and the video's share link.
-    Commenter profiles are not visited."""
+    """采集符合筛选条件的视频、评论、分享链接及评论者资料。"""
     settings = collection_task_config(config)
-    common = dict(
-        count=settings["count"],
-        collect_video=True,
-        inspect_comments=True,
-        comment_options={"unlimited": True, "visitProfiles": False},
-        collect_options={"videoFilterWords": settings["videoFilterWords"],
-                         "commentFilterWords": settings["commentFilterWords"],
-                         "copyShareLink": True},
-        max_misses=COLLECTION_MAX_MISSES,
-        timings=timings,
-    )
-    if settings["entry"] == "search":
-        result = run_search_mode(ui, root_dir, keyword=settings["keyword"], max_screens=10, **common)
-    else:
-        result = run_tab_feed_mode(ui, root_dir, tab=settings["entry"], max_swipes=100_000, **common)
+    root_dir = Path(root_dir)
+    data_dir = root_dir / "data" if (root_dir / "data").is_dir() else root_dir
+    records = timings.path.parent / "uploads" if timings is not None else data_dir / "uploads"
+    with WechatPublisher(data_dir / "videos.sqlite3", records=records,
+                         emit=timings.emit if timings is not None else None) as publisher:
+        publisher.flush()
+        common = dict(
+            count=settings["count"],
+            collect_video=True,
+            inspect_comments=True,
+            comment_options=settings["commentOptions"],
+            collect_options={"videoFilterWords": settings["videoFilterWords"],
+                             "commentFilterWords": settings["commentFilterWords"],
+                             "copyShareLink": True, "publishEvents": publisher.publish},
+            max_misses=COLLECTION_MAX_MISSES,
+            timings=timings,
+        )
+        if settings["entry"] == "search":
+            result = run_search_mode(ui, root_dir, keyword=settings["keyword"], max_screens=10, **common)
+        else:
+            result = run_tab_feed_mode(ui, root_dir, tab=settings["entry"], max_swipes=100_000, **common)
+        result["upload"] = publisher.summary()
     result["settings"] = settings
     return result

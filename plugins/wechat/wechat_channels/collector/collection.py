@@ -277,7 +277,7 @@ class LocalStore:
                 "device_id": device, "source_mode": source_mode or "RECOMMEND",
                 "collected_at": now_ms(), "upload_status": "local_only", "payload": payload,
             }
-            # Local drafts only; the upload queue is not built yet.
+            # 保存采集草稿，上报确认信息由 publisher 写入 metadata。
             db.execute("INSERT INTO video_drafts VALUES (?, ?, ?, 'local_only', ?)",
                        (key, event["event_id"], event["collected_at"], json.dumps(event, ensure_ascii=False)))
             return event, False

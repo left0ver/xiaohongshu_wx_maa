@@ -3,7 +3,7 @@
   "resource_name": "Portrait Channels resource",
   "project_description": "WeChat Channels automation: collect videos and comments by filter, inspect Channels messages, and like, follow, comment, reply or message from a video's share link. Every task runs on its own. Keep the phone unlocked, awake and in portrait, and use foreground mode.",
   "collect_channels_name": "Collect Channels videos",
-  "collect_channels_description": "Collects videos one by one from recommendations or search results: author nickname, full description, time and place, the author's profile and Channels ID, the copied share link, and every comment including replies. Optional filter words keep only matching videos and comments; the run stops after 50 misses in a row. Commenter profiles are not visited. Data is kept on the phone for now.",
+  "collect_channels_description": "从推荐或搜索结果逐条采集视频、评论及评论者资料。视频资料完成后上报一次，每位评论者资料取得后立即上报对应评论和用户信息。支持关键词筛选，未确认的数据保存在手机，后续任务启动时补报。",
   "collect_entry_label": "Entry",
   "collect_entry_recommend": "Recommended",
   "collect_entry_search": "Search",

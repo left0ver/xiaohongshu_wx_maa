@@ -24,6 +24,8 @@
 
 ## 当前进度与清单分工
 
+2026-11-12：采集任务默认启用评论者资料访问，支持 `commentOptions` 限制评论页数和资料访问数量。vivo V2131A / Android 12（Run `5ead042c-b5f7-4ba4-bf1c-c5066e1ec4e4`）与华为 Hebe-BD00 / Android 11（Run `9ba62485-ada0-4de6-bf0b-430afb1f74df`）各保存 1 VIDEO、3 COMMENT、2 USER；SQLite 完整性检查通过，COMMENT→VIDEO、USER→COMMENT 未关联记录均为 0。使用本轮真实记录在电脑及两台手机验证评论筛选后的 USER 关联与重复保存，结果通过。拟上报数据保存在 `data/collection-preview/*-search-users-upload.json`；此次验证涵盖本地数据，服务端 USER 上报仍按相关条目验收。
+
 本清单共 **42 项**，当前完成端到端勾选 **11 项**（批量互动、主页触达、消息中心巡检、每日配额限制、多运行模式切换与有界异常恢复已在真机完成端到端闭环验证；服务端上报、ACK 与远端 SQL 联调暂缓）。手机端本地实现进展如下：
 
 - **第一批 `VIDEO` 本地草稿已跑通并完成耗时优化与连续上滑采集（2026-11-06 至 2026-11-07）**：
@@ -99,6 +101,10 @@
 - [x] 自动模式（`AUTO`）：支持多阶段自动切换并写入对应 `source_mode`（如 `AUTO_RECOMMEND` / `AUTO_SEARCH` / `AUTO_FRIENDS` / `AUTO_FOLLOW` / `AUTO_CITY`）。（2026-11-07，`vivo V2131A` Run `b4bd6e8e` & `6e8449b7` 5 阶段自动切换与 SQLite 落库真机验证通过）
 
 ## 上报与可靠性
+
+实时采集上报验证（2026-11-12）：华为 Run `27eed506-a7f7-4444-838d-95e3e7f7ad2c` 分 4 次发送 1 VIDEO、3 COMMENT、2 USER，收到 6/6 ACK；vivo Run `594c9587-e266-47d5-8c5a-eea1308cd959` 分 5 次发送 1 VIDEO、4 COMMENT、2 USER，收到 7/7 ACK。视频各单独发送一次，评论和用户在资料访问完成时发送。重启后已确认事件发送数量为 0，实际认证失败的待发送记录保持完整。详细证据见[实时上报说明](wechat-upload.md)，正式 APK 和服务端 SQL 按各自范围验收。
+
+2026-11-12：`upload_wechat_events` 已完成函数封装，授权码由 `WECHAT_LICENSE_KEY` 提供。华为 Hebe-BD00 与 vivo V2131A 的手机 Python 3.13.15 各发送 1 VIDEO、1 COMMENT，首次调用与重传均收到 2/2 ACK；校验失败和输入保持不变检查通过。当前验收范围见[上报函数说明](wechat-upload.md)，下列持久化队列和完整任务验收继续按各自范围检查。
 
 - [ ] 作品、评论、用户事件统一持久化队列，按授权码隔离待发送记录，并与现有 `videos.sqlite3` 草稿平滑衔接。
 - [ ] 实时包及心跳携带 `discoveryEvents`（每包最多 200 条），仅在收到服务端 `discoveryAckIds` 后清理已确认事件；相同去重键重传保持相同 `event_id`。
