@@ -2350,14 +2350,16 @@ def collection_task_config(config: dict) -> dict:
     }
 
 
-def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | None = None) -> dict:
+def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | None = None,
+                        publisher_identity=None, upload_transport=None) -> dict:
     """采集符合筛选条件的视频、评论、分享链接及评论者资料。"""
     settings = collection_task_config(config)
     root_dir = Path(root_dir)
     data_dir = root_dir / "data" if (root_dir / "data").is_dir() else root_dir
     records = timings.path.parent / "uploads" if timings is not None else data_dir / "uploads"
     with WechatPublisher(data_dir / "videos.sqlite3", records=records,
-                         emit=timings.emit if timings is not None else None) as publisher:
+                         emit=timings.emit if timings is not None else None,
+                         identity=publisher_identity, transport=upload_transport) as publisher:
         publisher.flush()
         common = dict(
             count=settings["count"],

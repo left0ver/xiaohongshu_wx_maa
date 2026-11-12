@@ -106,7 +106,11 @@
 
 2026-11-12：`upload_wechat_events` 已完成函数封装，授权码由 `WECHAT_LICENSE_KEY` 提供。华为 Hebe-BD00 与 vivo V2131A 的手机 Python 3.13.15 各发送 1 VIDEO、1 COMMENT，首次调用与重传均收到 2/2 ACK；校验失败和输入保持不变检查通过。当前验收范围见[上报函数说明](wechat-upload.md)，下列持久化队列和完整任务验收继续按各自范围检查。
 
-- [ ] 作品、评论、用户事件统一持久化队列，按授权码隔离待发送记录，并与现有 `videos.sqlite3` 草稿平滑衔接。
-- [ ] 实时包及心跳携带 `discoveryEvents`（每包最多 200 条），仅在收到服务端 `discoveryAckIds` 后清理已确认事件；相同去重键重传保持相同 `event_id`。
+- [x] 作品、评论、用户事件通过 `videos.sqlite3` 保存，按授权码和设备区分待发送记录与 ACK。2026-11-13 两台手机通过 App 常驻连接完成采集与上传。
+- [x] 实时包携带 `discoveryEvents`（每包最多 200 条），收到 `discoveryAckIds` 后清理对应待发送事件。华为 5/5 ACK，vivo 6/6 ACK。真实数据库检查通过重复事件、冲突内容与父事件关联验证。
 - [x] 微信安全验证/验证码检测零点击暂停保护，以及弹窗/意外页面有界返回归位防死循环。（2026-11-07，`modes.py` `wait_for_captcha_resolution` + `bounded_recover_to_target` 真机跨页归位与单元测试验证通过）
 - [ ] 多机型分辨率真机验证、数据库 SQL 完整链路（`VIDEO → COMMENT → USER`）验收与正式 APK 打包验收。
+
+2026-11-13，App 接入 `laike-service` 的验证结果为华为 1 VIDEO、2 COMMENT、2 USER，vivo 1 VIDEO、4 COMMENT、1 USER。外部接口分页查询与数据库事件编号集合一致，后台页面分别展示 5 条和 6 条记录，父事件检查通过。APK debug 构建及两台手机安装通过，完整状态见 [服务接入验收清单](../spec/wechat-laike/checklist.md)。
+
+同日网络中断验证中，vivo 搜索任务保留两条未确认事件，恢复连接后自动取得 2/2 ACK，待上传数量恢复为零。服务端该设备累计 2 VIDEO、5 COMMENT、2 USER，API、数据库及后台页面均为九条，全部父事件存在。

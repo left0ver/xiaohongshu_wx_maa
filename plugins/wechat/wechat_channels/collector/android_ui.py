@@ -103,8 +103,9 @@ class PhoneController(CustomController):
 
 
 class MaaUi:
-    def __init__(self, tasker, evidence_dir, context=None, controls_exposed=False):
+    def __init__(self, tasker, evidence_dir, context=None, controls_exposed=False, progress=None):
         self.tasker = tasker
+        self.progress = progress
         # True while a screen reader makes WeChat publish its controls; an empty
         # tree is then a transition, not a page that never exposes controls.
         self.controls_exposed = controls_exposed
@@ -245,6 +246,8 @@ class MaaUi:
         return [tab for tab in (like, comment) if tab]
 
     def snapshot(self, label, author=None):
+        if self.progress is not None:
+            self.progress(label)
         attempts = []
         self.snapshot_frame = None
 
@@ -518,18 +521,14 @@ class MaaUi:
         if not helper.is_file():
             raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
         cmd = ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)]
-        # The helper occasionally hangs while connecting to UiAutomation (Hebe-BD00
-        # run ab7a1fa4 was killed at 10 s); a fresh process usually succeeds.
-        for attempt in range(3):
-            try:
-                run(cmd, timeout=timeout, stopped=self.stopped)
-                break
-            except Exception:
-                if self.stopped():
-                    raise InterruptedError("Collection was stopped")
-                if attempt == 2:
-                    raise
-                time.sleep(0.8)
+        try:
+            run(cmd, timeout=timeout, stopped=self.stopped)
+        except subprocess.TimeoutExpired:
+            # 超时后的输入结果由当前控件确认，避免再次输入产生重复文字。
+            controls = self.hierarchy(force=True)
+            edits = [line for line in controls if line.get("selector", {}).get("class", "").endswith("EditText")]
+            if len(edits) != 1 or edits[0].get("selector", {}).get("value") != str(text):
+                raise
         time.sleep(0.5)
 
     def controls_now(self):

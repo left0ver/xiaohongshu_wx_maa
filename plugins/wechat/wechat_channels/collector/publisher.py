@@ -29,13 +29,18 @@ def configure_upload(directory):
 
 
 class WechatPublisher:
-    def __init__(self, database, *, records, emit=None, server_url=DEFAULT_SERVER_URL, software_code="qiaomen"):
+    def __init__(self, database, *, records, emit=None, server_url=DEFAULT_SERVER_URL, software_code="qiaomen", identity=None, transport=None):
         database = Path(database)
         database.parent.mkdir(parents=True, exist_ok=True)
-        self.license_key, self.machine = configure_upload(database.parent)
+        self.remote_identity = identity
+        self.transport = transport or upload_wechat_events
+        if identity is None:
+            self.license_key, self.machine = configure_upload(database.parent)
+        else:
+            self.license_key, self.machine = identity["scope"], identity["machine"]
         self.server_url = server_url
         self.software_code = software_code
-        self.scope = _digest([server_url, software_code, self.license_key, self.machine])
+        self.scope = identity["scope"] if identity is not None else _digest([server_url, software_code, self.license_key, self.machine])
         self.prefix = f"wechat-upload:{self.scope}:"
         self.records = Path(records)
         self.records.mkdir(parents=True, exist_ok=True)
@@ -126,9 +131,9 @@ class WechatPublisher:
                                (prefix, prefix + "~")).fetchone()[0]
 
     def flush(self):
-        if os.environ["WECHAT_LICENSE_KEY"].strip().upper() != self.license_key:
+        if self.remote_identity is None and os.environ["WECHAT_LICENSE_KEY"].strip().upper() != self.license_key:
             raise RuntimeError("任务运行期间授权码发生变化")
-        if os.environ["WECHAT_DEVICE_ID"].strip() != self.machine:
+        if self.remote_identity is None and os.environ["WECHAT_DEVICE_ID"].strip() != self.machine:
             raise RuntimeError("任务运行期间设备身份发生变化")
         prefix = self.prefix + "pending:"
         acknowledged_ids = []
@@ -147,8 +152,8 @@ class WechatPublisher:
                         "eventTypes": [event["event_type"] for event in events],
                         "eventIds": [event["event_id"] for event in events], "sentAt": time.time_ns() // 1_000_000})
             self.sent_count += len(events)
-            receipt = upload_wechat_events(events, machine=self.machine, software_code=self.software_code,
-                                           server_url=self.server_url)
+            receipt = self.transport(events, machine=self.machine, software_code=self.software_code,
+                                     server_url=self.server_url)
             confirmed = set(receipt["discoveryAckIds"])
             with self.db:
                 for (key, _), event in zip(rows, events):
