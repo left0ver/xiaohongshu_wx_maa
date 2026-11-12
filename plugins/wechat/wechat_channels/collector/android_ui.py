@@ -18,6 +18,7 @@ from maa.resource import Resource
 from maa.tasker import Tasker
 from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
+from foreground import foreground
 from hierarchy import HierarchyUnavailable, choose_snapshot, refresh_target, text_lines
 from readiness import wait_basic_info
 from layout import line_height
@@ -29,13 +30,6 @@ MESSAGE_TAB_NODES = ("BatchMessagesLikeTab", "BatchMessagesCommentTab")
 
 def command(*args, timeout=15):
     return run(list(args), timeout=timeout, binary=True)
-
-
-def foreground(timeout=15):
-    activity = command("dumpsys", "activity", "activities", timeout=timeout).decode("utf-8", "replace")
-    resumed = re.findall(r"(?:mResumedActivity|topResumedActivity):[^\n]+", activity)
-    if not resumed or not all(" com.tencent.mm/" in line for line in resumed):
-        raise RuntimeError("WeChat is not the foreground app; no input was sent")
 
 
 class PhoneController(CustomController):
@@ -414,10 +408,16 @@ class MaaUi:
         box = detail.box
         self.click({"box": [box.x, box.y, box.w, box.h]})
 
-    def click(self, line):
+    def click(self, line, *, resolve=None):
         if self.tasker.stopping:
             raise RuntimeError("Collection was stopped")
-        if line.get("selector"):
+        if resolve is not None:
+            line = resolve(self.hierarchy(force=True))
+            if line is None:
+                return False
+            print(json.dumps({"kind": "resolvedControlClick", "resource": line["selector"]["resource"],
+                              "box": line["box"]}, ensure_ascii=False), flush=True)
+        elif line.get("selector"):
             controls = None
             for timeout in (6, 8):
                 try:
@@ -443,6 +443,7 @@ class MaaUi:
             raise RuntimeError("Click failed")
         self.navigation_stage = {"发现": "BatchChannelsEntry", "视频号": "BatchRecommended"}.get(line.get("text"))
         time.sleep(0.6)
+        return True
 
     def back(self):
         if self.tasker.stopping:
