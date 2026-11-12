@@ -249,7 +249,8 @@ class ResourceFlowTests(unittest.TestCase):
         param = self.task_param("collect_channels", {})
         self.assertEqual(param, {"entry": "recommend", "count": 10, "videoFilter": "", "commentFilter": ""})
         self.assertEqual(collection_task_config(param), {
-            "entry": "recommend", "keyword": "", "count": 10, "videoFilterWords": [], "commentFilterWords": []})
+            "entry": "recommend", "keyword": "", "count": 10, "videoFilterWords": [], "commentFilterWords": [],
+            "commentOptions": {"visitProfiles": True, "unlimited": True}})
 
     def test_collection_options_build_search_with_filters(self):
         param = self.task_param("collect_channels", {
