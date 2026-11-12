@@ -15,6 +15,7 @@ from collection import LocalStore, Timings, collect, ensure_feed
 from comments import collect_visible_comments, comment_limits
 from interactions import DailyQuotaStore, interact_work_and_comments
 from modes import run_collection_task, run_mode
+from publisher import configure_upload
 
 
 def _load_flag_config(argv, flag):
@@ -82,6 +83,8 @@ def main():
         # The two App tasks of 2026-11-11, with controls exposed as the App does.
         collect = "--collect" in sys.argv
         config = _load_flag_config(sys.argv, "--collect" if collect else "--link")
+        if collect:
+            configure_upload(root / "data")
         try:
             with ExitStack() as stack:
                 exposed = stack.enter_context(expose_controls(root / "data", timings.emit))

@@ -746,15 +746,10 @@ def save_comments(path, video_event, comments):
 
 
 def save_users(path, comment_events, profiles):
-    """Persist local-only USER drafts linked to their parent COMMENT event_id."""
+    """按 commentKey 将已访问的用户资料关联到本次保留的评论。"""
     if not profiles:
         return []
     by_dedupe = {event["dedupe_key"]: event for event in comment_events}
-    by_nick = {}
-    for event in comment_events:
-        nick = event.get("payload", {}).get("nickname")
-        if nick:
-            by_nick.setdefault(nick, event)
     events = []
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("""CREATE TABLE IF NOT EXISTS user_drafts (
@@ -764,18 +759,13 @@ def save_users(path, comment_events, profiles):
         for profile in profiles:
             if not profile.get("profileVisited") or not profile.get("nickname"):
                 continue
-            parent_event = (
-                by_dedupe.get(stored_key(profile.get("commentKey")))
-                or by_nick.get(profile.get("commentNickname"))
-                or by_nick.get(profile.get("nickname"))
-                or (comment_events[0] if comment_events else None)
-            )
+            parent_event = by_dedupe.get(stored_key(profile.get("commentKey")))
             if not parent_event:
                 continue
             parent_id = parent_event["event_id"]
             channels_id = profile.get("douyinId")
             if channels_id:
-                key = identity("channels", channels_id)
+                key = identity("channels", parent_id, channels_id)
             else:
                 key = identity(
                     "wechat-user",
@@ -971,6 +961,7 @@ def collect_visible_comments(
     max_reply_expansions=1,
     max_profiles=2,
     comment_filter_words=(),
+    publish_events=None,
 ):
     """Read the comment drawer page by page.
 
@@ -1010,6 +1001,34 @@ def collect_visible_comments(
             end_reason = "page_limit"
             complete = False
             last_parent = None
+            published_keys = set()
+
+            def canonical_key(key):
+                visited = set()
+                while key in aliases:
+                    if key in visited:
+                        raise ValueError("评论关联标识存在循环")
+                    visited.add(key)
+                    key = aliases[key]
+                return key
+
+            def publish_comment(key):
+                if publish_events is None:
+                    return
+                key = canonical_key(key)
+                if key in {canonical_key(saved) for saved in published_keys}:
+                    return
+                if key not in collected:
+                    raise ValueError("待上报评论缺少采集记录")
+                for profile in profiles:
+                    profile["commentKey"] = canonical_key(profile["commentKey"])
+                resolve_reply_targets(list(collected.values()), profiles)
+                selected = filter_comments([collected[key]], comment_filter_words, False)
+                if selected:
+                    comment_events = save_comments(path, video_event, selected)
+                    user_events = save_users(path, comment_events, profiles)
+                    publish_events([*comment_events, *user_events])
+                published_keys.add(key)
 
             def resolve_parent(reply):
                 """Parent of a reply whose thread header scrolled off the top of the page."""
@@ -1100,6 +1119,7 @@ def collect_visible_comments(
                             if c["key"] not in visited_comment_keys
                             and c["nickname"] != "[表情昵称]"
                             and not c.get("_isSelf")
+                            and (not comment_filter_words or matched_words(c.get("content"), comment_filter_words))
                             and not any(same_person(person, c) for person in attempted_people)
                         ]
                         if not remaining:
@@ -1108,12 +1128,12 @@ def collect_visible_comments(
                         visited_comment_keys.add(candidate["key"])
                         attempted_people.append(candidate)
                         current_drawer = parse(lines)
+                        absorb(current_drawer)
                         live_match = next(
                             (
                                 c
                                 for c in current_drawer["comments"]
-                                if c["key"] == candidate["key"]
-                                or nickname_matches(candidate["nickname"], c["nickname"])
+                                if canonical_key(c["key"]) == canonical_key(candidate["key"])
                             ),
                             None,
                         )
@@ -1139,12 +1159,17 @@ def collect_visible_comments(
                                     lines = ui.snapshot("comments-return")
                                 returned_drawer = parse(lines)
                                 anchor_ok = any(
-                                    c["key"] == live_match["key"]
-                                    or nickname_matches(live_match["nickname"], c["nickname"])
+                                    canonical_key(c["key"]) == canonical_key(live_match["key"])
+                                    or same_comment(c, live_match)
                                     for c in returned_drawer["comments"]
                                 )
                                 prof["returnVerified"] = anchor_ok
+                                if publish_events is not None and not anchor_ok:
+                                    raise RuntimeError("评论者资料采集后未确认返回原评论位置")
+                                absorb(returned_drawer)
+                                prof["commentKey"] = canonical_key(prof["commentKey"])
                                 profiles.append(prof)
+                                publish_comment(prof["commentKey"])
                         except CommenterProfileSkipped as skipped:
                             skipped_profiles.append(
                                 {
@@ -1154,9 +1179,13 @@ def collect_visible_comments(
                                 }
                             )
                             lines = skipped.recovered_lines or ui.snapshot("comments-after-skip")
+                            publish_comment(candidate["key"])
                         # Visits return to the same scroll position; keep reading from the fresh view.
                         drawer = parse(lines)
                         absorb(drawer)
+
+                for key in list(collected):
+                    publish_comment(key)
 
                 # 4. Determine whether collection is complete or should scroll to next page.
                 if drawer["empty"]:
@@ -1203,6 +1232,9 @@ def collect_visible_comments(
             ordered_comments = list(collected.values())
             if not ordered_comments and (target is None or target["text"] != "0") and not drawer["empty"]:
                 raise ValueError("No complete visible comments were recognized")
+
+            for key in list(collected):
+                publish_comment(key)
 
             resolve_reply_targets(ordered_comments, profiles)
             read_count = len(ordered_comments)

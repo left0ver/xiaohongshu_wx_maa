@@ -81,6 +81,9 @@ jobs:
         with:
           path: host/MaaTauriAndroid/.cache/maafw
           key: agent-${{ env.MAAFW_CORE_TAG }}-${{ env.MAAFW_VERSION }}
+      - name: Install WeChat upload dependencies
+        if: matrix.plugin == 'wechat'
+        run: python3 -m pip install -r plugins/wechat/wechat_channels/requirements.txt
       - name: Test plugin logic
         run: python3 -m unittest discover -s plugins/${{ matrix.plugin }}/tests
       - name: Build Java helper

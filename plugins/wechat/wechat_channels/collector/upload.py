@@ -22,6 +22,27 @@ def _encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def wechat_payload(kind, payload):
+    payload = json.loads(_encode(payload))
+    if kind == "VIDEO":
+        names = {"author_wechat_channels_id": "authorWechatChannelsId", "awemeId": "videoId"}
+        payload.pop("authorDouyinId", None)
+    elif kind == "COMMENT":
+        names = {"authorDouyinId": "authorWechatChannelsId", "replyToDouyinId": "replyToWechatChannelsId"}
+    else:
+        names = {"wechat_channels_id": "wechatChannelsId"}
+        payload.pop("douyinId", None)
+    for old, new in names.items():
+        if old in payload:
+            value = payload.pop(old)
+            if new in payload and payload[new] != value:
+                raise ValueError(f"身份字段 {new} 的值不一致")
+            payload[new] = value
+    if "missingFields" in payload:
+        payload["missingFields"] = [names.get(name, name) for name in payload["missingFields"]]
+    return payload
+
+
 def _prepare_events(drafts):
     events = []
     for draft in drafts:
@@ -47,6 +68,7 @@ def _prepare_events(drafts):
             raise ValueError("COMMENT 和 USER 必须提供有效的 parent_event_id")
         if not isinstance(payload, dict) or payload.get("platform") != "wechat":
             raise ValueError("payload.platform 必须是 wechat")
+        payload = wechat_payload(kind, payload)
         encoded = _encode(payload)
         if len(encoded.encode("utf-8")) > 20_000:
             raise ValueError("单条 payload 超过 20000 字节")
