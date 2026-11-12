@@ -540,6 +540,17 @@ class MaaUi:
         except HierarchyUnavailable:
             return []
 
+    def type_ascii(self, text):
+        """Type plain ASCII (a share link) with the system input command; unlike the
+        accessibility set-text helper it cannot hang on a UiAutomation connection."""
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        if not re.fullmatch(r"[A-Za-z0-9:/._~?=#-]+", text):
+            raise ValueError("type_ascii only types plain link characters")
+        foreground()
+        command("input", "text", text)
+        time.sleep(0.5)
+
     def hide_keyboard(self):
         """Close the input method if it is showing; back would otherwise leave the page."""
         # The keyboard can open a moment after sending, so it is checked twice.

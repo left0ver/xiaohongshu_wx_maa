@@ -121,12 +121,30 @@ def _edit_box(lines):
     return next((line for line in lines if line.get("selector", {}).get("class", "").endswith("EditText")), None)
 
 
+# Notices shown instead of the input box when the other side limits messages.
+DM_RESTRICTED = r"设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息|无法发送私信"
+
+# A chat read by OCR has no control classes; its input hint and notices identify it.
+CHAT_TEXT = r"可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息|^发送$"
+
+
+def _is_chat(lines):
+    return bool(_edit_box(lines) or find(lines, CHAT_TEXT))
+
+
 def open_file_helper(ui):
     """微信 tab → 搜索 → 文件传输助手 → its chat."""
     found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
     ui.click(found or {"text": "搜索", "box": [550, 70, 80, 80]})
     time.sleep(0.8)
-    ui.set_text(FILE_HELPER)
+    try:
+        ui.set_text(FILE_HELPER)
+    except Exception:
+        # The set-text helper can hang (Hebe-BD00, 2026-11-12); WeChat search
+        # also finds the contact by its pinyin.
+        if not hasattr(ui, "type_ascii"):
+            raise
+        ui.type_ascii("wenjianchuanshuzhushou")
     results = ui.snapshot("link-search-typed")
     box = _edit_box(results)
     below = box["box"][1] + box["box"][3] if box else 180
@@ -137,16 +155,23 @@ def open_file_helper(ui):
         raise ValueError("文件传输助手 was not found in WeChat search")
     ui.click(target)
     chat = ui.snapshot("link-chat")
-    if not (_edit_box(chat) or find(chat, r"^发送$")):
+    if not _is_chat(chat):
         raise ValueError("The 文件传输助手 chat did not open")
     return chat
+
+
+def _type(ui, text):
+    if hasattr(ui, "type_ascii") and LINK_RE.fullmatch(text):
+        ui.type_ascii(text)
+    else:
+        ui.set_text(text)
 
 
 def send_chat_text(ui, lines, text, label):
     """Type into the open chat and send; returns the lines after sending."""
     box = _edit_box(lines)
     ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
-    ui.set_text(text)
+    _type(ui, text)
     typed = ui.snapshot(f"{label}-typed")
     notice = find(typed, r"^我知道了$")
     if notice and not find(typed, r"^发送$"):
@@ -156,7 +181,7 @@ def send_chat_text(ui, lines, text, label):
         lines = ui.snapshot(f"{label}-after-notice")
         box = _edit_box(lines)
         ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
-        ui.set_text(text)
+        _type(ui, text)
         typed = ui.snapshot(f"{label}-typed")
     send = find(typed, r"^发送$")
     if not send:
@@ -205,16 +230,26 @@ def open_video_by_link(ui, link):
     for tap, offset in enumerate((16, -16)):
         ui.click({"text": link, "box": [x + w // 4 - 10, y + h // 2 + offset - 10, 20, 20]})
         time.sleep(2.0)
-        for attempt in range(3):
-            lines = ui.snapshot(f"link-video-{tap * 3 + attempt + 1}")
-            if _edit_box(lines):
+        # The link first loads in WeChat's browser, which then opens the video;
+        # on a slow network that took over 10 s (Hebe-BD00, 2026-11-12).
+        deadline = time.monotonic() + 15
+        attempt = 0
+        while True:
+            attempt += 1
+            lines = ui.snapshot(f"link-video-{tap * 10 + attempt}")
+            if _is_chat(lines):
                 # Still the chat: a keyboard that opened late swallowed the tap.
                 break
             try:
                 author_in_feed(lines, ui.height)
                 return lines
             except ValueError:
-                time.sleep(1.0)
+                pass
+            if time.monotonic() >= deadline:
+                # Give up on this page load: close the browser and tap again.
+                ui.back()
+                break
+            time.sleep(1.5)
         if hasattr(ui, "hide_keyboard"):
             ui.hide_keyboard()
     raise ValueError("The video did not open from its link")
@@ -232,7 +267,11 @@ def send_private_message(ui, profile_lines, text):
         raise ValueError("This profile has no 私信 button")
     ui.click(button)
     chat = ui.snapshot("dm-chat")
-    if not (_edit_box(chat) or find(chat, r"^发送$")):
+    restriction = find(chat, DM_RESTRICTED)
+    if restriction and not _edit_box(chat):
+        # e.g. 作者已设置关注7天后才能发消息: the chat has no input box at all.
+        raise ValueError(f"对方限制了私信：{restriction['text']}")
+    if not _is_chat(chat):
         raise ValueError("The private message chat did not open")
     sent = send_chat_text(ui, chat, text, "dm-chat")
     if not _sent_bubble(sent, text):

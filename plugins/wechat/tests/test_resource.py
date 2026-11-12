@@ -132,7 +132,12 @@ class ResourceFlowTests(unittest.TestCase):
                                  "link_follow_author", "link_message_author", "link_comment_video"])
         entries = [task["entry"] for task in INTERFACE["task"]]
         self.assertEqual(len(set(entries)), len(entries))
-        self.assertFalse(any(task.get("pipeline_override") for task in INTERFACE["task"]))
+        # Build 31 lost each node's defaults (link tasks ran without their action):
+        # every default must come from the task override.
+        for task in INTERFACE["task"]:
+            node_default = NODES[task["entry"]].get("custom_action_param") or {}
+            override = task.get("pipeline_override", {}).get(task["entry"], {}).get("custom_action_param", {})
+            self.assertEqual(override, node_default, task["name"])
         self.assertFalse(any(t["default_check"] for t in INTERFACE["task"][1:]))
 
     def test_standalone_like_is_idempotent_and_verifies_the_clicked_thumb(self):
@@ -235,10 +240,10 @@ class ResourceFlowTests(unittest.TestCase):
                 self.assertTrue(task.get("enabled", True))
 
     def task_param(self, name, values):
+        """What the agent receives: MaaFramework replaces the node's custom_action_param
+        with the override as a whole, so the node's own value never reaches the agent."""
         task = next(task for task in INTERFACE["task"] if task["name"] == name)
-        base = copy.deepcopy(NODES[task["entry"]].get("custom_action_param", {}))
-        merge(base, resolve_task(task, values).get(task["entry"], {}).get("custom_action_param", {}))
-        return base
+        return resolve_task(task, values).get(task["entry"], {}).get("custom_action_param", {})
 
     def test_collection_defaults_to_ten_recommended_videos_without_filters(self):
         param = self.task_param("collect_channels", {})
