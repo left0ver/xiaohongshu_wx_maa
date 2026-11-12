@@ -103,6 +103,12 @@ def text_lines(xml, width, height, containers=False):
         box = _bounds(node)
         if not box or not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
             continue
+        if node.get("class") == "android.widget.ProgressBar":
+            resource = node.get("resource-id", "")
+            lines.append({"text": "", "box": _scaled(box, width), "source": "hierarchy", "icon": True,
+                          "selector": {"attribute": "resource-id", "value": resource,
+                                       "resource": resource, "class": node.get("class")}})
+            continue
         descendants = [child for child in node.iter("node") if child is not node]
         kind = TEXT_CONTAINERS.get(_resource(node))
         # A bio control can hold only its first lines, so it is always read
@@ -134,6 +140,9 @@ def text_lines(xml, width, height, containers=False):
         selector = {"attribute": attribute, "value": node.get(attribute),
                     "resource": node.get("resource-id", ""), "class": node.get("class", "")}
         line = {"text": text, "box": scaled, "score": 1.0, "selector": selector, "source": "hierarchy"}
+        if _resource(node) == "bkl":
+            # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
+            line["controlBox"] = _scaled(box, width)
         if attribute == "content-desc" and text in ICON_DESCRIPTIONS:
             line["icon"] = True
         lines.append(line)

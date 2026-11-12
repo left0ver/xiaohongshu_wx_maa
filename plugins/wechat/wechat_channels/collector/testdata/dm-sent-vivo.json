@@ -1,0 +1,8 @@
+{
+  "runId": "89ee9497-949c-419d-936f-83a5c9d7be0a",
+  "label": "dm-chat-sent",
+  "lines": [
+    {"text":"你好，看到你的评论很有共鸣","box":[165,382,451,34],"source":"hierarchy","selector":{"attribute":"text","value":"你好，看到你的评论很有共鸣","resource":"com.tencent.mm:id/bkl","class":"android.widget.TextView"}},
+    {"text":"娇娇头像","box":[616,353,93,93],"source":"hierarchy","selector":{"attribute":"content-desc","value":"娇娇头像","resource":"com.tencent.mm:id/bk1","class":"android.widget.ImageView"}}
+  ]
+}

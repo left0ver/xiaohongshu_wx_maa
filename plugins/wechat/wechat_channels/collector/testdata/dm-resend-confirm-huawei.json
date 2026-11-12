@@ -1,0 +1,9 @@
+{
+  "runId": "1794462907517885926",
+  "label": "dm-delivery-1-0",
+  "lines": [
+    {"text":"重发该消息？","box":[0,1280,720,34],"source":"hierarchy","selector":{"attribute":"text","value":"重发该消息？","resource":"com.tencent.mm:id/odb","class":"android.widget.TextView"}},
+    {"text":"重发","box":[329,1371,62,42],"source":"hierarchy","selector":{"attribute":"text","value":"重发","resource":"com.tencent.mm:id/obc","class":"android.widget.TextView"}},
+    {"text":"取消","box":[0,1491,720,34],"source":"hierarchy","selector":{"attribute":"text","value":"取消","resource":"com.tencent.mm:id/b5u","class":"android.widget.TextView"}}
+  ]
+}

@@ -32,6 +32,9 @@ FILE_HELPER = "文件传输助手"
 # Every comment is searched, as far as the drawer scrolls.
 ALL_COMMENT_PAGES = 300
 TEXT_LIMIT = 500
+DM_SETTLE_SECONDS = 3.0
+DM_RESEND_ATTEMPTS = 3
+DM_DELIVERY_TIMEOUT = 60
 
 # action -> (needs a commenter nickname, needs a text)
 LINK_ACTIONS = {
@@ -271,6 +274,101 @@ def _profile_contact(ui, lines):
     return found or find(lines, r"^私信$")
 
 
+def private_message_state(lines, text):
+    controls = [line for line in lines if line.get("source") == "hierarchy"]
+    avatars = [line for line in controls
+               if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"
+               and line["box"][0] >= 360]
+
+    def same_row(first, second):
+        a = first.get("controlBox", first["box"])
+        b = second.get("controlBox", second["box"])
+        return max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
+
+    messages = [line for line in controls
+                if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bkl"
+                and line["selector"].get("value") == text
+                and any(same_row(line, avatar) for avatar in avatars)]
+    if not messages:
+        raise ValueError("无法从控件确认已发送的私信内容")
+    message = max(messages, key=lambda line: line["box"][1])
+    buttons = [line for line in controls if line.get("text") == "重发"
+               and line.get("selector", {}).get("class") == "android.widget.ImageView"
+               and same_row(line, message)
+               and line["box"][0] + line["box"][2] / 2 < message["box"][0]]
+    if len(buttons) > 1:
+        raise ValueError("无法唯一确定这条私信的重发按钮")
+    pending = any(line.get("selector", {}).get("class") == "android.widget.ProgressBar"
+                  and same_row(line, message)
+                  and line["box"][0] + line["box"][2] / 2 < message["box"][0] for line in controls)
+    return message, buttons[0] if buttons else None, pending
+
+
+def resend_confirmation(lines):
+    prompt = find(lines, r"^重发该消息[？?]$", lambda line: line.get("source") == "hierarchy"
+                  and line.get("selector", {}).get("resource") == "com.tencent.mm:id/odb")
+    if prompt is None:
+        return None
+    buttons = [line for line in lines if line.get("source") == "hierarchy" and line.get("text") == "重发"
+               and line.get("selector", {}).get("resource") == "com.tencent.mm:id/obc"]
+    if len(buttons) != 1:
+        raise ValueError("无法唯一确定重发确认窗口的按钮")
+    return buttons[0]
+
+
+def verify_private_message(ui, text):
+    resends = 0
+    confirmed = 0
+    awaiting_confirmation = False
+    delivery_deadline = time.monotonic() + DM_DELIVERY_TIMEOUT
+    while True:
+        deadline = time.monotonic() + DM_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            check_stopped(ui)
+            time.sleep(min(0.15, max(0, deadline - time.monotonic())))
+        check_stopped(ui)
+        lines = ui.hierarchy(force=True)
+        ui.record_snapshot(f"dm-delivery-{resends}-{confirmed}", lines, "hierarchy", [])
+        confirmation = resend_confirmation(lines)
+        if confirmation is not None:
+            if not awaiting_confirmation:
+                raise RuntimeError("重发确认窗口未关闭，无法确认发送结果")
+            check_stopped(ui)
+            ui.click(confirmation)
+            awaiting_confirmation = False
+            delivery_deadline = time.monotonic() + DM_DELIVERY_TIMEOUT
+            continue
+        awaiting_confirmation = False
+        _, button, pending = private_message_state(lines, text)
+        if button is None and pending:
+            confirmed = 0
+            if time.monotonic() >= delivery_deadline:
+                print(json.dumps({"kind": "privateMessageDelivery", "status": "pending_timeout",
+                                  "resendAttempts": resends}, ensure_ascii=False), flush=True)
+                raise RuntimeError("私信仍在发送中，无法确认发送成功")
+            continue
+        if button is None:
+            confirmed += 1
+            # 连续两次读取均没有失败标记，才确认发送结果。
+            if confirmed < 2:
+                continue
+            result = {"status": "sent", "verified": True, "resendAttempts": resends}
+            print(json.dumps({"kind": "privateMessageDelivery", **result}, ensure_ascii=False), flush=True)
+            return result
+        confirmed = 0
+        if resends >= DM_RESEND_ATTEMPTS:
+            print(json.dumps({"kind": "privateMessageDelivery", "status": "failed",
+                              "resendAttempts": resends}, ensure_ascii=False), flush=True)
+            raise RuntimeError(f"私信重发{resends}次后仍显示发送失败")
+        check_stopped(ui)
+        if not ui.click(button, resolve=lambda current: private_message_state(current, text)[1]):
+            continue
+        resends += 1
+        awaiting_confirmation = True
+        delivery_deadline = time.monotonic() + DM_DELIVERY_TIMEOUT
+        print(json.dumps({"kind": "privateMessageResend", "attempt": resends}, ensure_ascii=False), flush=True)
+
+
 def send_private_message(ui, profile_lines, text):
     """From an open Channels profile: 私信 → send text → back to the profile."""
     button = _profile_contact(ui, profile_lines)
@@ -284,16 +382,13 @@ def send_private_message(ui, profile_lines, text):
         raise ValueError(f"对方限制了私信：{restriction['text']}")
     if not _is_chat(chat):
         raise ValueError("The private message chat did not open")
-    sent = send_chat_text(ui, chat, text, "dm-chat")
-    if not _sent_bubble(sent, text):
-        # WeChat allows one message before the other side replies.
-        limit = find(sent, r"仅可发\s*1\s*条消息|发送失败|无法发送")
-        raise RuntimeError("The private message was not sent" + (f": {limit['text']}" if limit else ""))
+    send_chat_text(ui, chat, text, "dm-chat")
+    delivery = verify_private_message(ui, text)
     for _ in range(3):
         ui.back()
         lines = ui.snapshot("profile-follow-check")
         if classify_page_state(lines, ui.height) == "user_profile":
-            return lines
+            return delivery
     raise ValueError("Did not return to the profile after sending the message")
 
 
@@ -353,7 +448,7 @@ def run_link_task(ui, quota_store, ledger, config):
             report["status"] = "already_messaged"
         else:
             _, profile = _open_author_profile(ui, lines)
-            send_private_message(ui, profile, text)
+            report["message"] = send_private_message(ui, profile, text)
             ledger.add(key)
             report["status"] = "sent"
             _back_to_video(ui, "link-after-dm")
@@ -399,7 +494,7 @@ def run_link_task(ui, quota_store, ledger, config):
             if classify_page_state(profile, ui.height) != "user_profile":
                 ui.back()
                 raise ValueError(f"「{comment['nickname']}」没有开通视频号，资料卡上没有私信入口")
-            send_private_message(ui, profile, text)
+            report["message"] = send_private_message(ui, profile, text)
             ledger.add(key)
             report["status"] = "sent"
             report["commenter"] = comment["nickname"]

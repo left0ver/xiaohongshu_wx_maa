@@ -1,0 +1,365 @@
+{
+  "label": "dm-delivery-0-1",
+  "width": 720,
+  "height": 1559,
+  "roi": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "source": "hierarchy",
+  "attempts": [],
+  "lines": [
+    {
+      "text": "凌晨3:10",
+      "box": [
+        317,
+        294,
+        86,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "凌晨3:10",
+        "resource": "com.tencent.mm:id/br1",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "操作太频繁，请稍后再试。",
+      "box": [
+        210,
+        378,
+        299,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "操作太频繁，请稍后再试。",
+        "resource": "com.tencent.mm:id/bkl",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "controlBox": [
+        210,
+        355,
+        299,
+        80
+      ],
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "中午12:40",
+      "box": [
+        310,
+        460,
+        98,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "中午12:40",
+        "resource": "com.tencent.mm:id/br1",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "重发",
+      "box": [
+        179,
+        537,
+        79,
+        79
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "重发",
+        "resource": "com.tencent.mm:id/bqx",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "你好，做的菜看着好香",
+      "box": [
+        255,
+        559,
+        361,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "你好，做的菜看着好香",
+        "resource": "com.tencent.mm:id/bkl",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "controlBox": [
+        255,
+        537,
+        361,
+        79
+      ],
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "佳一讲商业头像",
+      "box": [
+        615,
+        529,
+        94,
+        94
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "佳一讲商业头像",
+        "resource": "com.tencent.mm:id/bk1",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "操作太频繁，请稍后再试。",
+      "box": [
+        210,
+        638,
+        299,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "操作太频繁，请稍后再试。",
+        "resource": "com.tencent.mm:id/bkl",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "controlBox": [
+        210,
+        615,
+        299,
+        80
+      ],
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "下午1:28",
+      "box": [
+        317,
+        720,
+        86,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "下午1:28",
+        "resource": "com.tencent.mm:id/br1",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "你好，做的菜看着好香",
+      "box": [
+        255,
+        818,
+        361,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "你好，做的菜看着好香",
+        "resource": "com.tencent.mm:id/bkl",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "controlBox": [
+        255,
+        796,
+        361,
+        79
+      ],
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "佳一讲商业头像",
+      "box": [
+        615,
+        789,
+        94,
+        94
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "佳一讲商业头像",
+        "resource": "com.tencent.mm:id/bk1",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "可按住 转文字",
+      "box": [
+        79,
+        1491,
+        482,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "可按住 转文字",
+        "resource": "com.tencent.mm:id/bkk",
+        "class": "android.widget.EditText"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "表情",
+      "box": [
+        564,
+        1469,
+        80,
+        80
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "表情",
+        "resource": "com.tencent.mm:id/bqr",
+        "class": "android.widget.ImageButton"
+      },
+      "source": "hierarchy",
+      "icon": true,
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "更多功能按钮，已折叠",
+      "box": [
+        637,
+        1469,
+        80,
+        80
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "更多功能按钮，已折叠",
+        "resource": "com.tencent.mm:id/bjz",
+        "class": "android.widget.ImageButton"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "对方回复前，仅可发1条消息。",
+      "box": [
+        101,
+        190,
+        340,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "对方回复前，仅可发1条消息。",
+        "resource": "",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "返回",
+      "box": [
+        0,
+        66,
+        57,
+        86
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "返回",
+        "resource": "com.tencent.mm:id/a4p",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "icon": true,
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "76",
+      "box": [
+        57,
+        91,
+        50,
+        36
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "76",
+        "resource": "com.tencent.mm:id/osp",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    },
+    {
+      "text": "更多信息",
+      "box": [
+        619,
+        66,
+        101,
+        86
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "更多信息",
+        "resource": "com.tencent.mm:id/fq",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "observationId": 17,
+      "observedAtUnixMs": 1794462427823
+    }
+  ],
+  "fields": {}
+}
