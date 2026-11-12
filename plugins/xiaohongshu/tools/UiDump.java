@@ -21,6 +21,12 @@ public final class UiDump {
     private static int emitted;
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 2 && args[0].equals("--paste-text")) {
+            if (args[1].isEmpty()) throw new IllegalArgumentException("粘贴内容不能为空");
+            pasteViaClipboard(args[1]);
+            System.out.println("text_pasted");
+            return;
+        }
         if (args.length == 2 && args[0].equals("--set-text")) {
             setText(args[1]);
             return;

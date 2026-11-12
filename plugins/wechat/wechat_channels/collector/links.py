@@ -161,10 +161,19 @@ def open_file_helper(ui):
 
 
 def _type(ui, text):
-    if hasattr(ui, "type_ascii") and LINK_RE.fullmatch(text):
-        ui.type_ascii(text)
+    if LINK_RE.fullmatch(text):
+        ui.paste_text(text)
     else:
         ui.set_text(text)
+
+
+def validate_pasted_link(lines, expected):
+    edits = [line for line in lines if line.get("source") == "hierarchy"
+             and line.get("selector", {}).get("class", "").endswith("EditText")]
+    if len(edits) != 1:
+        raise ValueError("无法唯一确认链接输入框，已停止发送")
+    if edits[0]["selector"].get("value") != expected:
+        raise ValueError("输入框内容与视频链接不一致，已停止发送")
 
 
 def send_chat_text(ui, lines, text, label):
@@ -183,6 +192,8 @@ def send_chat_text(ui, lines, text, label):
         ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
         _type(ui, text)
         typed = ui.snapshot(f"{label}-typed")
+    if LINK_RE.fullmatch(text):
+        validate_pasted_link(typed, text)
     send = find(typed, r"^发送$")
     if not send:
         raise ValueError("The 发送 button did not appear after typing")

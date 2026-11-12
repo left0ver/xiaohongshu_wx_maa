@@ -540,9 +540,20 @@ class MaaUi:
         except HierarchyUnavailable:
             return []
 
+    def paste_text(self, text, timeout=20):
+        if self.stopped():
+            raise InterruptedError("任务已停止")
+        if not isinstance(text, str) or not text:
+            raise ValueError("粘贴内容不能为空")
+        foreground()
+        helper = Path(__file__).with_name("ui-dump.dex")
+        if not helper.is_file():
+            raise RuntimeError("缺少 UI 采集组件")
+        run(["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin",
+             "xhs.UiDump", "--paste-text", text], timeout=timeout, stopped=self.stopped)
+
     def type_ascii(self, text):
-        """Type plain ASCII (a share link) with the system input command; unlike the
-        accessibility set-text helper it cannot hang on a UiAutomation connection."""
+        """通过系统按键输入 ASCII 搜索文字。"""
         if self.stopped():
             raise InterruptedError("Collection was stopped")
         if not re.fullmatch(r"[A-Za-z0-9:/._~?=#-]+", text):
