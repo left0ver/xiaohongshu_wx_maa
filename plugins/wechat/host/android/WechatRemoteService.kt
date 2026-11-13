@@ -173,22 +173,22 @@ class WechatRemoteService : Service() {
                     stopRequested = true
                     nativeStop()
                 }
-                queued.values.toList().forEach { finish(it.getString("commandId"), false, "任务已停止", JSONObject()) }
+                queued.values.toList().forEach { finish(it.getString("commandId"), false, "任务已停止") }
                 queued.clear()
-                worker.execute { finish(id, true, "任务已停止", JSONObject()) }
+                worker.execute { finish(id, true, "任务已停止") }
             }
             "SYNC_CONFIG" -> {
                 atomic(File(directory, "config.json"), command.getJSONObject("taskConfig").toString())
-                finish(id, true, "配置已同步", JSONObject())
+                finish(id, true, "配置已同步")
             }
-            "CLIENT_SELF_TEST" -> finish(id, RuntimeBridge.isEngineReady(), "手机运行环境检查完成", JSONObject())
+            "CLIENT_SELF_TEST" -> finish(id, RuntimeBridge.isEngineReady(), "手机运行环境检查完成")
             "WECHAT_CHANNELS_TASK" -> {
                 val generation = stopGeneration
                 queued[id] = command
                 send(JSONObject().put("type", "command_status").put("commandId", id).put("status", "QUEUED").put("message", "手机已接收任务"))
                 worker.execute { if (queued.remove(id) != null) execute(command, generation) }
             }
-            else -> finish(id, false, "不支持的任务类型", JSONObject())
+            else -> finish(id, false, "不支持的任务类型")
         }
     }
 
@@ -218,7 +218,7 @@ class WechatRemoteService : Service() {
                 if (state.optString("executionId") == executionId && state.optString("state") == "Idle") {
                     val result = taskResults.remove(id) ?: JSONObject().put("success", false).put("message", "执行结束但未取得业务结果")
                     val success = !stopRequested && state.optString("severity") != "error" && result.optBoolean("success")
-                    finish(id, success, if (stopRequested) "任务已停止" else result.optString("message", state.optString("message")), result)
+                    finish(id, success, if (stopRequested) "任务已停止" else result.optString("message", state.optString("message")))
                     break
                 }
             }
@@ -231,7 +231,7 @@ class WechatRemoteService : Service() {
                     Thread.sleep(100)
                 }
             }
-            finish(id, false, error.message ?: error.javaClass.simpleName, JSONObject())
+            finish(id, false, error.message ?: error.javaClass.simpleName)
             submitDiagnostic(id, error)
         } finally { executing = false; current = ""; bridgeCommand = ""; lastProgress = "等待任务" }
     }
@@ -281,9 +281,9 @@ class WechatRemoteService : Service() {
         finally { bridgeCommand = "" }
     }
 
-    @Synchronized private fun finish(id: String, success: Boolean, message: String, result: JSONObject) {
+    @Synchronized private fun finish(id: String, success: Boolean, message: String) {
         val receipt = JSONObject().put("type", "command_ack").put("commandId", id).put("success", success)
-            .put("message", message.take(300)).put("result", result)
+            .put("message", message.take(300))
         atomic(File(directory, "$id.done.json"), receipt.toString())
         atomic(File(directory, "$id.receipt.json"), receipt.toString())
         File(directory, "$id.active.json").delete()
@@ -299,7 +299,7 @@ class WechatRemoteService : Service() {
         }
         directory.listFiles().orEmpty().filter { it.name.endsWith(".active.json") }.forEach {
             val item = JSONObject(it.readText())
-            finish(item.getString("commandId"), false, "App 重新启动，原任务已中断；请查看已保存的数据和操作记录", JSONObject().put("interrupted", true))
+            finish(item.getString("commandId"), false, "App 重新启动，原任务已中断；请查看已保存的数据和操作记录")
         }
     }
 

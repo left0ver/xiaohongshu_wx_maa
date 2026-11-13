@@ -17,7 +17,7 @@
 | 接口 | 用途 |
 | --- | --- |
 | `POST /api/v1/external/tasks` | 创建启动、停止、同步或指定视频号操作 |
-| `GET /api/v1/external/tasks/{taskId}` | 查询状态与结构化 `result` |
+| `GET /api/v1/external/tasks/{taskId}` | 查询任务状态和 `resultMessage` |
 | `GET /api/v1/external/tasks?licenseKey=…` | 查询授权码的任务记录 |
 | `GET /api/v1/external/content-events?licenseKey=…` | 按游标读取 VIDEO、COMMENT、USER |
 | `GET /api/v1/external/content-events/stream` | 现有全局追加事件流 |
@@ -67,13 +67,13 @@
 
 采集入口为 `recommend` 或 `search`，搜索需要 `keyword`。`count` 为 1 至 500。`commentOptions` 包含 `unlimited`、`visitProfiles`、`maxPages`、`maxReplyExpansions`、`maxProfiles`。评论和私信文字最多 500 字。
 
-结果通过 `result.success`、`result.message` 和各操作的确认字段说明执行情况。采集结果另有 `processedCount`、`requestedCount`、`commentCount`、`profileCount` 和 `upload`。`commentCollectionsComplete` 表示是否取得全部评论，按页数限制结束时可以为 `false`。
+手机通过 `command_ack` 上报 `commandId`、`success` 和 `message`。任务查询与回调通过 `status` 和 `resultMessage` 说明执行情况。采集明细通过 WebSocket 上报并保存到内容事件表。
 
 平台限制、资料不可访问、权限不足等情况通过任务失败结果返回。手机执行过程中保留操作记录和上传确认，终止状态收到服务端确认后清除待发送回执。
 
 ## 构建与运行
 
-服务端使用 Java 25，沿用现有数据库、Redis 和启动配置。数据库初始化增加 `remote_command.result_json`，事件复用 `content_discovery_event` 及现有变更记录。
+服务端使用 Java 25，沿用现有数据库、Redis 和启动配置。任务结果使用 `remote_command` 的状态和说明字段，事件复用 `content_discovery_event` 及现有变更记录。
 
 Android CI 使用固定宿主版本，依次应用 `patches/maa-tauri-android.patch` 和 `patches/wechat-remote-host.patch`。新增 Kotlin 与 Rust 源码位于 `plugins/wechat/host/`。正式版本使用已有签名配置及 `WECHAT_CHANNELS` 更新渠道。
 
