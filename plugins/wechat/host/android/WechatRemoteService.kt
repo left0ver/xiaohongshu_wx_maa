@@ -58,12 +58,21 @@ class WechatRemoteService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(CHANNEL, "视频号远程任务", NotificationManager.IMPORTANCE_LOW))
-        val launch = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        startForeground(9401, NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("视频号助手").setContentText("正在连接任务服务").setContentIntent(launch).setOngoing(true).build())
+        startForeground(9401, taskNotification())
         AppPreparationManager.start(this)
+    }
+
+    private fun taskNotification(): android.app.Notification {
+        val preferences = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val appLabel = applicationInfo.loadLabel(packageManager).toString()
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel(CHANNEL,
+            preferences.getString("notification_channel", appLabel), NotificationManager.IMPORTANCE_LOW))
+        val launch = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle(preferences.getString("notification_title", appLabel))
+            .setContentText(preferences.getString("notification_connecting", ""))
+            .setContentIntent(launch).setOngoing(true).build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -91,7 +100,7 @@ class WechatRemoteService : Service() {
                         .put("status", if (executing) "RUNNING" else "QUEUED").put("message", lastProgress))
                 }
             } catch (error: Exception) {
-                connectionState = error.message?.take(160) ?: "连接失败：${error.javaClass.simpleName}"
+                connectionState = "连接失败：${error.message?.take(160) ?: error.javaClass.simpleName}"
                 socket?.cancel()
                 socket = null
                 authorized = false
@@ -265,7 +274,7 @@ class WechatRemoteService : Service() {
                     break
                 }
             }
-        } catch (error: Exception) { lastProgress = error.message ?: "数据同步失败" }
+        } catch (error: Exception) { lastProgress = "数据同步失败：${error.message ?: error.javaClass.simpleName}" }
         finally { bridgeCommand = "" }
     }
 
@@ -339,7 +348,7 @@ class WechatRemoteService : Service() {
                 }
                 check(checksum.digest().joinToString("") { "%02x".format(it) } == expected) { "更新包校验失败" }
                 RuntimeBridge.installUpdateApk(destination.absolutePath)
-            } catch (error: Exception) { connectionState = error.message ?: "更新失败" }
+            } catch (error: Exception) { connectionState = "更新失败：${error.message ?: error.javaClass.simpleName}" }
         }
     }
 
@@ -397,6 +406,20 @@ class WechatRemoteService : Service() {
 
         @JvmStatic fun configure(context: Context, source: String): String {
             val value = JSONObject(source)
+            if (value.has("notificationText")) {
+                val text = value.getJSONObject("notificationText")
+                val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                for (field in listOf("channel", "title", "connecting")) {
+                    val translated = text.getString(field)
+                    require(translated.isNotBlank() && translated.length <= 160) { "通知设置无效" }
+                    preferences.putString("notification_$field", translated)
+                }
+                check(preferences.commit()) { "通知设置保存失败" }
+                instance?.let { service ->
+                    service.getSystemService(NotificationManager::class.java).notify(9401, service.taskNotification())
+                }
+                return state(context)
+            }
             if (value.optBoolean("installUpdate")) { requireNotNull(instance).installUpdate(); return state(context) }
             if (value.optBoolean("disconnect")) {
                 context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("enabled", false).apply()
