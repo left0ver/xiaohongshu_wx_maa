@@ -476,8 +476,8 @@
 +    setBusy(true); setError("");
 +    try {
 +      const next = await invoke<RemoteState>("wechat_account", {config: {server, softwareCode: software, licenseKey: license,
-+        disconnect, resume: !license.trim() && state?.configured}});
-+      setState(next); setLicense("");
++        disconnect}});
++      setState(next); setServer(next.server); setSoftware(next.softwareCode); setLicense("");
 +    } catch (failure) { setError(String(failure)); }
 +    finally { setBusy(false); }
 +  }

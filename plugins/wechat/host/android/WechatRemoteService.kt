@@ -28,8 +28,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class WechatRemoteService : Service() {
-    private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
     private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private val worker = Executors.newSingleThreadExecutor()
     private val receipts = ConcurrentHashMap<String, CompletableFuture<JSONObject>>()
@@ -110,10 +108,8 @@ class WechatRemoteService : Service() {
     }
 
     private fun connect() {
-        val verified = post("/api/v1/licenses/verify", identity())
-        require(verified.optInt("code") == 200) { verified.optString("msg", "授权验证失败") }
-        require(verified.getJSONObject("data").getString("platformCode") == "WECHAT_CHANNELS") { "授权码平台不匹配" }
-        expiresAt = verified.getJSONObject("data").getLong("endTime")
+        val verified = verifyAccount(account)
+        expiresAt = verified.getLong("endTime")
         val address = account.getString("server").replaceFirst("https://", "wss://").replaceFirst("http://", "ws://") + "/ws/telemetry"
         connectionState = "连接中"
         socket = http.newWebSocket(Request.Builder().url(address).build(), object : WebSocketListener() {
@@ -149,9 +145,7 @@ class WechatRemoteService : Service() {
         if (socket === connection) { socket = null; authorized = false; connectionState = "等待重新连接" }
     }
 
-    private fun identity() = JSONObject().put("softwareCode", account.getString("softwareCode"))
-        .put("licenseKey", account.getString("licenseKey")).put("machine", account.getString("machine"))
-        .put("clientApp", "WECHAT_CHANNELS")
+    private fun identity() = identity(account)
 
     private fun envelope(): JSONObject {
         val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "1.0.0"
@@ -318,15 +312,7 @@ class WechatRemoteService : Service() {
         }
     }
 
-    private fun post(path: String, body: JSONObject): JSONObject {
-        val request = Request.Builder().url(account.getString("server") + path)
-            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
-        http.newCall(request).execute().use { response ->
-            val data = JSONObject(requireNotNull(response.body).string())
-            require(response.isSuccessful) { data.optString("msg", data.optString("message", "请求失败")) }
-            return data
-        }
-    }
+    private fun post(path: String, body: JSONObject): JSONObject = post(account, path, body)
 
     private fun send(message: JSONObject) { check(socket?.send(message.toString()) == true) { "服务连接不可用" } }
 
@@ -405,6 +391,8 @@ class WechatRemoteService : Service() {
     companion object {
         private const val PREFS = "wechat_remote_account"
         private const val CHANNEL = "wechat_remote"
+        private val http = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
         @Volatile private var instance: WechatRemoteService? = null
         @Volatile private var connectionState = "未连接"
         @Volatile private var lastProgress = "等待任务"
@@ -436,20 +424,51 @@ class WechatRemoteService : Service() {
             }
             check(instance?.current.isNullOrEmpty()) { "请先停止正在执行的任务" }
             check(instance == null) { "请先停止接单后重新登录" }
-            if (value.optBoolean("resume")) { restore(context); return state(context) }
-            val server = value.getString("server").trim().trimEnd('/')
+            val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val encryptedAccount = preferences.getString("account", null)
+            val previous = encryptedAccount?.let { JSONObject(SecretBridge.decrypt(it)) }
+            val server = value.optString("server", previous?.optString("server") ?: "").trim().trimEnd('/')
             val uri = java.net.URI(server)
             require(uri.scheme == "https" || BuildConfig.DEBUG && uri.scheme == "http") { "服务地址需要 HTTPS" }
             require(uri.host != null && uri.userInfo == null && uri.fragment == null && uri.query == null) { "服务地址无效" }
-            val license = value.getString("licenseKey").trim().uppercase(java.util.Locale.ROOT)
+            val enteredLicense = value.optString("licenseKey", "").trim()
+            val license = enteredLicense.ifEmpty { previous?.optString("licenseKey") ?: "" }
+                .uppercase(java.util.Locale.ROOT)
             require(license.isNotEmpty() && license.length <= 64) { "请填写授权码" }
-            val saved = JSONObject().put("server", server).put("licenseKey", license)
-                .put("softwareCode", value.optString("softwareCode", "qiaomen"))
+            val software = value.optString("softwareCode", previous?.optString("softwareCode") ?: "qiaomen").trim()
+            val candidate = JSONObject().put("server", server).put("licenseKey", license)
+                .put("softwareCode", software)
                 .put("machine", Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID))
-            val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            check(preferences.edit().putString("account", SecretBridge.encrypt(saved.toString())).putBoolean("enabled", true).commit())
+            val verifiedExpiry = verifyAccount(candidate).getLong("endTime")
+            check(preferences.edit().putString("account", SecretBridge.encrypt(candidate.toString())).putBoolean("enabled", true).commit())
+            expiresAt = verifiedExpiry
+            connectionState = "连接中"
             context.startForegroundService(Intent(context, WechatRemoteService::class.java))
             return state(context)
+        }
+
+        private fun identity(account: JSONObject) = JSONObject()
+            .put("softwareCode", account.getString("softwareCode"))
+            .put("licenseKey", account.getString("licenseKey"))
+            .put("machine", account.getString("machine"))
+            .put("clientApp", "WECHAT_CHANNELS")
+
+        private fun verifyAccount(account: JSONObject): JSONObject {
+            val verified = post(account, "/api/v1/licenses/verify", identity(account))
+            require(verified.optInt("code") == 200) { verified.optString("msg", "授权验证失败") }
+            val data = verified.getJSONObject("data")
+            require(data.getString("platformCode") == "WECHAT_CHANNELS") { "授权码平台不匹配" }
+            return data
+        }
+
+        private fun post(account: JSONObject, path: String, body: JSONObject): JSONObject {
+            val request = Request.Builder().url(account.getString("server") + path)
+                .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            http.newCall(request).execute().use { response ->
+                val data = JSONObject(requireNotNull(response.body).string())
+                require(response.isSuccessful) { data.optString("msg", data.optString("message", "请求失败")) }
+                return data
+            }
         }
 
         @JvmStatic fun restore(context: Context) {
