@@ -67,6 +67,35 @@
      super.onCreate(savedInstanceState)
 +    WechatRemoteService.restoreIfEnabled(this)
    }
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/ScheduleExecutionService.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/ScheduleExecutionService.kt
+@@ -88,11 +88,8 @@
+     }
+ 
+     private fun launchMainActivityToInitialize() {
+-        val intent = Intent(this, MainActivity::class.java).apply {
+-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+-        }
+         runCatching {
+-            startActivity(intent)
++            initializeApp(this)
+         }.onFailure { error ->
+             android.util.Log.e(TAG, "Could not launch MainActivity for schedule initialization", error)
+         }
+@@ -156,6 +153,13 @@
+         private const val APP_READY_TIMEOUT_MS = 120_000L
+         private const val APP_READY_POLL_INTERVAL_MS = 500L
+ 
++        fun initializeApp(context: Context) {
++            if (RuntimeBridge.isAppReady()) return
++            context.startActivity(Intent(context, MainActivity::class.java).apply {
++                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++            })
++        }
++
+         fun start(context: Context, ruleId: String, scheduledTimeMs: Long) {
+             if (!SpecialUseFgsGate.canStart(context, ScheduleExecutionService::class.java)) {
+                 RuntimeBridge.recordScheduleForegroundServiceDenied(ruleId, scheduledTimeMs)
 --- a/src-tauri/gen/android/app/src/main/AndroidManifest.xml
 +++ b/src-tauri/gen/android/app/src/main/AndroidManifest.xml
 @@ -49,2 +49,6 @@
@@ -107,7 +136,7 @@
        <VersionCard
 --- a/src/lib/i18n.ts
 +++ b/src/lib/i18n.ts
-@@ -35,2 +35,77 @@
+@@ -35,2 +35,79 @@
  const en = {
 +  wechatRemoteTitle: "Remote tasks",
 +  wechatLicense: "License code",
@@ -132,6 +161,8 @@
 +  wechatWaiting: "Waiting for tasks",
 +  wechatPreparing: "Preparing the task",
 +  wechatPreparingRuntime: "Preparing the automation runtime",
++  wechatInitializingApp: "Initializing WeChat Channels assistant",
++  wechatAppInitializationTimeout: "Background initialization did not finish. Open WeChat Channels assistant and check background launch permission.",
 +  wechatRunning: "Running the WeChat Channels task",
 +  wechatConnectionFailed: "Connection failed: {detail}",
 +  wechatCommunicationFailed: "Task communication failed: {detail}",
@@ -185,7 +216,7 @@
 +  wechatOperationFinished: "The WeChat Channels operation has finished",
 +  wechatInspectionFinished: "Message inspection has finished",
    // Bottom navigation
-@@ -556,2 +631,77 @@
+@@ -556,2 +633,79 @@
  const zh: Record<MessageKey, string> = {
 +  wechatRemoteTitle: "服务端任务",
 +  wechatLicense: "授权码",
@@ -210,6 +241,8 @@
 +  wechatWaiting: "等待任务",
 +  wechatPreparing: "准备执行",
 +  wechatPreparingRuntime: "正在准备手机运行环境",
++  wechatInitializingApp: "正在初始化视频号助手",
++  wechatAppInitializationTimeout: "后台初始化未完成，请打开视频号助手并检查后台启动权限",
 +  wechatRunning: "正在执行视频号任务",
 +  wechatConnectionFailed: "连接失败：{detail}",
 +  wechatCommunicationFailed: "任务通信异常：{detail}",
@@ -263,7 +296,7 @@
 +  wechatOperationFinished: "视频号操作已完成",
 +  wechatInspectionFinished: "消息巡检已结束",
    navHome: "首页",
-@@ -1162,6 +1312,112 @@
+@@ -1162,6 +1316,114 @@
    return message;
  }
  
@@ -277,6 +310,8 @@
 +  "等待任务": "wechatWaiting",
 +  "准备执行": "wechatPreparing",
 +  "正在准备手机运行环境": "wechatPreparingRuntime",
++  "正在初始化视频号助手": "wechatInitializingApp",
++  "后台初始化未完成，请打开视频号助手并检查后台启动权限": "wechatAppInitializationTimeout",
 +  "正在执行视频号任务": "wechatRunning",
 +  "正在执行": "wechatRunning",
 +  "授权验证失败": "wechatAuthorizationFailed",
@@ -481,7 +516,7 @@
    localizeRunEvent,
 +  localizeWechatMessage,
    projectLanguage,
-@@ -138,3 +139,48 @@
+@@ -138,3 +139,52 @@
      );
 +  });
 +});
@@ -495,6 +530,8 @@
 +    expect(localizeWechatMessage("等待重新连接", english)).toBe("Waiting to reconnect");
 +    expect(localizeWechatMessage("等待任务", english)).toBe("Waiting for tasks");
 +    expect(localizeWechatMessage("正在准备手机运行环境", english)).toBe("Preparing the automation runtime");
++    expect(localizeWechatMessage("正在初始化视频号助手", english))
++      .toBe("Initializing WeChat Channels assistant");
 +    expect(localizeWechatMessage("正在执行视频号任务", english)).toBe("Running the WeChat Channels task");
 +    const chinese = resolveLanguage("zh", ["en-US"]);
 +    expect(localizeWechatMessage("在线", chinese)).toBe("在线");
@@ -520,6 +557,8 @@
 +      .toBe("The update failed: The update checksum does not match");
 +    expect(localizeWechatMessage("数据同步失败：手机运行环境准备超时", "zh"))
 +      .toBe("数据同步失败：手机运行环境准备超时");
++    expect(localizeWechatMessage("后台初始化未完成，请打开视频号助手并检查后台启动权限", "en"))
++      .toBe("Background initialization did not finish. Open WeChat Channels assistant and check background launch permission.");
 +  });
 +
 +  it("preserves server business messages and reuses host diagnostics", () => {

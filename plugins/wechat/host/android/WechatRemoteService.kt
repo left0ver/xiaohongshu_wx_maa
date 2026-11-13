@@ -162,7 +162,8 @@ class WechatRemoteService : Service() {
             .put("taskState", if (current.isEmpty()) "IDLE" else if (executing) "RUNNING" else "QUEUED")
             .put("queuedCommandIds", JSONArray(queued.keys.toList())).put("recoverableCommandIds", JSONArray(terminal.keys.toList()))
             .put("activeCommandIds", JSONArray(queued.keys.toList() + listOf(current).filter { it.isNotEmpty() }))
-            .put("screenCaptureActive", RuntimeBridge.isEngineReady() && RuntimeBridge.privilegedControlState() == 3)
+            .put("screenCaptureActive", RuntimeBridge.isAppReady() && RuntimeBridge.isProjectReady()
+                && RuntimeBridge.isEngineReady() && RuntimeBridge.privilegedControlState() == 3)
     }
 
     private fun accept(command: JSONObject) {
@@ -243,10 +244,18 @@ class WechatRemoteService : Service() {
 
     private fun awaitPreparation(generation: Long) {
         val deadline = android.os.SystemClock.elapsedRealtime() + 180_000
-        while (!RuntimeBridge.isProjectReady() || !RuntimeBridge.isEngineReady()) {
+        check(generation == stopGeneration) { "任务已停止" }
+        if (!RuntimeBridge.isAppReady()) {
+            lastProgress = "正在初始化视频号助手"
+            ScheduleExecutionService.initializeApp(this)
+        }
+        while (!RuntimeBridge.isAppReady() || !RuntimeBridge.isProjectReady() || !RuntimeBridge.isEngineReady()) {
             check(generation == stopGeneration) { "任务已停止" }
             check(!RuntimeBridge.isPreparationFailed()) { "手机运行环境准备失败，请查看首页提示" }
-            check(android.os.SystemClock.elapsedRealtime() < deadline) { "手机运行环境准备超时" }
+            check(android.os.SystemClock.elapsedRealtime() < deadline) {
+                if (RuntimeBridge.isAppReady()) "手机运行环境准备超时"
+                else "后台初始化未完成，请打开视频号助手并检查后台启动权限"
+            }
             Thread.sleep(100)
         }
         check(generation == stopGeneration) { "任务已停止" }
