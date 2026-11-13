@@ -66,7 +66,7 @@ def verify(directory, properties):
             page = session.get(base + "/admin/wechat/tasks", params={"licenseId": license_id}, timeout=15)
             page.raise_for_status()
             dom = BeautifulSoup(page.text, "html.parser")
-            shown = dom.select("table tbody tr details")
+            shown = dom.select("table tbody tr[data-event-type]")
             assert len(shown) == min(30, len(events))
             proofs.append({"cardIndex": index, "eventCounts": dict(Counter(item["eventType"] for item in events)),
                            "apiMatchesDatabase": True, "parentsPresent": True, "visibleRows": len(shown),
