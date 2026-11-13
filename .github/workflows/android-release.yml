@@ -34,6 +34,9 @@ jobs:
           persist-credentials: false
       - name: Apply host patch
         run: git -C host/MaaTauriAndroid apply "$GITHUB_WORKSPACE/patches/maa-tauri-android.patch"
+      - name: Apply WeChat service integration
+        if: matrix.plugin == 'wechat'
+        run: git -C host/MaaTauriAndroid apply "$GITHUB_WORKSPACE/patches/wechat-remote-host.patch"
       - uses: pnpm/action-setup@v6
         with:
           version: 11

@@ -126,6 +126,13 @@ def _edit_box(lines):
 
 # Notices shown instead of the input box when the other side limits messages.
 DM_RESTRICTED = r"设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息|无法发送私信"
+DM_RATE_LIMIT = r"频繁发送私信|私信.{0,8}频繁|请明天再试|私信.{0,8}达到.{0,8}上限"
+
+
+def require_private_message_available(lines):
+    restriction = find(lines, DM_RATE_LIMIT)
+    if restriction:
+        raise RuntimeError("微信限制了私信发送：" + restriction["text"])
 
 # A chat read by OCR has no control classes; its input hint and notices identify it.
 CHAT_TEXT = r"可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息|^发送$"
@@ -140,14 +147,7 @@ def open_file_helper(ui):
     found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
     ui.click(found or {"text": "搜索", "box": [550, 70, 80, 80]})
     time.sleep(0.8)
-    try:
-        ui.set_text(FILE_HELPER)
-    except Exception:
-        # The set-text helper can hang (Hebe-BD00, 2026-11-12); WeChat search
-        # also finds the contact by its pinyin.
-        if not hasattr(ui, "type_ascii"):
-            raise
-        ui.type_ascii("wenjianchuanshuzhushou")
+    ui.set_text(FILE_HELPER)
     results = ui.snapshot("link-search-typed")
     box = _edit_box(results)
     below = box["box"][1] + box["box"][3] if box else 180
@@ -340,6 +340,8 @@ def verify_private_message(ui, text):
             continue
         awaiting_confirmation = False
         _, button, pending = private_message_state(lines, text)
+        if button is not None:
+            require_private_message_available(lines)
         if button is None and pending:
             confirmed = 0
             if time.monotonic() >= delivery_deadline:

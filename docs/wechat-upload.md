@@ -1,6 +1,6 @@
 # 微信视频号实时上报
 
-采集任务通过 `collector/publisher.py` 中的 `WechatPublisher` 管理待发送事件和 ACK，通过 `collector/upload.py` 的 `upload_wechat_events` 发送 WebSocket 请求。
+采集任务通过 `collector/publisher.py` 中的 `WechatPublisher` 管理待发送事件和 ACK。服务端下发的任务通过 `WechatRemoteService` 的常驻 WebSocket 上传数据，手机命令行任务通过 `collector/upload.py` 的 `upload_wechat_events` 上传。
 
 视频资料取得并保存后，立即发送一条 `VIDEO`。每位评论者资料取得并确认返回原评论位置后，立即发送该条 `COMMENT` 和对应的 `USER`。达到资料访问数量限制或资料无法取得时，已取得的评论单独发送。三种类型保持独立事件及父子关联。
 
@@ -18,6 +18,10 @@ result = upload_wechat_events(
 ```
 
 ## 配置
+
+服务端任务在 App 中填写服务地址、软件代码和授权码。App 使用 Android Keystore 保存授权信息，绑定设备并验证 `WECHAT_CHANNELS` 平台。Python 任务通过本机通信端口上传，使用 App 提供的设备身份和授权范围。任务、草稿与 ACK 保存在 `WECHAT_DATA_DIR/remote/<scope>/`，无需配置环境变量文件。设备重新连接后自动同步待上传数据。任务参数和外部调用示例见 [服务接入说明](../spec/wechat-laike/integration.md)。
+
+以下环境变量用于手机命令行采集。
 
 授权码通过 `WECHAT_LICENSE_KEY` 提供，绑定设备的 Android ID 通过 `WECHAT_DEVICE_ID` 提供。根目录 `.env.example` 给出变量名称，实际值保存在 Git 忽略的 `.env` 中。本地运行前，在同一个 shell 中导入：
 

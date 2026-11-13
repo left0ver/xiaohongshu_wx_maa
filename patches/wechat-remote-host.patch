@@ -1,0 +1,571 @@
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -22,2 +22,4 @@
+ mod version;
++#[path = "../../../../plugins/wechat/host/wechat_remote.rs"]
++mod wechat_remote;
+ 
+@@ -2894,2 +2896,3 @@
+     task_selection: Option<TaskRunSelection>,
++    remote_task: Option<serde_json::Value>,
+ ) -> Result<StartRunStatus, AppError> {
+@@ -2921,2 +2924,8 @@
+     let mut configuration = state.configuration()?;
++    if remote_task.is_some() {
++        configuration.foreground_mode = true;
++        configuration.force_stop_target_app = false;
++        configuration.close_target_app_after_run = false;
++        configuration.max_run_duration_seconds = 0;
++    }
+     let run_configuration_id = task_selection
+@@ -2938,3 +2947,5 @@
+     let resolved = resolve_run(&project, &configuration)?;
+-    let tasks = startup_tasks(&resolved.tasks, task_selection.as_ref())?;
++    let tasks = if let Some(config) = remote_task {
++        vec![wechat_remote::task(&project, &config)?]
++    } else { startup_tasks(&resolved.tasks, task_selection.as_ref())? };
+     // The run narrative — the history event's task list and the floating
+@@ -3535,3 +3546,3 @@
+ ) -> Result<StartRunStatus, AppError> {
+-    start_run_core(app, state.inner(), None, None, task_selection).await
++    start_run_core(app, state.inner(), None, None, task_selection, None).await
+ }
+@@ -5783,2 +5794,4 @@
+         .invoke_handler(tauri::generate_handler![
++            wechat_remote::wechat_account,
++            wechat_remote::wechat_status,
+             bootstrap,
+@@ -6206,2 +6219,3 @@
+             None,
++            None,
+         )
+--- a/src-tauri/gen/android/app/build.gradle.kts
++++ b/src-tauri/gen/android/app/build.gradle.kts
+@@ -273,2 +273,3 @@
+     namespace = "top.natsuu.mta"
++    sourceSets.getByName("main").java.srcDir(rootProject.file("../../../../../plugins/wechat/host/android"))
+     defaultConfig {
+@@ -416,2 +417,4 @@
+ dependencies {
++    implementation("com.squareup.okhttp3:okhttp:4.12.0")
++    implementation("org.nanohttpd:nanohttpd:2.3.1")
+     compileOnly(project(":hidden-api"))
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/RuntimeBridge.kt
+@@ -116,2 +116,8 @@
+     fun agentBridgeContext(): Any? = agentContext
++
++    @JvmStatic
++    fun wechatAccount(config: String): String = WechatRemoteService.configure(requireNotNull(agentContext), config)
++
++    @JvmStatic
++    fun wechatStatus(): String = WechatRemoteService.state(requireNotNull(agentContext))
+ 
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/MainActivity.kt
+@@ -62,2 +62,3 @@
+     super.onCreate(savedInstanceState)
++    WechatRemoteService.restoreIfEnabled(this)
+   }
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/ScheduleExecutionService.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/ScheduleExecutionService.kt
+@@ -88,11 +88,8 @@
+     }
+ 
+     private fun launchMainActivityToInitialize() {
+-        val intent = Intent(this, MainActivity::class.java).apply {
+-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+-        }
+         runCatching {
+-            startActivity(intent)
++            initializeApp(this)
+         }.onFailure { error ->
+             android.util.Log.e(TAG, "Could not launch MainActivity for schedule initialization", error)
+         }
+@@ -156,6 +153,13 @@
+         private const val APP_READY_TIMEOUT_MS = 120_000L
+         private const val APP_READY_POLL_INTERVAL_MS = 500L
+ 
++        fun initializeApp(context: Context) {
++            if (RuntimeBridge.isAppReady()) return
++            context.startActivity(Intent(context, MainActivity::class.java).apply {
++                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++            })
++        }
++
+         fun start(context: Context, ruleId: String, scheduledTimeMs: Long) {
+             if (!SpecialUseFgsGate.canStart(context, ScheduleExecutionService::class.java)) {
+                 RuntimeBridge.recordScheduleForegroundServiceDenied(ruleId, scheduledTimeMs)
+--- a/src-tauri/gen/android/app/src/main/AndroidManifest.xml
++++ b/src-tauri/gen/android/app/src/main/AndroidManifest.xml
+@@ -49,2 +49,6 @@
+ 
++        <service android:name=".WechatRemoteService" android:exported="false" android:foregroundServiceType="specialUse" android:stopWithTask="false">
++            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Receive and execute authenticated WeChat Channels tasks" />
++        </service>
++
+         <service
+--- a/src-tauri/gen/android/app/proguard-rules.pro
++++ b/src-tauri/gen/android/app/proguard-rules.pro
+@@ -29,2 +29,4 @@
+ -keep class top.natsuu.mta.SecretBridge { public *; }
++-keep class top.natsuu.mta.WechatRemoteService { *; }
++-keep class top.natsuu.mta.WechatRemoteService$Companion { *; }
+ -keep class top.natsuu.mta.control.ControlHost { public *; }
+--- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/ControlServiceClient.kt
++++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/ControlServiceClient.kt
+@@ -247,4 +247,6 @@
+         if (bound) {
+-            completePermissionRequest(true)
+-            completeConnectionRequest(ControlHost.current() != null)
++            if (ControlHost.current() != null) {
++                completePermissionRequest(true)
++                completeConnectionRequest(true)
++            }
+             return
+--- a/src/pages/HomePage.tsx
++++ b/src/pages/HomePage.tsx
+@@ -1,2 +1,3 @@
+ import { Loader2, Megaphone } from "lucide-react";
++import { WechatRemoteCard } from "../components/WechatRemoteCard";
+ import { useState } from "react";
+@@ -55,2 +56,4 @@
+ 
++      {project.name === "wechat_channels" && <WechatRemoteCard />}
++
+       <VersionCard
+--- a/src/lib/i18n.ts
++++ b/src/lib/i18n.ts
+@@ -35,2 +35,79 @@
+ const en = {
++  wechatRemoteTitle: "Remote tasks",
++  wechatLicense: "License code",
++  wechatServerSettings: "Connection settings",
++  wechatServer: "Server address",
++  wechatSoftware: "Software code",
++  wechatRemoteDescription: "Configure and dispatch collection tasks from the management console.",
++  wechatConnect: "Sign in and receive tasks",
++  wechatDisconnect: "Disconnect",
++  wechatUpdate: "Install update",
++  wechatValidUntil: "Valid until",
++  wechatBackgroundPermission: "Allow background tasks",
++  wechatNotificationChannel: "WeChat Channels tasks",
++  wechatNotificationTitle: "WeChat Channels assistant",
++  wechatNotificationConnecting: "Connecting to the task service",
++  wechatNotConnected: "Not connected",
++  wechatConnecting: "Connecting",
++  wechatOnline: "Online",
++  wechatReconnecting: "Waiting to reconnect",
++  wechatDisconnected: "Disconnected",
++  wechatAuthorizationInvalid: "Authorization expired or unavailable",
++  wechatWaiting: "Waiting for tasks",
++  wechatPreparing: "Preparing the task",
++  wechatPreparingRuntime: "Preparing the automation runtime",
++  wechatInitializingApp: "Initializing WeChat Channels assistant",
++  wechatAppInitializationTimeout: "Background initialization did not finish. Open WeChat Channels assistant and check background launch permission.",
++  wechatRunning: "Running the WeChat Channels task",
++  wechatConnectionFailed: "Connection failed: {detail}",
++  wechatCommunicationFailed: "Task communication failed: {detail}",
++  wechatDiagnosticFailed: "Diagnostic upload failed: {detail}",
++  wechatAuthorizationFailed: "License verification failed",
++  wechatPlatformMismatch: "The license platform does not match this app",
++  wechatRuntimeFailed: "Runtime preparation failed. Check the Home page for details.",
++  wechatRuntimeTimeout: "Runtime preparation timed out",
++  wechatControlNotReady: "The automation connection is not ready. Check Shizuku.",
++  wechatUploadsPending: "Pending uploads are still stored on this phone",
++  wechatUploadSyncNotStarted: "Pending upload synchronization did not start",
++  wechatUploadsConfirmed: "Pending uploads have been confirmed",
++  wechatUploadSyncFailed: "Data synchronization failed",
++  wechatUploadSyncFailedDetail: "Data synchronization failed: {detail}",
++  wechatServiceUnavailable: "The service connection is unavailable",
++  wechatRequestFailed: "The request failed",
++  wechatWaitForTask: "Wait for the current task to finish",
++  wechatNoUpdate: "No update is available",
++  wechatAlreadyCurrent: "The installed version is current",
++  wechatUpdateHttps: "The update address must use HTTPS",
++  wechatUpdateDigestInvalid: "The update checksum is invalid",
++  wechatUpdateDownloadFailed: "The update download failed",
++  wechatUpdateTooLarge: "The update package exceeds the size limit",
++  wechatUpdateDigestMismatch: "The update checksum does not match",
++  wechatUpdateFailed: "The update failed",
++  wechatUpdateFailedDetail: "The update failed: {detail}",
++  wechatStopCurrentTask: "Stop the current task before signing in",
++  wechatDisconnectFirst: "Disconnect before signing in again",
++  wechatServerHttps: "The server address must use HTTPS",
++  wechatServerInvalid: "The server address is invalid",
++  wechatLicenseRequired: "Enter a valid license code",
++  wechatNotificationSaveFailed: "Notification settings could not be saved",
++  wechatNotificationInvalid: "Notification settings are invalid",
++  wechatShareLink: "Getting the video link",
++  wechatCollectProfile: "Collecting user details",
++  wechatReadAccount: "Reading account details",
++  wechatComments: "Processing comments",
++  wechatMessages: "Processing messages",
++  wechatSearch: "Searching for videos",
++  wechatOpenChannels: "Opening WeChat Channels",
++  wechatReadVideo: "Reading video details",
++  wechatBrowseVideos: "Browsing videos",
++  wechatUploadedCounts: "Uploaded · Videos {videos} · Comments {comments} · User profiles {profiles}",
++  wechatCollectionFinished: "Collection finished: {processed}/{requested} videos, {acknowledged} uploads confirmed, {pending} pending",
++  wechatTaskStopped: "The task has stopped",
++  wechatConfigSynced: "Configuration synchronized",
++  wechatRuntimeChecked: "Runtime checks completed",
++  wechatTaskReceived: "The phone has received the task",
++  wechatTaskStartFailed: "The task could not start",
++  wechatResultMissing: "Execution ended without a task result",
++  wechatOperationFinished: "The WeChat Channels operation has finished",
++  wechatInspectionFinished: "Message inspection has finished",
+   // Bottom navigation
+@@ -556,2 +633,79 @@
+ const zh: Record<MessageKey, string> = {
++  wechatRemoteTitle: "服务端任务",
++  wechatLicense: "授权码",
++  wechatServerSettings: "连接设置",
++  wechatServer: "服务地址",
++  wechatSoftware: "软件代码",
++  wechatRemoteDescription: "采集设置和任务下发在管理后台操作。",
++  wechatConnect: "登录并接收任务",
++  wechatDisconnect: "停止接单",
++  wechatUpdate: "安装更新",
++  wechatValidUntil: "有效至",
++  wechatBackgroundPermission: "允许后台运行",
++  wechatNotificationChannel: "视频号远程任务",
++  wechatNotificationTitle: "视频号助手",
++  wechatNotificationConnecting: "正在连接任务服务",
++  wechatNotConnected: "未连接",
++  wechatConnecting: "连接中",
++  wechatOnline: "在线",
++  wechatReconnecting: "等待重新连接",
++  wechatDisconnected: "已断开",
++  wechatAuthorizationInvalid: "授权失效",
++  wechatWaiting: "等待任务",
++  wechatPreparing: "准备执行",
++  wechatPreparingRuntime: "正在准备手机运行环境",
++  wechatInitializingApp: "正在初始化视频号助手",
++  wechatAppInitializationTimeout: "后台初始化未完成，请打开视频号助手并检查后台启动权限",
++  wechatRunning: "正在执行视频号任务",
++  wechatConnectionFailed: "连接失败：{detail}",
++  wechatCommunicationFailed: "任务通信异常：{detail}",
++  wechatDiagnosticFailed: "诊断上传失败：{detail}",
++  wechatAuthorizationFailed: "授权验证失败",
++  wechatPlatformMismatch: "授权码平台不匹配",
++  wechatRuntimeFailed: "手机运行环境准备失败，请查看首页提示",
++  wechatRuntimeTimeout: "手机运行环境准备超时",
++  wechatControlNotReady: "自动化控制连接尚未就绪，请检查 Shizuku 状态",
++  wechatUploadsPending: "待上传数据仍保留在手机",
++  wechatUploadSyncNotStarted: "待上传数据同步未启动",
++  wechatUploadsConfirmed: "待上传数据已确认",
++  wechatUploadSyncFailed: "数据同步失败",
++  wechatUploadSyncFailedDetail: "数据同步失败：{detail}",
++  wechatServiceUnavailable: "服务连接不可用",
++  wechatRequestFailed: "请求失败",
++  wechatWaitForTask: "请等待当前任务结束",
++  wechatNoUpdate: "没有可用更新",
++  wechatAlreadyCurrent: "已经是当前版本",
++  wechatUpdateHttps: "更新地址必须为 HTTPS",
++  wechatUpdateDigestInvalid: "更新校验值无效",
++  wechatUpdateDownloadFailed: "更新下载失败",
++  wechatUpdateTooLarge: "更新包超过大小限制",
++  wechatUpdateDigestMismatch: "更新包校验失败",
++  wechatUpdateFailed: "更新失败",
++  wechatUpdateFailedDetail: "更新失败：{detail}",
++  wechatStopCurrentTask: "请先停止正在执行的任务",
++  wechatDisconnectFirst: "请先停止接单后重新登录",
++  wechatServerHttps: "服务地址需要 HTTPS",
++  wechatServerInvalid: "服务地址无效",
++  wechatLicenseRequired: "请填写授权码",
++  wechatNotificationSaveFailed: "通知设置保存失败",
++  wechatNotificationInvalid: "通知设置无效",
++  wechatShareLink: "获取作品链接",
++  wechatCollectProfile: "采集用户资料",
++  wechatReadAccount: "读取账号资料",
++  wechatComments: "处理评论",
++  wechatMessages: "处理消息",
++  wechatSearch: "搜索视频",
++  wechatOpenChannels: "进入视频号",
++  wechatReadVideo: "读取作品内容",
++  wechatBrowseVideos: "浏览视频",
++  wechatUploadedCounts: "已上传视频 {videos}，评论 {comments}，用户资料 {profiles}",
++  wechatCollectionFinished: "采集结束：视频 {processed}/{requested}，确认上传 {acknowledged}，待上传 {pending}",
++  wechatTaskStopped: "任务已停止",
++  wechatConfigSynced: "配置已同步",
++  wechatRuntimeChecked: "手机运行环境检查完成",
++  wechatTaskReceived: "手机已接收任务",
++  wechatTaskStartFailed: "任务启动失败",
++  wechatResultMissing: "执行结束但未取得业务结果",
++  wechatOperationFinished: "视频号操作已完成",
++  wechatInspectionFinished: "消息巡检已结束",
+   navHome: "首页",
+@@ -1162,6 +1316,114 @@
+   return message;
+ }
+ 
++const wechatMessageKeys: Record<string, MessageKey> = {
++  "未连接": "wechatNotConnected",
++  "连接中": "wechatConnecting",
++  "在线": "wechatOnline",
++  "等待重新连接": "wechatReconnecting",
++  "已断开": "wechatDisconnected",
++  "授权失效": "wechatAuthorizationInvalid",
++  "等待任务": "wechatWaiting",
++  "准备执行": "wechatPreparing",
++  "正在准备手机运行环境": "wechatPreparingRuntime",
++  "正在初始化视频号助手": "wechatInitializingApp",
++  "后台初始化未完成，请打开视频号助手并检查后台启动权限": "wechatAppInitializationTimeout",
++  "正在执行视频号任务": "wechatRunning",
++  "正在执行": "wechatRunning",
++  "授权验证失败": "wechatAuthorizationFailed",
++  "授权码平台不匹配": "wechatPlatformMismatch",
++  "手机运行环境准备失败，请查看首页提示": "wechatRuntimeFailed",
++  "手机运行环境准备超时": "wechatRuntimeTimeout",
++  "自动化控制连接尚未就绪，请检查 Shizuku 状态": "wechatControlNotReady",
++  "待上传数据仍保留在手机": "wechatUploadsPending",
++  "待上传数据同步未启动": "wechatUploadSyncNotStarted",
++  "待上传数据已确认": "wechatUploadsConfirmed",
++  "数据同步失败": "wechatUploadSyncFailed",
++  "服务连接不可用": "wechatServiceUnavailable",
++  "请求失败": "wechatRequestFailed",
++  "请等待当前任务结束": "wechatWaitForTask",
++  "没有可用更新": "wechatNoUpdate",
++  "已经是当前版本": "wechatAlreadyCurrent",
++  "更新地址必须为 HTTPS": "wechatUpdateHttps",
++  "更新校验值无效": "wechatUpdateDigestInvalid",
++  "更新下载失败": "wechatUpdateDownloadFailed",
++  "更新包超过大小限制": "wechatUpdateTooLarge",
++  "更新包校验失败": "wechatUpdateDigestMismatch",
++  "更新失败": "wechatUpdateFailed",
++  "请先停止正在执行的任务": "wechatStopCurrentTask",
++  "请先停止接单后重新登录": "wechatDisconnectFirst",
++  "服务地址需要 HTTPS": "wechatServerHttps",
++  "服务地址无效": "wechatServerInvalid",
++  "请填写授权码": "wechatLicenseRequired",
++  "通知设置保存失败": "wechatNotificationSaveFailed",
++  "通知设置无效": "wechatNotificationInvalid",
++  "获取作品链接": "wechatShareLink",
++  "采集用户资料": "wechatCollectProfile",
++  "读取账号资料": "wechatReadAccount",
++  "处理评论": "wechatComments",
++  "处理消息": "wechatMessages",
++  "搜索视频": "wechatSearch",
++  "进入视频号": "wechatOpenChannels",
++  "读取作品内容": "wechatReadVideo",
++  "浏览视频": "wechatBrowseVideos",
++  "任务已停止": "wechatTaskStopped",
++  "配置已同步": "wechatConfigSynced",
++  "手机运行环境检查完成": "wechatRuntimeChecked",
++  "手机已接收任务": "wechatTaskReceived",
++  "任务启动失败": "wechatTaskStartFailed",
++  "执行结束但未取得业务结果": "wechatResultMissing",
++  "视频号操作已完成": "wechatOperationFinished",
++  "消息巡检已结束": "wechatInspectionFinished",
++};
++
++const wechatDetailMessageKeys: Record<string, MessageKey> = {
++  "连接失败：": "wechatConnectionFailed",
++  "任务通信异常：": "wechatCommunicationFailed",
++  "诊断上传失败：": "wechatDiagnosticFailed",
++  "数据同步失败：": "wechatUploadSyncFailedDetail",
++  "更新失败：": "wechatUpdateFailedDetail",
++};
++
++// 本地固定状态复用界面词典，服务端业务内容保持原文。
++export function localizeWechatMessage(
++  message: string,
++  language: AppLanguage,
++): string {
++  const text = message.replace(
++    /^java\.lang\.(?:IllegalArgumentException|IllegalStateException): /,
++    "",
++  );
++  const key = wechatMessageKeys[text];
++  if (key) return translate(language, key);
++
++  for (const [prefix, detailKey] of Object.entries(wechatDetailMessageKeys)) {
++    if (text.startsWith(prefix)) {
++      return translate(language, detailKey, {
++        detail: localizeWechatMessage(text.slice(prefix.length), language),
++      });
++    }
++  }
++
++  const uploaded = /^已上传视频 (\d+)，评论 (\d+)，用户资料 (\d+)$/.exec(text);
++  if (uploaded) {
++    return translate(language, "wechatUploadedCounts", {
++      videos: uploaded[1],
++      comments: uploaded[2],
++      profiles: uploaded[3],
++    });
++  }
++  const collected = /^采集结束：视频 (\d+)\/(\d+)，确认上传 (\d+)，待上传 (\d+)$/.exec(text);
++  if (collected) {
++    return translate(language, "wechatCollectionFinished", {
++      processed: collected[1],
++      requested: collected[2],
++      acknowledged: collected[3],
++      pending: collected[4],
++    });
++  }
++  return localizeDiagnostic(message, language);
++}
++
+ /**
+  * Runtime warnings stay in the exported backend log in English. Known events
+  * also carry structured values so the live UI can render the interface locale.
+--- a/scripts/build_apk.py
++++ b/scripts/build_apk.py
+@@ -150,3 +150,4 @@
+     ndk_dir = pick_ndk(android_home)
+-    toolchain = ndk_dir / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin"
++    host_platform = "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64"
++    toolchain = ndk_dir / "toolchains" / "llvm" / "prebuilt" / host_platform / "bin"
+ 
+--- /dev/null
++++ b/src/components/WechatRemoteCard.tsx
+@@ -0,0 +1,88 @@
++import { invoke } from "@tauri-apps/api/core";
++import { useEffect, useState } from "react";
++import { TextField } from "./ui/TextField";
++import { localizeWechatMessage, useTranslation } from "../lib/i18n";
++
++type RemoteState = { connected: boolean; receiving: boolean; configured: boolean; batteryWhitelisted: boolean; status: string; message: string; machine: string;
++  server: string; softwareCode: string; commandId: string; expiresAt: number;
++  release?: {updateAvailable: boolean; versionName: string}; messages: Array<{id: number; title: string; content: string}> };
++
++export function WechatRemoteCard() {
++  const { language, t } = useTranslation();
++  const [state, setState] = useState<RemoteState | null>(null);
++  const [server, setServer] = useState("https://api.joyfile.net/huoke");
++  const [software, setSoftware] = useState("qiaomen");
++  const [license, setLicense] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState("");
++  useEffect(() => {
++    let active = true;
++    void invoke("wechat_account", {
++      config: {
++        notificationText: {
++          channel: t("wechatNotificationChannel"),
++          title: t("wechatNotificationTitle"),
++          connecting: t("wechatNotificationConnecting"),
++        },
++      },
++    }).catch(failure => {
++      if (active) setError(String(failure));
++    });
++    return () => {
++      active = false;
++    };
++  }, [t]);
++  useEffect(() => {
++    let active = true;
++    let initialized = false;
++    const refresh = async () => {
++      try {
++        const next = await invoke<RemoteState>("wechat_status");
++        if (active) {
++          if (!initialized) { setServer(next.server); setSoftware(next.softwareCode); initialized = true; }
++          setState(next);
++        }
++      } catch (failure) { if (active) setError(String(failure)); }
++    };
++    void refresh();
++    const timer = setInterval(() => void refresh(), 2000);
++    return () => { active = false; clearInterval(timer); };
++  }, []);
++  async function configure(disconnect = false) {
++    setBusy(true); setError("");
++    try {
++      const next = await invoke<RemoteState>("wechat_account", {config: {server, softwareCode: software, licenseKey: license,
++        disconnect}});
++      setState(next); setServer(next.server); setSoftware(next.softwareCode); setLicense("");
++    } catch (failure) { setError(String(failure)); }
++    finally { setBusy(false); }
++  }
++  return (
++    <section className="space-y-4 rounded-2xl border border-line bg-raised p-5">
++      <div className="flex items-center justify-between gap-3">
++        <h2 className="text-xl font-semibold">{t("wechatRemoteTitle")}</h2>
++        <span className="text-ink-muted">{state && localizeWechatMessage(state.status, language)}</span>
++      </div>
++      <TextField type="password" label={t("wechatLicense")} value={license} onValueChange={setLicense} disabled={busy || state?.receiving} />
++      <details><summary className="cursor-pointer text-ink-muted">{t("wechatServerSettings")}</summary>
++        <div className="mt-3 space-y-3">
++          <TextField label={t("wechatServer")} value={server} onValueChange={setServer} disabled={busy || state?.receiving} />
++          <TextField label={t("wechatSoftware")} value={software} onValueChange={setSoftware} disabled={busy || state?.receiving} />
++        </div>
++      </details>
++      <p className="text-ink-muted">{state?.message ? localizeWechatMessage(state.message, language) : t("wechatRemoteDescription")}</p>
++      {state && state.expiresAt > 0 && <p>{t("wechatValidUntil")} {new Date(state.expiresAt).toLocaleDateString(language)}</p>}
++      {state && !state.batteryWhitelisted && <button type="button" className="btn w-full"
++        onClick={() => { void invoke("request_battery_optimization_exemption").catch(failure => setError(String(failure))); }}>
++        {t("wechatBackgroundPermission")}</button>}
++      {state?.commandId && <p className="break-all text-sm text-ink-muted">{state.commandId}</p>}
++      {error && <p role="alert" className="text-error">{localizeWechatMessage(error, language)}</p>}
++      {state?.messages?.map(message => <details key={message.id}><summary>{message.title}</summary><p>{message.content}</p></details>)}
++      {state?.release?.updateAvailable && <button type="button" className="btn w-full" disabled={busy || Boolean(state.commandId)}
++        onClick={() => { void invoke("wechat_account", {config: {installUpdate: true}}).catch(failure => setError(String(failure))); }}>
++        {t("wechatUpdate")} {state.release.versionName}</button>}
++      <button type="button" className="btn btn-primary w-full" disabled={busy || (!state?.receiving && !state?.configured && !license.trim())}
++        onClick={() => void configure(state?.receiving)}>{state?.receiving ? t("wechatDisconnect") : t("wechatConnect")}</button>
++    </section>
++  );
++}
+--- a/src/lib/i18n.test.ts
++++ b/src/lib/i18n.test.ts
+@@ -7,2 +7,3 @@
+   localizeRunEvent,
++  localizeWechatMessage,
+   projectLanguage,
+@@ -138,3 +139,52 @@
+     );
++  });
++});
++
++describe("localizeWechatMessage", () => {
++  it("uses the selected app language for native connection and task states", () => {
++    const english = resolveLanguage("en", ["zh-CN"]);
++    expect(localizeWechatMessage("未连接", english)).toBe("Not connected");
++    expect(localizeWechatMessage("连接中", english)).toBe("Connecting");
++    expect(localizeWechatMessage("在线", english)).toBe("Online");
++    expect(localizeWechatMessage("等待重新连接", english)).toBe("Waiting to reconnect");
++    expect(localizeWechatMessage("等待任务", english)).toBe("Waiting for tasks");
++    expect(localizeWechatMessage("正在准备手机运行环境", english)).toBe("Preparing the automation runtime");
++    expect(localizeWechatMessage("正在初始化视频号助手", english))
++      .toBe("Initializing WeChat Channels assistant");
++    expect(localizeWechatMessage("正在执行视频号任务", english)).toBe("Running the WeChat Channels task");
++    const chinese = resolveLanguage("zh", ["en-US"]);
++    expect(localizeWechatMessage("在线", chinese)).toBe("在线");
++    expect(localizeWechatMessage("等待任务", chinese)).toBe("等待任务");
++  });
++
++  it("retains actual upload counts while translating progress", () => {
++    const progress = "已上传视频 1，评论 2，用户资料 2";
++    expect(localizeWechatMessage(progress, "en")).toBe("Uploaded · Videos 1 · Comments 2 · User profiles 2");
++    expect(localizeWechatMessage(progress, "zh")).toBe(progress);
++    expect(localizeWechatMessage("采集结束：视频 1/1，确认上传 5，待上传 0", "en"))
++      .toBe("Collection finished: 1/1 videos, 5 uploads confirmed, 0 pending");
+   });
++
++  it("translates local failures and their JNI exception wrappers", () => {
++    expect(localizeWechatMessage("java.lang.IllegalArgumentException: 服务地址无效", "en"))
++      .toBe("The server address is invalid");
++    expect(localizeWechatMessage("连接失败：授权码平台不匹配", "en"))
++      .toBe("Connection failed: The license platform does not match this app");
++    expect(localizeWechatMessage("任务通信异常：IllegalStateException", "en"))
++      .toBe("Task communication failed: IllegalStateException");
++    expect(localizeWechatMessage("更新失败：更新包校验失败", "en"))
++      .toBe("The update failed: The update checksum does not match");
++    expect(localizeWechatMessage("数据同步失败：手机运行环境准备超时", "zh"))
++      .toBe("数据同步失败：手机运行环境准备超时");
++    expect(localizeWechatMessage("后台初始化未完成，请打开视频号助手并检查后台启动权限", "en"))
++      .toBe("Background initialization did not finish. Open WeChat Channels assistant and check background launch permission.");
++  });
++
++  it("preserves server business messages and reuses host diagnostics", () => {
++    expect(localizeWechatMessage("卡密已绑定其他设备", "en")).toBe("卡密已绑定其他设备");
++    expect(localizeWechatMessage("The Shizuku control unit could not be connected", "zh"))
++      .toBe(localizeDiagnostic("The Shizuku control unit could not be connected", "zh"));
++    expect(translate("en", "wechatNotificationConnecting")).toBe("Connecting to the task service");
++    expect(translate("zh", "wechatNotificationConnecting")).toBe("正在连接任务服务");
++  });
+ });

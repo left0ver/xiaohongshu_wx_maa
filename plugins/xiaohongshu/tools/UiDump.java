@@ -21,6 +21,16 @@ public final class UiDump {
     private static int emitted;
 
     public static void main(String[] args) throws Exception {
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            error.printStackTrace(System.err);
+            System.exit(1);
+        });
+        run(args);
+        // main 返回会关闭 Binder，后台界面回调需要随进程一起结束。
+        System.exit(0);
+    }
+
+    private static void run(String[] args) throws Exception {
         if (args.length == 2 && args[0].equals("--paste-text")) {
             if (args[1].isEmpty()) throw new IllegalArgumentException("粘贴内容不能为空");
             pasteViaClipboard(args[1]);
@@ -95,6 +105,7 @@ public final class UiDump {
         } finally {
             if (connected) UiAutomation.class.getMethod("disconnect").invoke(automation);
             thread.quitSafely();
+            thread.join();
         }
     }
 
@@ -172,6 +183,7 @@ public final class UiDump {
         } finally {
             if (connected) UiAutomation.class.getMethod("disconnect").invoke(automation);
             thread.quitSafely();
+            thread.join();
         }
     }
 

@@ -289,6 +289,14 @@ class LinkTaskAction(CustomAction):
             return False
 
 
+@AgentServer.custom_action("RemoteWechatTask")
+class RemoteWechatTask(CustomAction):
+    def run(self, context, argv):
+        from remote_task import execute_remote
+        config = json.loads(argv.custom_action_param)
+        return execute_remote(context.tasker, context, Path(os.environ["WECHAT_DATA_DIR"]), config)
+
+
 if __name__ == "__main__":
     if not AgentServer.start_up(sys.argv[-1]):
         raise RuntimeError("Could not start the collector agent")
