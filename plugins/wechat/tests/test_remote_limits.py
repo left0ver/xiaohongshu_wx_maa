@@ -9,6 +9,17 @@ from links import require_private_message_available
 
 
 class RemoteLimitTests(unittest.TestCase):
+    def test_actual_recipient_restriction_stops_private_message_delivery(self):
+        path = Path(__file__).resolve().parents[1] / "wechat_channels/collector/testdata/dm-recipient-blocked-huawei.json"
+        lines = json.loads(path.read_text(encoding="utf-8"))["lines"]
+        with self.assertRaisesRegex(RuntimeError, "暂无法接收私信"):
+            require_private_message_available(lines)
+
+    def test_actual_sent_message_has_no_recipient_restriction(self):
+        path = Path(__file__).resolve().parents[1] / "wechat_channels/collector/testdata/dm-latest-sent-huawei.json"
+        lines = json.loads(path.read_text(encoding="utf-8"))["lines"]
+        require_private_message_available(lines)
+
     def test_actual_phone_notice_stops_private_message_delivery(self):
         path = Path(__file__).resolve().parents[3] / "data/laike-service-live/huawei-dm-evidence.json"
         if not path.exists():

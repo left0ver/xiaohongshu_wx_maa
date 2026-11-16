@@ -140,6 +140,8 @@ def text_lines(xml, width, height, containers=False):
         selector = {"attribute": attribute, "value": node.get(attribute),
                     "resource": node.get("resource-id", ""), "class": node.get("class", "")}
         line = {"text": text, "box": scaled, "score": 1.0, "selector": selector, "source": "hierarchy"}
+        if node.get("selected") in ("true", "false"):
+            line["selected"] = node.get("selected") == "true"
         if _resource(node) == "bkl":
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = _scaled(box, width)
@@ -327,6 +329,17 @@ def refresh_target(lines, previous):
     return candidates[0]
 
 
+def channels_intro_acknowledgement(lines):
+    notice = "为呵护未成年人健康成长，微信推出未成年人模式。该模式下部分功能将受限制使用，请监护人主动设置。"
+    if not any(line.get("text") == notice for line in lines):
+        return None
+    buttons = [line for line in lines if line.get("text") == "我知道了"
+               and line.get("selector", {}).get("class") == "android.widget.Button"]
+    if len(buttons) != 1:
+        raise RuntimeError("视频号介绍提示的确认按钮缺失或不唯一")
+    return buttons[0]
+
+
 def page_lines(lines):
     """The drawn text parsers read: no icon names or empty-container markers."""
     return [line for line in lines if not line.get("icon") and not line.get("container")]
@@ -449,6 +462,9 @@ def _chat_ready(lines, height, author):
 # not listed here, is read with full-screen OCR as before.
 CONTROL_PAGES = {
     "navigation-bottom": _navigation_ready, "navigation-top": _navigation_ready,
+    **dict.fromkeys(("tab-check-", "tab-after-loc-", "tab-switched-", "tab-switched-loc-",
+                     "verify-stage-recommend", "verify-stage-friends", "verify-stage-follow", "verify-stage-city"),
+                    _page_state("channels_feed")),
     **dict.fromkeys(("feed", "before-author", "feed-after-collect", "feed-after-like", "feed-after-author-touch",
                      "feed-after-author-touch-retry", "feed-before-personal", "profile-first-work",
                      "profile-first-work-retry"), _feed_ready),

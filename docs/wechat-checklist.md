@@ -1,6 +1,41 @@
 # 微信视频号上传与操作主任务清单
 
-更新时间：2026-11-07
+更新时间：2026-11-16
+
+## 测试环境五次用例与数据核对（2026-11-15 至 2026-11-16）
+
+九类任务各五个正式用例均已执行，按修复复测后的当前结果统计为 41 个成功、4 个微信限制结果。任务行为与限制原因见[真机行为清单](wechat-behavior-checklist.md)。完整数据位于 `data/testenv-stability-20261113/five-20261115-2228/`。
+
+- 45 个正式用例分别对应 45 个服务端任务编号和 45 个真实手机运行编号，重复请求均返回原任务编号。
+- 包括补充复测、vivo 修复包只读验证及一次查找停止记录，共 48 个业务任务与 48 个真实手机运行编号唯一对应；未关联的运行记录为零。停止命令另行保存于 `controls/`。
+- 本轮五次采集分别取得 6、6、7、7、9 个 ACK，共确认 35 条新事件。
+- 最终华为保存 9 VIDEO、32 COMMENT、14 USER，共 55 条；vivo 保存 13 VIDEO、60 COMMENT、17 USER，共 90 条。两个本地数据库均通过完整性检查，COMMENT→VIDEO、USER→COMMENT 未关联记录均为零。
+- 两台手机的本地 ACK 编号集合分别与服务端接口查询的事件编号集合完全一致，待上传数量均为零。
+- 逐条核对 145 个事件的本地标识映射，123 个父事件关联与服务端记录完全一致，验证结果见 `final/parent-links.json`。
+- 最终两台手机均在线，运行和排队任务均为零；修复包实际运行的五个关键 Python 文件与仓库 SHA-256 一致。
+
+当前结果、全部原始记录和复测对应关系分别见 `final/coverage.json`、`final/audit.json`、`final/effective-cases.json`；重复请求与真实运行对应关系见 `final/execution-consistency.json`。一致性数据库副本为 `final/card0.sqlite3`、`final/card1.sqlite3`。
+
+本轮保留两种私信限制：账号当天发送过于频繁，以及对方要求关注 7 天后才能发送。三个频率限制例子均确认没有重发。当前 Debug APK SHA-256 为 `752e16b903e6c4a941f50823802c3f444800accd30f998da270a00c9fd495b5c`。长列表定位耗时与未确认目标的查找停止见行为清单；正式更新包、单独丢失数据 ACK 和长期持续运行保持独立验收。
+
+## 测试环境上传与调度验证（2026-11-13 至 2026-11-15）
+
+测试页面为 `https://api.joyfile.net/huoke/admin/wechat/tasks`，接口地址为 `https://api.joyfile.net/huoke`。两台手机安装 `0.2.0` Debug APK；九种任务的不同例子及实际行为见[真机验证记录](wechat-behavior-checklist.md#测试环境真机验证2026-11-13-至-2026-11-15)。
+
+- 三轮重复请求检查通过：同一请求返回原任务编号，修改参数与更换授权码均被拒绝。证据为 `data/testenv-stability-20261113/request-validation*.json`。
+- 三轮配置同步完成，保存配置后没有自动新增执行任务；原配置已恢复并同步。证据为 `settings-summary.json`。
+- 三次停止命令完成：华为运行中、vivo 运行中、vivo 空闲。任务编号分别为 `e0ff7b95-fcf8-4a11-b4a5-f8c48b82d966`、`5e67126a-e6b1-4ffe-8f6e-d56fbd131ac2`、`3463477f-704d-4f3c-97e8-8b22ec421b35`。
+- 停止接收期间提交的 vivo 任务 `93610d40-52a0-45b8-9c09-11b66deaca83` 保持排队，恢复接收后配置同步成功。
+- App 终止期间提交的同步任务 `e5c6bb74-55c9-44cd-9355-a1e2058e4a82` 和采集任务 `44f4f39c-9236-446a-b13a-ff595fc58b34` 均在重新启动后完成。采集任务实际保存 1 VIDEO、3 COMMENT，4/4 ACK，待上传为零。
+- 断网任务 `9526bb80-bf51-4eea-b3ba-d6f32678cf46` 保留一条待上传 COMMENT，恢复原有 Wi-Fi 设置后 Run `9f4960c4-e039-4d65-a468-dc9ab65e113e` 自动取得 1/1 ACK，待上传恢复为零，事件编号存在于服务端查询结果。断网中的采集任务状态为 `FAILED`，手机本地通信请求返回 `HTTP Error 500: Internal Server Error`。
+- 评论点赞任务 `e32765c1-2bb1-4065-9c22-0075b78fd6c0` 连接恢复后，由原任务编号接收最终成功结果。
+- 使用实际任务编号完成两组共六十次查询，均返回 HTTP 200，最长耗时 90 毫秒；覆盖直连新连接、使用环境网络设置的新连接、直连连接复用。证据为 `final/api-stability.json` 与 `final/api-connections.json`。监测期间出现过 HTTP 502 和 TLS 连接中断，当前查询没有重现，原因尚未确认。
+
+服务端终态与手机 `remote-result.json` 共同作为业务成功依据；成功结果检查实际数量、上传确认和消息巡检返回页面。任务记录与数据库副本保存在 `data/testenv-stability-20261113/`。本轮范围包含 Debug APK；正式更新包下载安装、单独丢失数据 ACK 和长期持续运行保持独立验收。
+
+最终 SQLite 完整性检查通过。华为 6 VIDEO、19 COMMENT、8 USER，共 33 条；vivo 11 VIDEO、53 COMMENT、13 USER，共 77 条。两台手机的 ACK 编号集合分别与服务端事件编号集合完全相同，COMMENT→VIDEO、USER→COMMENT 未关联记录均为零，待上传数量均为零。两台手机均在线，运行及排队任务均为零；五个关键运行源码文件的 SHA-256 均与仓库一致。证据为 `final/audit.json`、`final/database-card*.json`、`final/source-hashes-card*.json` 与一致性数据库副本 `final/card*.sqlite3`。
+
+当前安装包的 SHA-256 为 `3bebb257d1685f25fe5c1e677f12fad034d1be6103dfabc5b09cbd865bd03ea0`。
 
 **消息中心布局修复复测**：不再要求“关注”页签；顶部“评论”配合“点赞”文字或爱心模板识别消息中心，模板覆盖选中和未选中状态。Hebe-BD00 Run `6a7544be-641a-4cfa-bf21-a0870a19f46f` 从视频页→个人页→消息→评论→返回视频页通过，任务 34.575 秒；列表为空，未验证消息点赞／回复。电脑与 Android 各 126 项测试通过，详见[复测补充](wechat-regression-20261107.md#消息中心布局后续修复)。
 

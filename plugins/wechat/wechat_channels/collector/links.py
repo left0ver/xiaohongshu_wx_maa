@@ -127,12 +127,27 @@ def _edit_box(lines):
 # Notices shown instead of the input box when the other side limits messages.
 DM_RESTRICTED = r"设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息|无法发送私信"
 DM_RATE_LIMIT = r"频繁发送私信|私信.{0,8}频繁|请明天再试|私信.{0,8}达到.{0,8}上限"
+DM_RECIPIENT_UNAVAILABLE = r"^对方账号因违反视频号平台运营规范[，,]\s*暂无法接收私信[。.!！]?$"
+
+
+def _same_chat_row(first, second):
+    a = first.get("controlBox", first["box"])
+    b = second.get("controlBox", second["box"])
+    return max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
 
 
 def require_private_message_available(lines):
     restriction = find(lines, DM_RATE_LIMIT)
     if restriction:
         raise RuntimeError("微信限制了私信发送：" + restriction["text"])
+    avatars = [line for line in lines if line.get("source") == "hierarchy"
+               and line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"]
+    # 平台通知不与消息头像同行。
+    restriction = find(lines, DM_RECIPIENT_UNAVAILABLE, lambda line:
+        line.get("source") == "hierarchy" and line.get("selector", {}).get("resource") == "com.tencent.mm:id/bkl"
+        and not any(_same_chat_row(line, avatar) for avatar in avatars))
+    if restriction:
+        raise RuntimeError("对方暂无法接收私信：" + restriction["text"])
 
 # A chat read by OCR has no control classes; its input hint and notices identify it.
 CHAT_TEXT = r"可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息|^发送$"
@@ -280,26 +295,21 @@ def private_message_state(lines, text):
                if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"
                and line["box"][0] >= 360]
 
-    def same_row(first, second):
-        a = first.get("controlBox", first["box"])
-        b = second.get("controlBox", second["box"])
-        return max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
-
     messages = [line for line in controls
                 if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bkl"
                 and line["selector"].get("value") == text
-                and any(same_row(line, avatar) for avatar in avatars)]
+                and any(_same_chat_row(line, avatar) for avatar in avatars)]
     if not messages:
         raise ValueError("无法从控件确认已发送的私信内容")
     message = max(messages, key=lambda line: line["box"][1])
     buttons = [line for line in controls if line.get("text") == "重发"
                and line.get("selector", {}).get("class") == "android.widget.ImageView"
-               and same_row(line, message)
+               and _same_chat_row(line, message)
                and line["box"][0] + line["box"][2] / 2 < message["box"][0]]
     if len(buttons) > 1:
         raise ValueError("无法唯一确定这条私信的重发按钮")
     pending = any(line.get("selector", {}).get("class") == "android.widget.ProgressBar"
-                  and same_row(line, message)
+                  and _same_chat_row(line, message)
                   and line["box"][0] + line["box"][2] / 2 < message["box"][0] for line in controls)
     return message, buttons[0] if buttons else None, pending
 

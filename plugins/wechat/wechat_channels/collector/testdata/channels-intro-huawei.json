@@ -1,0 +1,96 @@
+{
+  "label": "navigation-control-unavailable",
+  "width": 720,
+  "height": 1559,
+  "roi": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "source": "hierarchy",
+  "attempts": [],
+  "lines": [
+    {
+      "text": "关闭",
+      "box": [
+        29,
+        901,
+        79,
+        79
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "content-desc",
+        "value": "关闭",
+        "resource": "com.tencent.mm:id/pnq",
+        "class": "android.widget.ImageView"
+      },
+      "source": "hierarchy",
+      "selected": false,
+      "observationId": 19,
+      "observedAtUnixMs": 1794759467508
+    },
+    {
+      "text": "为呵护未成年人健康成长，微信推出未成年人模式。该模式下部分功能将受限制使用，请监护人主动设置。",
+      "box": [
+        15,
+        1123,
+        691,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "为呵护未成年人健康成长，微信推出未成年人模式。该模式下部分功能将受限制使用，请监护人主动设置。",
+        "resource": "com.tencent.mm:id/oq4",
+        "class": "android.widget.TextView"
+      },
+      "source": "hierarchy",
+      "selected": false,
+      "observationId": 19,
+      "observedAtUnixMs": 1794759467508
+    },
+    {
+      "text": "我知道了",
+      "box": [
+        129,
+        1355,
+        216,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "我知道了",
+        "resource": "com.tencent.mm:id/v6_",
+        "class": "android.widget.Button"
+      },
+      "source": "hierarchy",
+      "selected": false,
+      "observationId": 19,
+      "observedAtUnixMs": 1794759467508
+    },
+    {
+      "text": "不再提醒",
+      "box": [
+        374,
+        1355,
+        216,
+        34
+      ],
+      "score": 1.0,
+      "selector": {
+        "attribute": "text",
+        "value": "不再提醒",
+        "resource": "com.tencent.mm:id/v69",
+        "class": "android.widget.Button"
+      },
+      "source": "hierarchy",
+      "selected": false,
+      "observationId": 19,
+      "observedAtUnixMs": 1794759467508
+    }
+  ],
+  "fields": {}
+}

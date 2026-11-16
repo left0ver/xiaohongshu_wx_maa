@@ -473,7 +473,7 @@ def find_top_tabs(lines) -> dict:
     if not lines:
         return tabs
 
-    merged_ff = find(lines, r"^[<＜《‹«]?\s*关注\s*朋友[♡♥❤]*\d*$", lambda l: l["box"][1] < 220)
+    merged_ff = find(lines, r"^[<＜《‹«]?\s*关注\s*朋友(?:赞过)?[♡♥❤]*\d*$", lambda l: l["box"][1] < 220)
     if merged_ff:
         tabs["follow"] = {**merged_ff, "text": "关注", "box": [192, 76, 67, 32]}
         tabs["friends"] = {**merged_ff, "text": "朋友", "box": [302, 78, 96, 30]}
@@ -490,7 +490,7 @@ def find_top_tabs(lines) -> dict:
         else:
             tabs["follow"] = follow_line
 
-    friends_line = find(lines, r"^朋友[♡♥❤]*\d*$", lambda l: l["box"][1] < 220)
+    friends_line = find(lines, r"^朋友(?:赞过)?[♡♥❤]*\d*$", lambda l: l["box"][1] < 220)
     if friends_line and "friends" not in tabs:
         tabs["friends"] = friends_line
 
@@ -530,12 +530,13 @@ def active_top_tab(lines, frame=None, height=1605) -> tuple[str | None, dict]:
     if not tabs:
         return None, {}
 
-    for name, item in tabs.items():
-        if item.get("selected") is True:
-            return name, {name: {"selected": True, "underlineRatio": 1.0, "textRatio": 1.0, "score": 3.0}}
+    selected = [name for name, item in tabs.items() if item.get("selected") is True]
+    selection = {name: {"selected": item["selected"]} for name, item in tabs.items() if "selected" in item}
+    if selection:
+        return (selected[0] if len(selected) == 1 else None), selection
 
+    metrics = {}
     if frame is not None:
-        metrics = {}
         best_tab = None
         best_score = -1.0
         for name, item in tabs.items():
@@ -560,10 +561,7 @@ def active_top_tab(lines, frame=None, height=1605) -> tuple[str | None, dict]:
         if best_tab is not None and best_score >= 0.04:
             return best_tab, metrics
 
-    if "recommend" in tabs:
-        return "recommend", {k: {"score": 1.0 if k == "recommend" else 0.0} for k in tabs}
-    first_key = next(iter(tabs))
-    return first_key, {first_key: {"score": 1.0}}
+    return None, metrics
 
 
 def dismiss_location_permission_modal(ui, lines=None) -> bool:
@@ -769,7 +767,7 @@ def classify_mode_page(
         tab, _ = active_top_tab(lines, frame=frame, height=height)
         if tab in ("recommend", "friends", "follow", "city"):
             return f"{tab}_feed"
-        return "recommend_feed"
+        return "channels_feed_unconfirmed"
 
     return abnormal.get("reason", "unknown")
 
@@ -941,16 +939,18 @@ def switch_channels_top_tab(
         check_stopped(ui)
         ui.click(tabs[norm_tab])
         clicked = True
-        time.sleep(1.0)
-        lines = ui.snapshot(f"tab-switched-{norm_tab}")
-        if dismiss_location_permission_modal(ui, lines):
-            location_prompted = True
-            lines = ui.snapshot(f"tab-switched-loc-{norm_tab}")
-        frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
-        current_active, tab_metrics = active_top_tab(lines, frame=frame, height=ui.height)
-        if current_active != norm_tab and classify_page_state(lines, ui.height) == "channels_feed":
-            current_active = norm_tab
-            lines = [*lines, {**tabs[norm_tab], "selected": True}]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            check_stopped(ui)
+            time.sleep(0.5)
+            lines = ui.snapshot(f"tab-switched-{norm_tab}")
+            if dismiss_location_permission_modal(ui, lines):
+                location_prompted = True
+                continue
+            frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+            current_active, tab_metrics = active_top_tab(lines, frame=frame, height=ui.height)
+            if current_active == norm_tab:
+                break
 
     location_banner = any(
         re.search(r"开启定位权限|打开定位|获取位置", l.get("text", ""))
@@ -967,14 +967,15 @@ def switch_channels_top_tab(
             "locationPermissionPrompted": location_prompted,
         }
 
-    verified = bool(current_active == norm_tab or (clicked and norm_tab in find_top_tabs(lines)))
+    if current_active != norm_tab:
+        raise RuntimeError(f"视频号页面没有确认选中 {norm_tab}：{tab_metrics}")
     return {
         "status": f"{norm_tab}_feed_ready",
         "available": True,
         "tab": norm_tab,
         "clicked": clicked,
-        "verified": verified,
-        "activeTab": current_active or norm_tab,
+        "verified": True,
+        "activeTab": current_active,
         "tabMetrics": tab_metrics,
         "locationPermissionGranted": location_granted,
         "locationPermissionPrompted": location_prompted,

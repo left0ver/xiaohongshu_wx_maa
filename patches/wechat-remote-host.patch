@@ -114,7 +114,48 @@
  -keep class top.natsuu.mta.control.ControlHost { public *; }
 --- a/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/ControlServiceClient.kt
 +++ b/src-tauri/gen/android/app/src/main/java/top/natsuu/mta/control/ControlServiceClient.kt
-@@ -247,4 +247,6 @@
+@@ -33,5 +33,6 @@
+ class ControlServiceClient(private val context: Context) : ServiceConnection {
+     private var bound = false
++    private var shizukuConnection: ServiceConnection? = null
+     private var lifelineWriter: ParcelFileDescriptor? = null
+     private val mainHandler = Handler(context.mainLooper)
+     private val rootExecutor = Executors.newSingleThreadExecutor { runnable ->
+@@ -89,5 +90,6 @@
+     override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+         if (binder == null) {
++            releaseShizukuBinding()
+             RuntimeBridge.setControlState(STATE_ERROR)
+             completeConnectionRequest(false)
+             completePermissionRequest(false)
+@@ -105,4 +107,6 @@
+     override fun onServiceDisconnected(name: ComponentName?) {
+         bound = false
++        shizukuConnection = null
++        boundConnectionGeneration = -1L
+         handleServiceDisconnected()
+     }
+@@ -176,8 +180,7 @@
+         removeRootBinder()
+         destroyCurrentServiceSafely()
+         if (bound) {
+-            Shizuku.unbindUserService(serviceArgs, this, true)
+-            bound = false
++            releaseShizukuBinding()
+         }
+         removePermissionListener()
+         completeConnectionRequest(false)
+@@ -246,16 +249,52 @@
+-    private fun bindShizukuService() {
++    private fun releaseShizukuBinding() {
++        val connection = shizukuConnection
++        shizukuConnection = null
++        bound = false
++        boundConnectionGeneration = -1L
++        if (connection != null) Shizuku.unbindUserService(serviceArgs, connection, true)
++    }
++
++    private fun bindShizukuService(attempt: Int = 1) {
          if (bound) {
 -            completePermissionRequest(true)
 -            completeConnectionRequest(ControlHost.current() != null)
@@ -123,6 +164,72 @@
 +                completeConnectionRequest(true)
 +            }
              return
+         }
+         RuntimeBridge.setControlState(STATE_STARTING)
++        val connection = object : ServiceConnection {
++            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
++                if (shizukuConnection === this) this@ControlServiceClient.onServiceConnected(name, binder)
++            }
++
++            override fun onServiceDisconnected(name: ComponentName?) {
++                if (shizukuConnection === this) this@ControlServiceClient.onServiceDisconnected(name)
++            }
++        }
+         try {
+             boundConnectionGeneration = connectionGeneration.get()
+-            Shizuku.bindUserService(serviceArgs, this)
++            shizukuConnection = connection
+             bound = true
++            Shizuku.bindUserService(serviceArgs, connection)
++            mainHandler.postDelayed({
++                if (shizukuConnection !== connection || ControlHost.current() != null) return@postDelayed
++                releaseShizukuBinding()
++                when {
++                    !Shizuku.pingBinder() -> RuntimeBridge.setControlState(STATE_SHIZUKU_UNAVAILABLE)
++                    Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED -> RuntimeBridge.setControlState(STATE_PERMISSION_REQUIRED)
++                    attempt < MAX_SHIZUKU_BIND_ATTEMPTS -> {
++                        bindShizukuService(attempt + 1)
++                        return@postDelayed
++                    }
++                    else -> RuntimeBridge.setControlState(STATE_ERROR)
++                }
++                completeConnectionRequest(false)
++                completePermissionRequest(false)
++            }, SHIZUKU_BIND_TIMEOUT_MS)
+         } catch (error: Throwable) {
+             bound = false
++            shizukuConnection = null
+             boundConnectionGeneration = -1L
+             RuntimeBridge.setControlState(STATE_ERROR)
+             Log.w(TAG, "Could not bind Shizuku user service", error)
+@@ -485,8 +524,7 @@
+             killResidualRootService()
+         }
+         if (bound) {
+-            Shizuku.unbindUserService(serviceArgs, this, true)
+-            bound = false
++            releaseShizukuBinding()
+         }
+         removePermissionListener()
+         completeConnectionRequest(false)
+@@ -542,7 +580,6 @@
+         removeRootBinder()
+         destroyServiceSafely(service)
+         if (bound) {
+-            Shizuku.unbindUserService(serviceArgs, this, true)
+-            bound = false
++            releaseShizukuBinding()
+         }
+     }
+@@ -680,6 +717,8 @@
+         private const val TAG = "MaaTauriAndroidControl"
+         private const val REQUEST_CODE = 9753
+         private const val SERVICE_VERSION = 16
++        private const val SHIZUKU_BIND_TIMEOUT_MS = 5_000L
++        private const val MAX_SHIZUKU_BIND_ATTEMPTS = 2
+         private const val ROOT_CONNECT_TIMEOUT_MS = 15_000L
+         private const val SWITCH_TIMEOUT_MS = 18_000L
+         private const val PREFERENCES_NAME = "privileged_backend"
 --- a/src/pages/HomePage.tsx
 +++ b/src/pages/HomePage.tsx
 @@ -1,2 +1,3 @@

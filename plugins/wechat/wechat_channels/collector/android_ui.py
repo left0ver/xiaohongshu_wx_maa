@@ -19,7 +19,7 @@ from maa.tasker import Tasker
 from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
 from foreground import foreground
-from hierarchy import HierarchyUnavailable, choose_snapshot, refresh_target, text_lines
+from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, refresh_target, text_lines
 from readiness import wait_basic_info
 from layout import line_height
 from probe_reader import prepared_reader
@@ -255,7 +255,8 @@ class MaaUi:
             started = time.monotonic_ns()
             attempt = {"source": source}
             try:
-                return read()
+                lines = read()
+                return self._acknowledge_channels_intro(lines) if source == "hierarchy" else lines
             except HierarchyUnavailable as error:
                 attempt["reason"] = str(error)
                 raise
@@ -298,40 +299,32 @@ class MaaUi:
         if self.tasker.stopping:
             raise RuntimeError("Collection was stopped")
         foreground()
+        job = self.controller.post_screencap().wait()
+        if not job.succeeded:
+            raise RuntimeError("Screenshot failed")
+        image = job.get()
+        self.image = image
+        self.height = image.shape[0]
+        roi = navigation_roi(label, self.height) if roi is None else roi
+        ocr_image = image
+        if not self.context and label.startswith(("comments", "messages")):
+            # 将橙色视频号徽章的颜色处理为白色，保持评论昵称的识别范围。
+            ocr_image = image.copy()
+            b, g, r = ocr_image[:, :, 0].astype("int16"), ocr_image[:, :, 1].astype("int16"), ocr_image[:, :, 2].astype("int16")
+            orange = (r > 195) & (g > 105) & (g < 210) & (b < 100) & ((r - b) > 110)
+            if orange.any():
+                ocr_image[orange] = 255
         if self.context:
-            # Keep screenshots on the native side: transferring the same pixels
-            # to Python and back over Agent RPC was dominating collection time.
-            roi = navigation_roi(label, self.height) if roi is None else roi
-            result = self.context.run_task("BatchText", {
-                "BatchText": {"recognition": "OCR", "threshold": 0.55,
-                              "roi": roi, "only_rec": False,
-                              "action": "DoNothing", "next": [], "pre_delay": 0, "post_delay": 0},
-            })
-            detail = result.nodes[-1].recognition if result and result.nodes else None
+            # 单次识别保留真实的空结果，识别流程无法启动时立即报错。
+            detail = self.context.run_recognition_direct("OCR", JOCR(threshold=0.55, roi=roi), ocr_image)
         else:
-            job = self.controller.post_screencap().wait()
-            if not job.succeeded:
-                raise RuntimeError("Screenshot failed")
-            image = job.get()
-            self.image = image
-            self.height = image.shape[0]
-            roi = navigation_roi(label, self.height) if roi is None else roi
-            ocr_image = image
-            if label.startswith(("comments", "messages")):
-                # Mask orange Channels butterfly badges next to nicknames so OCR
-                # does not misread the decorative icon as a trailing 'W'.
-                ocr_image = image.copy()
-                b, g, r = ocr_image[:, :, 0].astype("int16"), ocr_image[:, :, 1].astype("int16"), ocr_image[:, :, 2].astype("int16")
-                orange = (r > 195) & (g > 105) & (g < 210) & (b < 100) & ((r - b) > 110)
-                if orange.any():
-                    ocr_image[orange] = 255
             result = self.tasker.post_recognition("OCR", JOCR(threshold=0.55, roi=roi), ocr_image).wait().get()
             detail = result.nodes[0].recognition if result and result.nodes else None
-            self.snapshot_frame = image
+        self.snapshot_frame = image
         if detail is None:
-            raise RuntimeError("OCR returned no result")
+            raise RuntimeError("OCR 未能启动识别")
         # Native results retain every OCR box, including ones not chosen as best_result.
-        lines = detail.raw_detail.get("all", [])
+        lines = detail.raw_detail["all"]
         if self.dump_frames and not self.context:
             self.ocr_calls = getattr(self, "ocr_calls", 0) + 1
             name = f"ocr-{self.sequence + 1:03d}-{self.ocr_calls:03d}-{label}"
@@ -411,9 +404,62 @@ class MaaUi:
         box = detail.box
         self.click({"box": [box.x, box.y, box.w, box.h]})
 
+    def _acknowledge_channels_intro(self, controls):
+        introduction = channels_intro_acknowledgement(controls)
+        if introduction is None:
+            return controls
+        self.record_snapshot("navigation-intro", controls, "hierarchy", [])
+        navigation_stage = self.navigation_stage
+        self.click(introduction, resolve=channels_intro_acknowledgement)
+        self.navigation_stage = navigation_stage
+        deadline = time.monotonic() + 10
+        while True:
+            controls = self.hierarchy(force=True)
+            if channels_intro_acknowledgement(controls) is None:
+                self.record_snapshot("navigation-intro-dismissed", controls, "hierarchy", [])
+                return controls
+            if time.monotonic() >= deadline:
+                self.record_snapshot("navigation-intro-unavailable", controls, "hierarchy", [])
+                raise RuntimeError("视频号介绍提示未在10秒内关闭")
+            time.sleep(0.25)
+
+    def _navigation_control(self, previous, controls):
+        role = previous["navigation"]
+        label = {"discover": "发现", "channels": "视频号", "recommend": "推荐"}[role]
+        deadline = time.monotonic() + 10
+        intro_acknowledged = False
+        while True:
+            introduction = channels_intro_acknowledgement(controls)
+            if introduction is not None:
+                if intro_acknowledged:
+                    raise RuntimeError("视频号介绍提示重复出现")
+                controls = self._acknowledge_channels_intro(controls)
+                intro_acknowledged = True
+                deadline = time.monotonic() + 10
+            text = [item for item in controls if item.get("selector") and not item.get("container")]
+            matches = [item for item in text if re.fullmatch(re.escape(label) + r"(?:[，,（(].*)?", item["text"])]
+            if role == "discover":
+                matches = [item for item in matches if item["box"][1] > self.height - 180]
+                ready = bool(find(text, r"^通讯录$"))
+            elif role == "channels":
+                ready = bool(find(text, r"^发现$", lambda item: item["box"][1] < 250))
+            else:
+                matches = [item for item in matches if item["box"][1] < 250]
+                ready = bool(find(text, r"^[<＜《‹«]?\s*关注", lambda item: item["box"][1] < 250)
+                             and find(text, r"^朋友", lambda item: item["box"][1] < 250))
+            if ready and len(matches) == 1:
+                self.record_snapshot("navigation-control-resolved", text, "hierarchy", [])
+                return matches[0]
+            if time.monotonic() >= deadline:
+                self.record_snapshot("navigation-control-unavailable", text, "hierarchy", [])
+                raise RuntimeError("导航控件未在10秒内就绪")
+            time.sleep(0.25)
+            controls = self.hierarchy(force=True)
+
     def click(self, line, *, resolve=None):
         if self.tasker.stopping:
             raise RuntimeError("Collection was stopped")
+        navigation = line.get("navigation")
         if resolve is not None:
             line = resolve(self.hierarchy(force=True))
             if line is None:
@@ -431,7 +477,7 @@ class MaaUi:
             # A control that is gone or ambiguous still sends no input. Only when the
             # dump itself keeps timing out (vivo) is the position just read used.
             if controls is not None:
-                line = refresh_target(controls, line)
+                line = self._navigation_control(line, controls) if navigation in ("discover", "channels", "recommend") else refresh_target(controls, line)
         elif line.get("templateNode"):
             current = self.match_navigation(line["templateNode"])
             if current:
@@ -444,7 +490,8 @@ class MaaUi:
         x, y, width, height = line["box"]
         if not self.controller.post_click(x + width // 2, y + height // 2).wait().succeeded:
             raise RuntimeError("Click failed")
-        self.navigation_stage = {"发现": "BatchChannelsEntry", "视频号": "BatchRecommended"}.get(line.get("text"))
+        self.navigation_stage = ({"discover": "BatchChannelsEntry", "channels": "BatchRecommended"}.get(navigation)
+                                 if navigation else {"发现": "BatchChannelsEntry", "视频号": "BatchRecommended"}.get(line.get("text")))
         time.sleep(0.6)
         return True
 

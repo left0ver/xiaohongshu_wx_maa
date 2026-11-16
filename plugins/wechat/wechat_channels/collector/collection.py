@@ -494,6 +494,8 @@ def ensure_feed(ui, launch=True):
     waiting_for_start = launch
     navigation_steps = 0
     navigation_label = "navigation-bottom"
+    pending_navigation = None
+    navigation_deadline = 0
     while navigation_steps < 7:
         lines = ui.snapshot(navigation_label)
         is_profile_grid = navigation_label == "navigation-bottom" and any(line["box"][1] > ui.height - 42 for line in lines)
@@ -501,25 +503,48 @@ def ensure_feed(ui, launch=True):
         if navigation_label == "navigation-bottom" and not is_profile_grid and not is_comment_drawer and not find(lines, r"^发现$|^推荐$|^视频号$|^(私信|客服)$|^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             # Already inside Channels: inspect its top tabs without full-screen OCR.
             lines = ui.snapshot("navigation-top")
+        recommended = find(lines, r"^推荐$", lambda line: line["box"][1] < 250)
+        recommendations_ready = bool(recommended
+            and find(lines, r"^[<＜《‹«]?\s*关注$", lambda line: line["box"][1] < 250)
+            and find(lines, r"^朋友", lambda line: line["box"][1] < 250))
+        channels = find(lines, r"^视频号$")
+        channels_ready = bool(channels and find(lines, r"^发现$", lambda line: line["box"][1] < 250))
+        navigation = lines[0].get("navigation") if lines else None
+        if pending_navigation:
+            ready = navigation in (pending_navigation, "recommend") or recommendations_ready or (
+                pending_navigation == "channels" and channels_ready)
+            if not ready:
+                remaining = navigation_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError("视频号导航页面未在10秒内就绪")
+                time.sleep(min(0.25, remaining))
+                continue
+            pending_navigation = None
         if lines and lines[0].get("navigation"):
             target = lines[0]
             ui.click(target)
             if target["navigation"] == "recommend":
                 return ui.snapshot("feed")
             navigation_label = "navigation-top"
+            pending_navigation = {"discover": "channels", "channels": "recommend"}[target["navigation"]]
+            navigation_deadline = time.monotonic() + 10
             waiting_for_start = False
             navigation_steps += 1
             continue
-        recommended = find(lines, r"^推荐$", lambda line: line["box"][1] < 250)
-        if recommended and find(lines, r"^[<＜《‹«]?\s*关注$", lambda line: line["box"][1] < 250) and find(lines, r"^朋友", lambda line: line["box"][1] < 250):
-            ui.click(recommended)
+        if recommendations_ready:
+            ui.click({**recommended, "navigation": "recommend"})
             return ui.snapshot("feed")
         discover = find(lines, r"^发现$", lambda line: line["box"][1] > ui.height - 180)
-        if find(lines, r"^视频号$") and find(lines, r"^发现$", lambda line: line["box"][1] < 250):
-            ui.click(find(lines, r"^视频号$"))
-        elif discover and find(lines, r"^通讯录$"):
-            ui.click(discover)
+        if channels_ready:
+            ui.click({**channels, "navigation": "channels"})
             navigation_label = "navigation-top"
+            pending_navigation = "recommend"
+            navigation_deadline = time.monotonic() + 10
+        elif discover and find(lines, r"^通讯录$"):
+            ui.click({**discover, "navigation": "discover"})
+            navigation_label = "navigation-top"
+            pending_navigation = "channels"
+            navigation_deadline = time.monotonic() + 10
         elif is_profile_grid or is_comment_drawer or find(lines, r"^(私信|客服)$") or find(lines, r"^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             ui.back()
         elif len(lines) >= 3:
