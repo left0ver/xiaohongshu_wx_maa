@@ -1,5 +1,6 @@
 """Semantic parsing, lazy fallbacks and stale-control rejection without a device."""
 
+import json
 import sys
 import unittest
 import xml.etree.ElementTree as ET
@@ -188,6 +189,32 @@ class HierarchyTests(unittest.TestCase):
         from hierarchy import page_check
         self.assertIs(page_check("search-after-sort-最新"), page_check("search-after-"))
         self.assertIsNone(page_check("unknown-label"))
+
+    def test_scrolled_comment_pages_are_read_like_the_return_check(self):
+        # Real Hebe-BD00 drawer: full-screen OCR read three avatars as glyphs, which merged
+        # 王腊梅's header into the emoji-only comment above it and failed the return check.
+        from comments import parse_comment_drawer
+        from hierarchy import page_check
+        data = Path(__file__).with_name("testdata")
+        xml = (data / "comment-drawer-sticker-emoji-hebe.xml").read_text(encoding="utf-8")
+        frame = json.loads((data / "comment-drawer-sticker-emoji-hebe.json").read_text(encoding="utf-8"))
+        controls = text_lines(xml, 1236, 2676, containers=True)
+        for label in ("comments-page-2", "comments-page-12", "comments-page-12-back"):
+            self.assertIs(page_check(label), page_check("comments-return"))
+
+        readings = {}
+        for label in ("comments-page-12", "comments-return"):
+            full = Mock(return_value=frame["full"])
+            lines, source = choose_snapshot(label, frame["height"], None, lambda: [dict(c) for c in controls],
+                                            Mock(), full, regional_ocr=lambda roi: [dict(l) for l in frame["regional"]])
+            full.assert_not_called()
+            self.assertEqual(source, "mixed")
+            self.assertFalse([l for l in lines if l["box"][0] < 92 and l["box"][1] > 480 and l.get("source") != "hierarchy"])
+            readings[label] = parse_comment_drawer(lines, frame["height"], parent_event_id="P")["comments"]
+        # Sticker and emoji-only comments carry no drawn text, so they are skipped on both readings.
+        self.assertEqual([c["nickname"] for c in readings["comments-page-12"]], ["王腊梅"])
+        self.assertEqual([c["key"] for c in readings["comments-page-12"]],
+                         [c["key"] for c in readings["comments-return"]])
 
     def test_reply_button_is_an_ocr_container(self):
         holes = [item for item in text_lines(tree(screen(label("狼王", "kbq", "[308,321][602,498]"),

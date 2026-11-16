@@ -474,7 +474,10 @@ CONTROL_PAGES = {
                      "comments-after-skip", "comments-recover", "comments-after-like", "comments-after-post",
                      "comments-after-reply", "comments-after-profile-touch", "comments-after-profile-touch-retry",
                      "comments-after-user-card", "comments-preemptive-start", "comments-composer", "comments-typed",
-                     "comments-reply-composer", "comments-reply-typed", "drawer-recover"), _comments_ready),
+                     "comments-reply-composer", "comments-reply-typed", "drawer-recover",
+                     # Scrolled pages (comments-page-N, comments-page-N-back) must be read like the
+                     # return check reads them, or the two readings of one comment cannot match.
+                     "comments-page-"), _comments_ready),
     **dict.fromkeys(("author-profile", "author-profile-touch", "author-profile-touch-retry", "profile-touch",
                      "profile-follow-check", "profile-after-follow", "profile-grid", "profile-after-first-work",
                      "profile-after-first-work-retry", "commenter-profile-before-more"), _profile_ready),
