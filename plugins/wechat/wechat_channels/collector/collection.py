@@ -403,6 +403,14 @@ def _paste_into_search(ui, search):
     return link
 
 
+class UnclearedComposerLinkError(RuntimeError):
+    """Raised when a share link pasted into the comment composer is not confirmed cleared."""
+
+
+def _has_pasted_link(lines):
+    return bool(_read_pasted_link(lines) or find(lines, SHARE_LINK.pattern))
+
+
 def _paste_into_composer(ui, lines):
     """A video opened from search results has no search button; its comment box
     takes the paste instead. The box is emptied before leaving, nothing is sent."""
@@ -416,16 +424,31 @@ def _paste_into_composer(ui, lines):
         return None
     ui.click(box)
     time.sleep(0.6)
-    ui.key(PASTE_KEY)
-    time.sleep(0.6)
-    link = _read_pasted_link(ui.snapshot("share-link-paste-composer"))
-    # Never leave the link behind as a comment draft: WeChat keeps unsent text.
-    ui.clear_text()
-    if _read_pasted_link(ui.snapshot("share-link-cleared")):
-        ui.clear_text()
-        if _read_pasted_link(ui.snapshot("share-link-cleared")):
-            raise RuntimeError("The pasted link could not be removed from the comment box")
-    return link
+    try:
+        ui.key(PASTE_KEY)
+        time.sleep(0.6)
+        link = _read_pasted_link(ui.snapshot("share-link-paste-composer"))
+        # Never leave the link behind as a comment draft: WeChat keeps unsent text.
+        cleared = False
+        for _ in range(2):
+            ui.clear_text()
+            after_clear = ui.snapshot("share-link-cleared")
+            if after_clear and not _has_pasted_link(after_clear):
+                cleared = True
+                break
+        if not cleared:
+            raise UnclearedComposerLinkError("The pasted link could not be removed from the comment box")
+        return link
+    except (InterruptedError, UnclearedComposerLinkError):
+        raise
+    except Exception as error:
+        if (hasattr(ui, "stopped") and callable(ui.stopped) and ui.stopped()) or getattr(
+            getattr(ui, "tasker", None), "stopping", False
+        ):
+            raise
+        raise UnclearedComposerLinkError(
+            f"The pasted link could not be removed from the comment box: {error}"
+        ) from error
 
 
 def back_to_video(ui, author, label):

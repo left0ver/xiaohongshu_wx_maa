@@ -1,22 +1,53 @@
 """App task 1 (视频号采集): stored fields, filter words, share link and the miss limit."""
 
 import contextlib
+import errno
 import io
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from collection import LocalStore, copy_share_link, filter_words, identity, matched_words, share_geometry
+from collection import (
+    LocalStore,
+    Timings,
+    UnclearedComposerLinkError,
+    copy_share_link,
+    filter_words,
+    identity,
+    matched_words,
+    share_geometry,
+)
 from comments import filter_comments, save_comments
-from modes import collection_task_config, run_tab_feed_mode
-from test_modes import DETAILS_TWO, FEED_SECOND, FakeModeUi, line
+from modes import (
+    collection_task_config,
+    is_fatal_collection_error,
+    is_transient_upload_error,
+    run_collection_task,
+    run_search_mode,
+    run_tab_feed_mode,
+)
+from test_modes import (
+    DETAILS_ONE,
+    DETAILS_TWO,
+    FEED_RECOMMEND,
+    FEED_SECOND,
+    INFO_ONE,
+    INFO_TWO,
+    PROFILE_ONE,
+    PROFILE_TWO,
+    SEARCH_VIDEO_TAB_LINES,
+    FakeModeUi,
+    line,
+)
 
 LINK = "https://weixin.qq.com/sph/ASkxIf0OkN"
 
@@ -225,6 +256,455 @@ class CollectionTaskTests(unittest.TestCase):
                              else [])
             with contextlib.closing(sqlite3.connect(Path(root) / "videos.sqlite3")) as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM video_drafts").fetchone()[0], 0)
+
+    def test_error_in_recommend_feed_recovers_skips_broken_video_and_collects_next(self):
+        broken_profile = [line("喜剧之王单口季", 192, 509, 210, 34)]
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            timings = Timings(Path(root) / "timings.jsonl", "run-rec-skip")
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,  # switch_channels_top_tab resume
+                    DETAILS_ONE,     # video 1 details
+                    FEED_RECOMMEND,  # video 1 before-author
+                    broken_profile,  # video 1 author-profile -> missing controls -> ValueError
+                    PROFILE_ONE,     # recover-check-0 -> user_profile -> back()
+                    FEED_RECOMMEND,  # recover-check-1 -> recommend_feed recovered
+                    FEED_SECOND,     # recommend-feed-1 after scroll_feed_next()
+                    DETAILS_TWO,     # video 2 details
+                    FEED_SECOND,     # video 2 before-author
+                    PROFILE_TWO,     # video 2 author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_TWO,        # video 2 basic-info
+                ]
+            )
+            with patch("modes.time.sleep"), patch("collection.time.sleep"):
+                report = run_tab_feed_mode(ui, Path(root), tab="recommend", count=1, max_swipes=5, timings=timings)
+
+            self.assertEqual(report["processedCount"], 1)
+            self.assertEqual(report["videos"][0]["author"], "阿星探店")
+            self.assertEqual(len(report["failedItems"]), 1)
+            self.assertEqual(report["failedItems"][0]["author"], "喜剧之王单口季")
+            self.assertTrue(report["failedItems"][0]["recovered"])
+            self.assertEqual(report["failedItems"][0]["recoverySteps"], 1)
+            self.assertEqual(ui.swipes_next, 1)
+
+            seen = json.loads((Path(root) / "seen.json").read_text(encoding="utf-8"))
+            broken_key = identity("喜剧之王单口季", "凭什么脂肪伸缩自如，毛囊却自动退休？#脱口秀")
+            saved_key = identity("阿星探店", "今天分享一道快手家常菜#美食")
+            self.assertTrue(any(saved_key in item for item in seen))
+            self.assertFalse(any(broken_key in item for item in seen))
+            self.assertTrue(any(r.get("kind") == "videoSkippedOnError" for r in timings.rows)
+                            or "videoSkippedOnError" in (Path(root) / "timings.jsonl").read_text(encoding="utf-8"))
+
+    def test_error_in_search_mode_backs_out_to_grid_and_skips_failed_card(self):
+        opened_search_video = [
+            line("#徐志胜这段#脱口秀就该直接封神！", 29, 1369, 665, 28),
+            line("腾讯娱乐", 119, 1477, 150, 34),
+            line("转发", 441, 1533, 53, 23),
+            line("288", 636, 1533, 47, 25),
+        ]
+        deleted_video = [line("该内容无法查看", 260, 760, 200, 34)]
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi(
+                [
+                    SEARCH_VIDEO_TAB_LINES,  # search_keyword reuse check
+                    SEARCH_VIDEO_TAB_LINES,  # apply_search_filters after sort click
+                    deleted_video,           # card 0 opened -> not channels_feed
+                    deleted_video,           # card 0 retry -> feed_video_preview raises ValueError
+                    opened_search_video,     # recover-check-0 -> bare video -> back_from_search_video
+                    SEARCH_VIDEO_TAB_LINES,  # recover-check-1 -> back on search_results!
+                    SEARCH_VIDEO_TAB_LINES,  # idx=1 search-grid-2 -> skips card 0, selects card 1
+                    FEED_SECOND,             # card 1 opened
+                    DETAILS_TWO,             # card 1 details
+                    FEED_SECOND,             # card 1 before-author
+                    PROFILE_TWO,             # card 1 author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_TWO,                # card 1 basic-info
+                    SEARCH_VIDEO_TAB_LINES,  # card 1 search-return-2
+                ]
+            )
+            with patch("modes.time.sleep"), patch("collection.time.sleep"):
+                report = run_search_mode(ui, Path(root), keyword="脱口秀", count=1, max_screens=2)
+
+            self.assertEqual(report["processedCount"], 1)
+            self.assertEqual(len(report["failedItems"]), 1)
+            self.assertEqual(report["failedItems"][0]["author"], "腾讯娱乐")
+            self.assertTrue(report["failedItems"][0]["recovered"])
+            self.assertEqual(report["recoveryEvents"][0]["actions"], ["back_from_search_video"])
+            self.assertEqual(ui.texts_set, [])
+            seen = json.loads((Path(root) / "seen.json").read_text(encoding="utf-8"))
+            self.assertFalse(any(report["failedItems"][0]["cardKey"] in item for item in seen))
+
+    def test_consecutive_error_circuit_breaker_and_reset_on_success(self):
+        feed_a = [*FEED_RECOMMEND[:4], line("作品A", 29, 1380, 200, 28), line("作者甲", 118, 1478, 120, 34), *FEED_RECOMMEND[6:]]
+        feed_b = [*FEED_RECOMMEND[:4], line("作品B", 29, 1380, 200, 28), line("作者乙", 118, 1478, 120, 34), *FEED_RECOMMEND[6:]]
+        feed_c = [*FEED_RECOMMEND[:4], line("作品C", 29, 1380, 200, 28), line("作者丙", 118, 1478, 120, 34), *FEED_RECOMMEND[6:]]
+        feed_d = [*FEED_RECOMMEND[:4], line("作品D", 29, 1380, 200, 28), line("作者丁", 118, 1478, 120, 34), *FEED_RECOMMEND[6:]]
+
+        # 3 errors in a row -> circuit breaker stops the run immediately.
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi([feed_a, feed_a, feed_b, feed_b, feed_c])
+            with patch("modes.time.sleep"), patch(
+                "modes._process_open_video_item", side_effect=ValueError("Author profile controls are missing")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "连续 3 个视频采集报错"):
+                    run_tab_feed_mode(ui, Path(root), tab="recommend", count=2, max_swipes=10)
+            self.assertEqual(ui.swipes_next, 2)
+
+        # 2 errors -> 1 success -> 2 errors -> 1 success resets the counter and finishes cleanly.
+        outcomes = [
+            ValueError("broken 1"),
+            ValueError("broken 2"),
+            {
+                "completedPurposes": ["collect"],
+                "failedActions": [],
+                "eventId": "ev-1",
+                "dedupeKey": identity("作者丙", "作品C"),
+                "sourceMode": "RECOMMEND",
+                "author": "作者丙",
+                "description": "作品C",
+                "authorWechatChannelsId": "sphC000001",
+                "videoUrl": None,
+                "previewKey": "wxch-preview:" + identity("作者丙", "作品C"),
+                "authorKey": "wxch-author:" + identity("作者丙"),
+            },
+            ValueError("broken 3"),
+            ValueError("broken 4"),
+            {
+                "completedPurposes": ["collect"],
+                "failedActions": [],
+                "eventId": "ev-2",
+                "dedupeKey": identity("阿星探店", "今天分享一道快手家常菜#美食"),
+                "sourceMode": "RECOMMEND",
+                "author": "阿星探店",
+                "description": "今天分享一道快手家常菜#美食",
+                "authorWechatChannelsId": "sphFoodStar888",
+                "videoUrl": None,
+                "previewKey": "wxch-preview:" + identity("阿星探店", "今天分享一道快手家常菜#美食"),
+                "authorKey": "wxch-author:" + identity("阿星探店"),
+            },
+        ]
+        feed_e = [*FEED_RECOMMEND[:4], line("作品E", 29, 1380, 200, 28), line("作者戊", 118, 1478, 120, 34), *FEED_RECOMMEND[6:]]
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi([
+                feed_a, feed_a,  # fail 1 + recover
+                feed_b, feed_b,  # fail 2 + recover
+                feed_c,          # success 1 (resets consecutive_errors to 0)
+                feed_d, feed_d,  # fail 3 + recover
+                feed_e, feed_e,  # fail 4 + recover
+                FEED_SECOND,     # success 2
+            ])
+            with patch("modes.time.sleep"), patch("modes._process_open_video_item", side_effect=outcomes):
+                report = run_tab_feed_mode(ui, Path(root), tab="recommend", count=2, max_swipes=10)
+            self.assertEqual(report["processedCount"], 2)
+            self.assertEqual(len(report["failedItems"]), 4)
+
+    def test_fatal_errors_abort_immediately_without_skipping(self):
+        fatal_cases = (
+            InterruptedError("Collection was stopped"),
+            RuntimeError("Collection was stopped"),
+            RuntimeError("The pasted link could not be removed from the comment box"),
+            RuntimeError("Verification timeout; manual intervention did not complete within limit"),
+            PermissionError("授权码或绑定设备验证失败"),
+        )
+        for fatal in fatal_cases:
+            with self.subTest(error=repr(fatal)), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                ui = FakeModeUi([FEED_RECOMMEND, FEED_SECOND])
+                with patch("modes.time.sleep"), patch("modes._process_open_video_item", side_effect=fatal):
+                    with self.assertRaises(type(fatal)):
+                        run_tab_feed_mode(ui, Path(root), tab="recommend", count=2, max_swipes=5)
+                self.assertEqual(ui.swipes_next, 0)
+
+    def test_copied_link_before_mid_video_failure_updates_previous_link_guard(self):
+        broken_profile = [line("喜剧之王单口季", 192, 509, 210, 34)]
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,  # resume
+                    DETAILS_ONE,     # video 1 details
+                    FEED_RECOMMEND,  # video 1 copy_share_link snapshot("feed")
+                    FEED_RECOMMEND,  # video 1 before-author
+                    broken_profile,  # video 1 author-profile -> raises ValueError after link was copied!
+                    FEED_RECOMMEND,  # recover-check-0 -> already on recommend_feed
+                    FEED_SECOND,     # video 2 after swipe
+                    DETAILS_TWO,     # video 2 details
+                    FEED_SECOND,     # video 2 copy_share_link snapshot("feed")
+                    FEED_SECOND,     # video 2 share-recover back_to_video
+                    FEED_SECOND,     # video 2 before-author
+                    PROFILE_TWO,     # video 2 author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_TWO,        # video 2 basic-info
+                ]
+            )
+
+            def fake_copy_link(_ui, _lines, previous_link=None):
+                if previous_link == LINK:
+                    raise ValueError("The clipboard still holds the previous video's link")
+                return LINK
+
+            with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                "modes.copy_share_link", side_effect=fake_copy_link
+            ):
+                report = run_tab_feed_mode(
+                    ui,
+                    Path(root),
+                    tab="recommend",
+                    count=1,
+                    max_swipes=5,
+                    collect_options={"copyShareLink": True},
+                )
+
+            self.assertEqual(report["processedCount"], 1)
+            self.assertIsNone(report["videos"][0]["videoUrl"])
+            self.assertIn("videoUrl", report["videos"][0]["videoEvent"]["payload"]["missingFields"])
+
+    def test_transient_upload_failure_defers_to_sqlite_and_flushes_on_recovery(self):
+        comment_drawer_one = [
+            line("评论1", 27, 482, 110, 32),
+            line("路人甲广东1天前", 99, 620, 260, 28),
+            line("太真实了哈哈", 99, 660, 220, 28),
+            line("12", 650, 620, 36, 28),
+            line("已显示全部评论", 260, 820, 180, 28),
+            line("发表评论", 101, 1537, 200, 34),
+        ]
+        comment_drawer_two = [
+            line("评论1", 27, 482, 110, 32),
+            line("吃货乙北京2小时前", 99, 620, 260, 28),
+            line("看着很有食欲", 99, 660, 220, 28),
+            line("5", 650, 620, 36, 28),
+            line("已显示全部评论", 260, 820, 180, 28),
+            line("发表评论", 101, 1537, 200, 34),
+        ]
+        identity_cfg = {"scope": "a" * 64, "machine": "device-001"}
+        calls = []
+
+        def flaky_transport(events, **_):
+            calls.append([e["event_type"] for e in events])
+            # Fail on Video 1's streaming upload; succeed once Video 2 starts uploading.
+            if len(calls) == 1:
+                raise TimeoutError("等待 discoveryAckIds 超时")
+            ids = [e["event_id"] for e in events]
+            return {"discoveryAckIds": ids, "pendingEventIds": [], "uploaded": True}
+
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            timings = Timings(Path(root) / "runs/r1/timings.jsonl", "r1")
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,      # switch_channels_top_tab
+                    DETAILS_ONE,         # video 1 details
+                    FEED_RECOMMEND,      # video 1 copy link feed
+                    FEED_RECOMMEND,      # video 1 before-author
+                    PROFILE_ONE,         # video 1 author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_ONE,            # video 1 basic-info
+                    FEED_RECOMMEND,      # video 1 comments feed check
+                    comment_drawer_one,  # video 1 comments page 1
+                    FEED_SECOND,         # video 2 recommend-feed-1
+                    DETAILS_TWO,         # video 2 details
+                    FEED_SECOND,         # video 2 copy link feed
+                    FEED_SECOND,         # video 2 before-author
+                    PROFILE_TWO,         # video 2 author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_TWO,            # video 2 basic-info
+                    FEED_SECOND,         # video 2 comments feed check
+                    comment_drawer_two,  # video 2 comments page 1
+                ]
+            )
+            link_seq = iter(["https://weixin.qq.com/sph/LinkOne01", "https://weixin.qq.com/sph/LinkTwo02"])
+            with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                "modes.copy_share_link", side_effect=lambda *_a, **_kw: next(link_seq)
+            ):
+                result = run_collection_task(
+                    ui,
+                    Path(root),
+                    {"entry": "recommend", "count": 2, "commentOptions": {"visitProfiles": False, "maxPages": 1}},
+                    timings=timings,
+                    publisher_identity=identity_cfg,
+                    upload_transport=flaky_transport,
+                )
+
+            self.assertEqual(result["processedCount"], 2)
+            # Video 1's comment did NOT trigger a second failing network timeout while Video 1 upload was deferred!
+            self.assertEqual(calls[0], ["VIDEO"])
+            self.assertEqual(result["upload"]["pendingCount"], 0)
+            self.assertEqual(result["upload"]["acknowledgedCount"], 4)  # 2 VIDEO + 2 COMMENT
+            log_text = (Path(root) / "runs/r1/timings.jsonl").read_text(encoding="utf-8")
+            self.assertIn("discoveryDeferred", log_text)
+
+        # Unauthorized error is never treated as transient and stops immediately.
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,
+                    DETAILS_ONE,
+                    FEED_RECOMMEND,
+                    FEED_RECOMMEND,
+                    PROFILE_ONE,
+                    [line("更多信息", 280, 1400)],
+                    INFO_ONE,
+                ]
+            )
+            with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                "modes.copy_share_link", return_value="https://weixin.qq.com/sph/LinkAuth1"
+            ):
+                with self.assertRaises(PermissionError):
+                    run_collection_task(
+                        ui,
+                        Path(root),
+                        {"entry": "recommend", "count": 1, "commentOptions": {"visitProfiles": False, "maxPages": 1}},
+                        publisher_identity=identity_cfg,
+                        upload_transport=lambda *_a, **_kw: (_ for _ in ()).throw(
+                            PermissionError("授权码或绑定设备验证失败")
+                        ),
+                    )
+
+    def test_composer_clear_command_failure_raises_fatal_error_and_stops_run(self):
+        drawer = [
+            line("评论19", 27, 482, 110, 32),
+            control("发表评论", 101, 1537, 458, 34, cls="android.widget.EditText"),
+        ]
+        pasted = [control(LINK, 101, 900, 458, 60, cls="android.widget.EditText")]
+        sheet = [line("投诉", 18, 1365, 36, 49), line("复制链接", 611, 1365, 72, 49)]
+        for clear_exc in (
+            subprocess.TimeoutExpired(["input", "keyevent"], 30),
+            subprocess.CalledProcessError(1, ["input", "keyevent"]),
+        ):
+            with self.subTest(exc=type(clear_exc).__name__), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                ui = ShareUi(
+                    [
+                        FEED_SECOND,  # switch_channels_top_tab
+                        DETAILS_TWO,  # video details
+                        FEED_SECOND,  # copy_share_link feed snapshot
+                        sheet,        # share-sheet
+                        FEED_SECOND,  # share-closed
+                        FEED_SECOND,  # share-feed (no search button -> composer)
+                        drawer,       # share-paste-drawer
+                        pasted,       # share-link-paste-composer
+                    ]
+                )
+                ui.clear_text = lambda exc=clear_exc: (_ for _ in ()).throw(exc)
+                with patch("modes.time.sleep"), patch("collection.time.sleep"):
+                    with self.assertRaises(UnclearedComposerLinkError) as ctx:
+                        run_tab_feed_mode(
+                            ui,
+                            Path(root),
+                            tab="recommend",
+                            count=2,
+                            max_swipes=5,
+                            collect_options={"copyShareLink": True},
+                        )
+                self.assertTrue(is_fatal_collection_error(ui, ctx.exception))
+                self.assertEqual(ui.swipes_next, 0)
+
+    def test_non_transient_upload_and_enqueue_errors_propagate_through_video_loop(self):
+        identity_cfg = {"scope": "b" * 64, "machine": "device-002"}
+        for bad_exc in (
+            ValueError("服务端确认了本次请求之外的事件"),
+            sqlite3.OperationalError("database disk image is malformed"),
+        ):
+            with self.subTest(exc=repr(bad_exc)), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+                ui = FakeModeUi(
+                    [
+                        FEED_RECOMMEND,
+                        DETAILS_ONE,
+                        FEED_RECOMMEND,
+                        FEED_RECOMMEND,
+                        PROFILE_ONE,
+                        [line("更多信息", 280, 1400)],
+                        INFO_ONE,
+                        FEED_SECOND,
+                    ]
+                )
+                with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                    "modes.copy_share_link", return_value="https://weixin.qq.com/sph/LinkFatal1"
+                ):
+                    with self.assertRaises(type(bad_exc)):
+                        run_collection_task(
+                            ui,
+                            Path(root),
+                            {"entry": "recommend", "count": 2, "commentOptions": {"visitProfiles": False, "maxPages": 1}},
+                            publisher_identity=identity_cfg,
+                            upload_transport=lambda *_a, exc=bad_exc, **_kw: (_ for _ in ()).throw(exc),
+                        )
+                self.assertEqual(ui.swipes_next, 0)
+
+    def test_http_401_and_local_disk_errors_are_not_deferred_as_transient_upload(self):
+        http_401 = urllib.error.HTTPError("http://127.0.0.1:9999/upload", 401, "Unauthorized", None, None)
+        http_403 = urllib.error.HTTPError("http://127.0.0.1:9999/upload", 403, "Forbidden", None, None)
+        http_500 = urllib.error.HTTPError("http://127.0.0.1:9999/upload", 500, "Internal Server Error", None, None)
+        disk_full = OSError(errno.ENOSPC, "No space left on device")
+        missing_file = FileNotFoundError(errno.ENOENT, "No such file or directory")
+        net_down = OSError(errno.ENETUNREACH, "Network is unreachable")
+
+        self.assertFalse(is_transient_upload_error(http_401))
+        self.assertFalse(is_transient_upload_error(http_403))
+        self.assertTrue(is_transient_upload_error(http_500))
+        self.assertFalse(is_transient_upload_error(disk_full))
+        self.assertFalse(is_transient_upload_error(missing_file))
+        self.assertTrue(is_transient_upload_error(net_down))
+
+        identity_cfg = {"scope": "c" * 64, "machine": "device-003"}
+        # 1. HTTP 401 from RemoteBridge transport immediately aborts without swiping.
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,
+                    DETAILS_ONE,
+                    FEED_RECOMMEND,
+                    FEED_RECOMMEND,
+                    PROFILE_ONE,
+                    [line("更多信息", 280, 1400)],
+                    INFO_ONE,
+                    FEED_SECOND,
+                ]
+            )
+            with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                "modes.copy_share_link", return_value="https://weixin.qq.com/sph/Link401"
+            ):
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    run_collection_task(
+                        ui,
+                        Path(root),
+                        {"entry": "recommend", "count": 2, "commentOptions": {"visitProfiles": False, "maxPages": 1}},
+                        publisher_identity=identity_cfg,
+                        upload_transport=lambda *_a, **_kw: (_ for _ in ()).throw(
+                            urllib.error.HTTPError("http://127.0.0.1:9999/upload", 401, "Unauthorized", None, None)
+                        ),
+                    )
+            self.assertEqual(ctx.exception.code, 401)
+            self.assertEqual(ui.swipes_next, 0)
+
+        # 2. Local disk write failure in publisher.flush() (before transport) immediately aborts.
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = FakeModeUi(
+                [
+                    FEED_RECOMMEND,
+                    DETAILS_ONE,
+                    FEED_RECOMMEND,
+                    FEED_RECOMMEND,
+                    PROFILE_ONE,
+                    [line("更多信息", 280, 1400)],
+                    INFO_ONE,
+                    FEED_SECOND,
+                ]
+            )
+            with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
+                "modes.copy_share_link", return_value="https://weixin.qq.com/sph/LinkDisk"
+            ), patch.object(Path, "write_text", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+                with self.assertRaises(OSError) as disk_ctx:
+                    run_collection_task(
+                        ui,
+                        Path(root),
+                        {"entry": "recommend", "count": 2, "commentOptions": {"visitProfiles": False, "maxPages": 1}},
+                        publisher_identity=identity_cfg,
+                        upload_transport=lambda events, **_kw: {
+                            "discoveryAckIds": [e["event_id"] for e in events],
+                            "pendingEventIds": [],
+                            "uploaded": True,
+                        },
+                    )
+            self.assertEqual(disk_ctx.exception.errno, errno.ENOSPC)
+            self.assertEqual(ui.swipes_next, 0)
 
 
 if __name__ == "__main__":

@@ -257,7 +257,8 @@ class CollectChannelsAction(CustomAction):
                                                          encoding="utf-8")
                 timings.emit({"kind": "collectionCompleted", "outcome": "succeeded",
                               "saved": len(result.get("videos") or []), "endReason": result.get("endReason"),
-                              "filtered": len(result.get("filteredItems") or [])})
+                              "filtered": len(result.get("filteredItems") or []),
+                              "skippedErrors": len(result.get("failedItems") or [])})
                 return True
         except Exception as error:
             timings.emit({"kind": "collectionCompleted", "outcome": "failed", "error": str(error)})

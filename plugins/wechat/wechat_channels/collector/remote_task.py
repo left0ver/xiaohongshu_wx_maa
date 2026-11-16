@@ -114,16 +114,25 @@ def execute_remote(tasker, context, root, config):
                                                  publisher_identity=identity, upload_transport=bridge.upload)
                     videos = result.get("videos", [])
                     processed = result.get("processedCount", len(videos))
+                    failed_videos = len(result.get("failedItems") or [])
                     reports = [video.get("commentsReport", {}) for video in videos]
                     complete = processed == options["count"]
+                    message = (
+                        f"采集结束：视频 {processed}/{options['count']}，"
+                        f"确认上传 {result['upload']['acknowledgedCount']}，"
+                        f"待上传 {result['upload']['pendingCount']}"
+                    )
+                    if failed_videos:
+                        message += f"，跳过异常视频 {failed_videos}"
                     summary.update({"processedCount": processed, "complete": complete,
                                     "requestedCount": options["count"], "endReason": result.get("endReason"),
+                                    "failedVideoCount": failed_videos,
                                     "commentCount": sum(len(report.get("events", [])) for report in reports),
                                     "profileCount": sum(len(report.get("userEvents", [])) for report in reports),
                                     "commentCollectionsComplete": all(report.get("complete") is True for report in reports),
                                     "incompleteCommentVideos": sum(report.get("complete") is not True for report in reports),
                                     "upload": result["upload"], "success": complete and result["upload"]["pendingCount"] == 0,
-                                    "message": f"采集结束：视频 {processed}/{options['count']}，确认上传 {result['upload']['acknowledgedCount']}，待上传 {result['upload']['pendingCount']}"})
+                                    "message": message})
                 elif task in LINK_TASKS:
                     result = run_link_task(ui, DailyQuotaStore(root / "daily_quotas.json"),
                                            LinkLedger(root / "link_actions.json"), {**options, "action": LINK_TASKS[task]})

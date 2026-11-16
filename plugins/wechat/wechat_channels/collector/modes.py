@@ -5,10 +5,16 @@ Bounded abnormal-page recovery."""
 
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import errno
+import http.client
 import json
 from pathlib import Path
 import re
+import socket
+import sqlite3
+import ssl
 import time
+import urllib.error
 import uuid
 
 from collection import (
@@ -16,6 +22,7 @@ from collection import (
     MESSAGE_LIKE_TAB,
     LocalStore,
     Timings,
+    UnclearedComposerLinkError,
     author_in_feed,
     back_to_video,
     collect_current_video,
@@ -35,6 +42,7 @@ from collection import (
 from comments import collect_visible_comments, comment_limits, nickname_matches
 from interactions import (
     DailyQuotaStore,
+    QuotaExceededError,
     check_stopped,
     classify_page_state,
     compute_work_key,
@@ -45,7 +53,7 @@ from interactions import (
     validate_interaction_config,
 )
 from layout import DATE, compact, line_height, profile_name, reading_rows
-from publisher import WechatPublisher
+from publisher import PartialAckError, WechatPublisher
 
 SORT_ALIASES = {
     None: "不限",
@@ -278,9 +286,124 @@ def is_captcha_lines(lines) -> bool:
     return any(_CAPTCHA_RE.search(line.get("text", "").strip()) for line in lines)
 
 
+MAX_CONSECUTIVE_VIDEO_ERRORS = 3
+
+_FATAL_ERROR_PATTERNS = (
+    "was stopped",
+    "task stopped",
+    "任务已停止",
+    "verification timeout",
+    "could not be removed from the comment box",
+    "授权码",
+    "设备身份发生变化",
+    "portrait orientation",
+    "physical screen size is unavailable",
+    "ui hierarchy helper is missing",
+    "缺少 ui 采集组件",
+    "screenshot failed",
+    "ocr 未能启动识别",
+    "native maaframework is unavailable",
+)
+
+
+_NETWORK_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "ENETUNREACH",
+        "EHOSTUNREACH",
+        "ENETDOWN",
+        "EHOSTDOWN",
+        "ENETRESET",
+        "ETIMEDOUT",
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ECONNABORTED",
+        "EPIPE",
+        "ENOTCONN",
+        "ESHUTDOWN",
+        "EAGAIN",
+        "EWOULDBLOCK",
+    )
+    if hasattr(errno, name)
+)
+
+
 def is_captcha_error(error: Exception) -> bool:
     msg = str(error)
     return "Verification detected" in msg or "captcha" in msg.lower()
+
+
+def is_fatal_collection_error(ui, error: Exception) -> bool:
+    """Errors that must stop the entire run immediately instead of skipping the video."""
+    if getattr(error, "_fatal_collection_error", False):
+        return True
+    if isinstance(
+        error,
+        (
+            InterruptedError,
+            PermissionError,
+            QuotaExceededError,
+            UnclearedComposerLinkError,
+            sqlite3.Error,
+        ),
+    ):
+        return True
+    if isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EROFS):
+        return True
+    if ui is not None:
+        if hasattr(ui, "stopped") and callable(ui.stopped) and ui.stopped():
+            return True
+        if getattr(getattr(ui, "tasker", None), "stopping", False):
+            return True
+    if is_captcha_error(error):
+        return True
+    msg = str(error).lower()
+    return any(pattern in msg for pattern in _FATAL_ERROR_PATTERNS)
+
+
+def is_transient_upload_error(error: Exception) -> bool:
+    """Network or unacknowledged-batch errors whose drafts remain safely queued in SQLite."""
+    if isinstance(error, (InterruptedError, PermissionError, sqlite3.Error)):
+        return False
+    msg = str(error)
+    if any(word in msg for word in ("授权", "身份发生变化", "环境变量", "之外的事件")):
+        return False
+    if isinstance(error, PartialAckError) or (isinstance(error, RuntimeError) and "未收到 ACK" in msg):
+        return True
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in (408, 429) or 500 <= error.code < 600
+    if type(error).__module__.startswith("websockets"):
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status not in (408, 429):
+            return False
+        return True
+    if isinstance(
+        error,
+        (
+            TimeoutError,
+            ConnectionError,
+            ssl.SSLError,
+            socket.gaierror,
+            socket.herror,
+            urllib.error.URLError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+        ),
+    ):
+        return True
+    if isinstance(error, OSError):
+        return error.errno in _NETWORK_ERRNOS
+    if isinstance(error, ValueError) and any(
+        phrase in msg
+        for phrase in (
+            "服务端未确认上报请求",
+            "服务端上传确认无效",
+            "服务端回执必须是 JSON 对象",
+            "服务端 discoveryAckIds 格式无效",
+        )
+    ):
+        return True
+    return False
 
 
 def check_no_captcha(lines):
@@ -864,6 +987,11 @@ def bounded_recover_to_target(
 
         if classify_page_state(lines, ui.height) == "channels_feed" and not is_search_results_page(lines) and not is_search_input_page(lines):
             if norm_target == "search":
+                if not find_top_tabs(lines) and "back_from_search_video" not in actions:
+                    ui.back()
+                    time.sleep(0.6)
+                    actions.append("back_from_search_video")
+                    continue
                 if expected_keyword:
                     search_keyword(ui, expected_keyword)
                     actions.append(f"search:{expected_keyword}")
@@ -871,6 +999,14 @@ def bounded_recover_to_target(
             else:
                 tabs = find_top_tabs(lines)
                 if norm_target in tabs:
+                    if f"tap_tab:{norm_target}" in actions:
+                        return {
+                            "recovered": True,
+                            "target": norm_target,
+                            "pageType": f"{norm_target}_feed",
+                            "stepsUsed": step,
+                            "actions": actions,
+                        }
                     ui.click(tabs[norm_target])
                     time.sleep(0.8)
                     actions.append(f"tap_tab:{norm_target}")
@@ -1553,6 +1689,7 @@ def collect_video_in_mode(
     search_keyword: str | None = None,
     copy_link: bool = False,
     previous_link: str | None = None,
+    on_link_copied=None,
 ) -> dict | None:
     """Collect the currently open video into `LocalStore` (`videos.sqlite3`) with `source_mode`.
 
@@ -1592,6 +1729,8 @@ def collect_video_in_mode(
             with phase("copy_share_link"):
                 try:
                     video_url = copy_share_link(ui, ui.snapshot("feed"), previous_link=previous_link)
+                    if callable(on_link_copied) and video_url:
+                        on_link_copied(video_url)
                 except ValueError as error:
                     emit({"kind": "shareLinkMissing", "author": author, "error": str(error)})
                     back_to_video(ui, author, "share-recover")
@@ -1684,7 +1823,7 @@ def _process_open_video_item(
     check_stopped(ui)
     preview = feed_video_preview(lines, ui.height)
     video_event = None
-    options = collect_options or {}
+    options = collect_options if isinstance(collect_options, dict) else {}
     if collect_video:
         video_event = call_with_captcha_pause(
             ui,
@@ -1698,6 +1837,9 @@ def _process_open_video_item(
             search_keyword=options.get("searchKeyword"),
             copy_link=bool(options.get("copyShareLink")),
             previous_link=options.get("previousLink"),
+            on_link_copied=(lambda url: options.__setitem__("previousLink", url))
+            if isinstance(collect_options, dict)
+            else None,
         )
         if video_event is None:
             return {"filtered": True, "completedPurposes": [], "failedActions": [],
@@ -1783,6 +1925,7 @@ def run_tab_feed_mode(
     timings: Timings | None = None,
     collect_options: dict | None = None,
     max_misses: int | None = None,
+    max_consecutive_errors: int = MAX_CONSECUTIVE_VIDEO_ERRORS,
 ) -> dict:
     """Continuously process `count` videos on a Channels top-tab feed (`recommend`,
     `friends`, `follow`, `city`), skipping seen videos, live streams, and ads.
@@ -1794,6 +1937,8 @@ def run_tab_feed_mode(
         raise ValueError(f"Unsupported feed tab: {tab}")
     if type(count) is not int or not 0 <= count <= 500:
         raise ValueError("count must be between 0 and 500")
+    if type(max_consecutive_errors) is not int or max_consecutive_errors < 1:
+        raise ValueError("max_consecutive_errors must be a positive integer")
 
     started = time.monotonic()
     root_dir = Path(root_dir)
@@ -1837,8 +1982,11 @@ def run_tab_feed_mode(
     skipped_items = []
     recovery_events = []
     filtered_items = []
+    failed_items = []
+    failed_preview_keys = set()
     swipes = 0
     misses = 0
+    consecutive_errors = 0
     collect_options = dict(collect_options or {})
 
     def missed():
@@ -1887,6 +2035,21 @@ def run_tab_feed_mode(
             swipes += 1
             continue
 
+        if preview["previewKey"] in failed_preview_keys:
+            skipped_items.append(
+                {
+                    "swipeIndex": swipes,
+                    "kind": "failed_in_run",
+                    "author": preview["author"],
+                    "previewKey": preview["previewKey"],
+                }
+            )
+            if missed() or swipes >= max_swipes:
+                break
+            ui.scroll_feed_next()
+            swipes += 1
+            continue
+
         if already_processed(seen, purposes, (
             preview["previewKey"],
             compute_work_key(author=preview["author"], title=preview["captionPreview"]),
@@ -1907,20 +2070,61 @@ def run_tab_feed_mode(
             swipes += 1
             continue
 
-        item_report = _process_open_video_item(
-            ui,
-            data_dir,
-            lines=lines,
-            source_mode=effective_source_mode,
-            store=store,
-            timings=timings,
-            quota_store=quota_store,
-            collect_video=collect_video,
-            inspect_comments=inspect_comments,
-            comment_options=comment_options,
-            interaction_options=interaction_options,
-            collect_options=collect_options,
-        )
+        try:
+            item_report = _process_open_video_item(
+                ui,
+                data_dir,
+                lines=lines,
+                source_mode=effective_source_mode,
+                store=store,
+                timings=timings,
+                quota_store=quota_store,
+                collect_video=collect_video,
+                inspect_comments=inspect_comments,
+                comment_options=comment_options,
+                interaction_options=interaction_options,
+                collect_options=collect_options,
+            )
+        except Exception as error:
+            if is_fatal_collection_error(ui, error):
+                raise
+            consecutive_errors += 1
+            failed_preview_keys.add(preview["previewKey"])
+            failure = {
+                "swipeIndex": swipes,
+                "author": preview["author"],
+                "previewKey": preview["previewKey"],
+                "errorType": type(error).__name__,
+                "error": str(error),
+                "consecutiveErrors": consecutive_errors,
+            }
+            if timings is not None:
+                timings.emit({"kind": "videoSkippedOnError", **failure})
+            if consecutive_errors >= max_consecutive_errors:
+                failed_items.append({**failure, "recovered": False})
+                raise RuntimeError(
+                    f"连续 {consecutive_errors} 个视频采集报错，已停止任务；最后一次错误（{preview['author']}）：{error}"
+                ) from error
+            try:
+                rec = bounded_recover_to_target(ui, target=norm_tab, max_steps=6)
+            except Exception as recover_error:
+                failed_items.append({**failure, "recovered": False, "recoveryError": str(recover_error)})
+                if timings is not None:
+                    timings.emit({
+                        "kind": "videoRecoveryFailed",
+                        "author": preview["author"],
+                        "error": str(error),
+                        "recoveryError": str(recover_error),
+                    })
+                raise
+            recovery_events.append(rec)
+            failed_items.append({**failure, "recovered": True, "recoverySteps": rec["stepsUsed"]})
+            if missed() or swipes >= max_swipes:
+                break
+            ui.scroll_feed_next()
+            swipes += 1
+            continue
+
         if item_report.get("filtered"):
             filtered_items.append({"swipeIndex": swipes, "author": item_report["author"],
                                    "previewKey": item_report["previewKey"]})
@@ -1930,6 +2134,7 @@ def run_tab_feed_mode(
             swipes += 1
             continue
         misses = 0
+        consecutive_errors = 0
         if item_report.get("videoUrl"):
             collect_options["previousLink"] = item_report["videoUrl"]
         videos.append(item_report)
@@ -1957,6 +2162,7 @@ def run_tab_feed_mode(
         "videos": videos,
         "skippedItems": skipped_items,
         "filteredItems": filtered_items,
+        "failedItems": failed_items,
         "endReason": "count_reached" if len(videos) >= count else (
             "miss_limit" if max_misses is not None and misses >= max_misses else "swipe_limit"),
         "recoveryEvents": recovery_events,
@@ -1995,6 +2201,7 @@ def run_search_mode(
     timings: Timings | None = None,
     collect_options: dict | None = None,
     max_misses: int | None = None,
+    max_consecutive_errors: int = MAX_CONSECUTIVE_VIDEO_ERRORS,
 ) -> dict:
     """Search `keyword`, apply sort/duration/scope filters, open video cards from the
     2-column search results grid, process them, and verify return to the results list.
@@ -2003,6 +2210,8 @@ def run_search_mode(
     max_misses, the run ends after that many cards in a row are filtered out."""
     if type(count) is not int or not 0 <= count <= 500:
         raise ValueError("count must be between 0 and 500")
+    if type(max_consecutive_errors) is not int or max_consecutive_errors < 1:
+        raise ValueError("max_consecutive_errors must be a positive integer")
 
     started = time.monotonic()
     root_dir = Path(root_dir)
@@ -2038,9 +2247,12 @@ def run_search_mode(
     videos = []
     filtered_items = []
     filtered_cards = set()
+    failed_items = []
+    failed_cards = set()
     recovery_events = []
     collect_options = {**(collect_options or {}), "searchKeyword": target_kw}
     misses = 0
+    consecutive_errors = 0
     idx = -1
     end_reason = None
 
@@ -2062,7 +2274,11 @@ def run_search_mode(
         try:
             card, visible_cards, current_lines = select_search_card(
                 ui,
-                lambda card: card["cardKey"] in filtered_cards or already_processed(seen, purposes, (card["cardKey"],)),
+                lambda card: (
+                    card["cardKey"] in filtered_cards
+                    or card["cardKey"] in failed_cards
+                    or already_processed(seen, purposes, (card["cardKey"],))
+                ),
                 max_screens=max_screens,
                 lines=current_lines,
             )
@@ -2072,26 +2288,80 @@ def run_search_mode(
         check_stopped(ui)
         ui.click({"text": card["title"], "box": card["clickBox"]})
         time.sleep(1.2)
-        video_lines = ui.snapshot(f"search-opened-video-{idx + 1}")
+        try:
+            video_lines = call_with_captcha_pause(ui, ui.snapshot, f"search-opened-video-{idx + 1}")
 
-        if classify_page_state(video_lines, ui.height) != "channels_feed":
-            time.sleep(0.8)
-            video_lines = ui.snapshot(f"search-opened-video-retry-{idx + 1}")
+            if classify_page_state(video_lines, ui.height) != "channels_feed":
+                time.sleep(0.8)
+                video_lines = call_with_captcha_pause(ui, ui.snapshot, f"search-opened-video-retry-{idx + 1}")
 
-        item_report = _process_open_video_item(
-            ui,
-            data_dir,
-            lines=video_lines,
-            source_mode=source_mode,
-            store=store,
-            timings=timings,
-            quota_store=quota_store,
-            collect_video=collect_video,
-            inspect_comments=inspect_comments,
-            comment_options=comment_options,
-            interaction_options=interaction_options,
-            collect_options=collect_options,
-        )
+            item_report = _process_open_video_item(
+                ui,
+                data_dir,
+                lines=video_lines,
+                source_mode=source_mode,
+                store=store,
+                timings=timings,
+                quota_store=quota_store,
+                collect_video=collect_video,
+                inspect_comments=inspect_comments,
+                comment_options=comment_options,
+                interaction_options=interaction_options,
+                collect_options=collect_options,
+            )
+        except Exception as error:
+            if is_fatal_collection_error(ui, error):
+                raise
+            consecutive_errors += 1
+            failed_cards.add(card["cardKey"])
+            failure = {
+                "cardIndex": idx,
+                "cardKey": card["cardKey"],
+                "author": card.get("author"),
+                "title": card.get("title"),
+                "errorType": type(error).__name__,
+                "error": str(error),
+                "consecutiveErrors": consecutive_errors,
+            }
+            if timings is not None:
+                timings.emit({"kind": "videoSkippedOnError", **failure})
+            if consecutive_errors >= max_consecutive_errors:
+                failed_items.append({**failure, "recovered": False})
+                raise RuntimeError(
+                    f"连续 {consecutive_errors} 个视频采集报错，已停止任务；最后一次错误（{card.get('author')}）：{error}"
+                ) from error
+            try:
+                rec = bounded_recover_to_target(
+                    ui,
+                    target="search",
+                    expected_keyword=target_kw,
+                    max_steps=6,
+                )
+            except Exception as recover_error:
+                failed_items.append({**failure, "recovered": False, "recoveryError": str(recover_error)})
+                if timings is not None:
+                    timings.emit({
+                        "kind": "videoRecoveryFailed",
+                        "cardKey": card["cardKey"],
+                        "author": card.get("author"),
+                        "error": str(error),
+                        "recoveryError": str(recover_error),
+                    })
+                raise
+            recovery_events.append(rec)
+            if any(action.startswith("search:") for action in rec.get("actions") or ()):
+                reapplied = call_with_captcha_pause(
+                    ui,
+                    apply_search_filters,
+                    ui,
+                    sort_by=sort_by,
+                    duration=duration,
+                    scope=scope,
+                )
+                current_lines = reapplied["lines"]
+            failed_items.append({**failure, "recovered": True, "recoverySteps": rec["stepsUsed"]})
+            misses += 1
+            continue
 
         # Return from opened video back to 2-column Search Results list
         check_stopped(ui)
@@ -2117,6 +2387,7 @@ def run_search_mode(
             misses += 1
             continue
         misses = 0
+        consecutive_errors = 0
         if item_report.get("videoUrl"):
             collect_options["previousLink"] = item_report["videoUrl"]
         videos.append(item_report)
@@ -2139,6 +2410,7 @@ def run_search_mode(
         "finalSeenCount": len(seen),
         "videos": videos,
         "filteredItems": filtered_items,
+        "failedItems": failed_items,
         "endReason": end_reason or ("count_reached" if len(videos) >= count else "miss_limit"),
         "recoveryEvents": recovery_events,
         "elapsedMs": round((time.monotonic() - started) * 1000),
@@ -2361,7 +2633,45 @@ def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | Non
     with WechatPublisher(data_dir / "videos.sqlite3", records=records,
                          emit=timings.emit if timings is not None else None,
                          identity=publisher_identity, transport=upload_transport) as publisher:
-        publisher.flush()
+        upload_deferred_in_video = False
+
+        def flush_resilient(stage: str) -> bool:
+            check_stopped(ui)
+            try:
+                publisher.flush()
+                return True
+            except Exception as error:
+                from_transport = isinstance(error, PartialAckError) or getattr(
+                    error, "_from_upload_transport", False
+                )
+                if not from_transport or is_fatal_collection_error(ui, error) or not is_transient_upload_error(error):
+                    error._fatal_collection_error = True
+                    raise
+                if timings is not None:
+                    timings.emit({
+                        "kind": "discoveryDeferred",
+                        "stage": stage,
+                        "errorType": type(error).__name__,
+                        "error": str(error),
+                        "pendingCount": publisher.pending_count(),
+                    })
+                return False
+
+        def publish_resilient(drafts):
+            nonlocal upload_deferred_in_video
+            check_stopped(ui)
+            try:
+                publisher.enqueue(drafts)
+            except Exception as error:
+                error._fatal_collection_error = True
+                raise
+            if any(isinstance(item, dict) and item.get("event_type") == "VIDEO" for item in drafts):
+                upload_deferred_in_video = False
+            if not upload_deferred_in_video:
+                if not flush_resilient("streaming_publish"):
+                    upload_deferred_in_video = True
+
+        flush_resilient("initial_flush")
         common = dict(
             count=settings["count"],
             collect_video=True,
@@ -2369,7 +2679,7 @@ def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | Non
             comment_options=settings["commentOptions"],
             collect_options={"videoFilterWords": settings["videoFilterWords"],
                              "commentFilterWords": settings["commentFilterWords"],
-                             "copyShareLink": True, "publishEvents": publisher.publish},
+                             "copyShareLink": True, "publishEvents": publish_resilient},
             max_misses=COLLECTION_MAX_MISSES,
             timings=timings,
         )
@@ -2377,6 +2687,8 @@ def run_collection_task(ui, root_dir: Path, config: dict, timings: Timings | Non
             result = run_search_mode(ui, root_dir, keyword=settings["keyword"], max_screens=10, **common)
         else:
             result = run_tab_feed_mode(ui, root_dir, tab=settings["entry"], max_swipes=100_000, **common)
+        if publisher.pending_count() > 0:
+            flush_resilient("final_flush")
         result["upload"] = publisher.summary()
     result["settings"] = settings
     return result

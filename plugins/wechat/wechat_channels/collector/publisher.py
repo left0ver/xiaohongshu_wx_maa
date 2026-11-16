@@ -28,6 +28,10 @@ def configure_upload(directory):
     return license_key, machine
 
 
+class PartialAckError(RuntimeError):
+    """Raised when a batch upload leaves unacknowledged events in pending metadata."""
+
+
 class WechatPublisher:
     def __init__(self, database, *, records, emit=None, server_url=DEFAULT_SERVER_URL, software_code="qiaomen", identity=None, transport=None):
         database = Path(database)
@@ -94,7 +98,7 @@ class WechatPublisher:
         if self.emit is not None:
             self.emit(event)
 
-    def publish(self, drafts):
+    def enqueue(self, drafts):
         _prepare_events(drafts)
         id_map = {draft["event_id"]: self._event_id(draft) for draft in drafts}
         events = [self._scoped_event(draft, id_map) for draft in drafts]
@@ -123,6 +127,10 @@ class WechatPublisher:
                         self._pending_key({"event_type": parent_kind, "event_id": parent_id}))
                 if self.db.execute("SELECT 1 FROM metadata WHERE key IN (?,?) LIMIT 1", keys).fetchone() is None:
                     raise ValueError("上报子事件前必须保存对应父事件的上报记录")
+        return events
+
+    def publish(self, drafts):
+        self.enqueue(drafts)
         return self.flush()
 
     def pending_count(self):
@@ -152,8 +160,12 @@ class WechatPublisher:
                         "eventTypes": [event["event_type"] for event in events],
                         "eventIds": [event["event_id"] for event in events], "sentAt": time.time_ns() // 1_000_000})
             self.sent_count += len(events)
-            receipt = self.transport(events, machine=self.machine, software_code=self.software_code,
-                                     server_url=self.server_url)
+            try:
+                receipt = self.transport(events, machine=self.machine, software_code=self.software_code,
+                                         server_url=self.server_url)
+            except Exception as error:
+                error._from_upload_transport = True
+                raise
             confirmed = set(receipt["discoveryAckIds"])
             with self.db:
                 for (key, _), event in zip(rows, events):
@@ -170,7 +182,7 @@ class WechatPublisher:
                         "eventTypes": [event["event_type"] for event in events if event["event_id"] in confirmed],
                         "discoveryAckIds": receipt["discoveryAckIds"], "acknowledgedAt": time.time_ns() // 1_000_000})
             if receipt["pendingEventIds"]:
-                raise RuntimeError("部分采集数据未收到 ACK，已保留待发送记录")
+                raise PartialAckError("部分采集数据未收到 ACK，已保留待发送记录")
         return acknowledged_ids
 
     def summary(self):
