@@ -1,0 +1,951 @@
+{
+ "$comment": "Hebe-BD00 2026-11-16 run acc04e98, 酸辣藕片 drawer read from controls. 余CX86's two sticker comments have headers but no text, so they are not comments; comparing parsed comments found no overlap and the run bounced between page9 and page9Back forever.",
+ "height": 1559,
+ "pages": {
+  "page7": [
+   {
+    "text": "评论 28",
+    "box": [
+     100,
+     437,
+     91,
+     36
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "#都在搜: 酸辣炝藕片",
+    "box": [
+     449,
+     437,
+     242,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "感情救赎",
+    "box": [
+     101,
+     723,
+     100,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "新疆",
+    "box": [
+     244,
+     723,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "8天前",
+    "box": [
+     305,
+     723,
+     338,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "我的兄弟叫米莱",
+    "box": [
+     101,
+     857,
+     175,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "陕西",
+    "box": [
+     287,
+     857,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "1天前",
+    "box": [
+     348,
+     857,
+     295,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "小四",
+    "box": [
+     86,
+     991,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "浙江",
+    "box": [
+     162,
+     991,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "8天前",
+    "box": [
+     223,
+     991,
+     421,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     1125,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     1125,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     1125,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     1433,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     1443,
+     50,
+     13
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     1443,
+     384,
+     13
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "佳一讲商业 发表评论:",
+    "box": [
+     101,
+     1491,
+     459,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "「",
+    "box": [
+     107,
+     773,
+     32,
+     19
+    ],
+    "score": 0.649182,
+    "source": "ocr"
+   },
+   {
+    "text": "油放太多了",
+    "box": [
+     99,
+     900,
+     135,
+     31
+    ],
+    "score": 0.999662,
+    "source": "ocr"
+   },
+   {
+    "text": "为啥我炒的藕颜色会发黑",
+    "box": [
+     101,
+     1035,
+     294,
+     29
+    ],
+    "score": 0.998931,
+    "source": "ocr"
+   }
+  ],
+  "page8": [
+   {
+    "text": "评论 28",
+    "box": [
+     100,
+     437,
+     91,
+     36
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "#都在搜: 酸辣炝藕片",
+    "box": [
+     449,
+     437,
+     242,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     595,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     596,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     596,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     913,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     914,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     914,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "王井友",
+    "box": [
+     99,
+     1231,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "江苏",
+    "box": [
+     187,
+     1232,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "1天前",
+    "box": [
+     248,
+     1232,
+     396,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "王腊梅",
+    "box": [
+     99,
+     1365,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "广东",
+    "box": [
+     187,
+     1366,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "2天前",
+    "box": [
+     248,
+     1366,
+     396,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "佳一讲商业 发表评论:",
+    "box": [
+     101,
+     1491,
+     459,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "为啥我炒的藕颜色会发黑",
+    "box": [
+     102,
+     509,
+     291,
+     23
+    ],
+    "score": 0.998669,
+    "source": "ocr"
+   },
+   {
+    "text": "藕遇铁锅炒，容易发黑",
+    "box": [
+     102,
+     1411,
+     266,
+     27
+    ],
+    "score": 0.993215,
+    "source": "ocr"
+   }
+  ],
+  "page8Back": [
+   {
+    "text": "评论 28",
+    "box": [
+     100,
+     437,
+     91,
+     36
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "#都在搜: 酸辣炝藕片",
+    "box": [
+     449,
+     437,
+     242,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "我的兄弟叫米莱",
+    "box": [
+     101,
+     578,
+     175,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "陕西",
+    "box": [
+     287,
+     579,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "1天前",
+    "box": [
+     348,
+     579,
+     295,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "小四",
+    "box": [
+     86,
+     712,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "浙江",
+    "box": [
+     162,
+     713,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "8天前",
+    "box": [
+     223,
+     713,
+     421,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     846,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     847,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     847,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     1164,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     1165,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     1165,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "佳一讲商业 发表评论:",
+    "box": [
+     101,
+     1491,
+     459,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "油放太多了",
+    "box": [
+     99,
+     622,
+     135,
+     30
+    ],
+    "score": 0.999561,
+    "source": "ocr"
+   },
+   {
+    "text": "为啥我炒的藕颜色会发黑",
+    "box": [
+     99,
+     754,
+     296,
+     33
+    ],
+    "score": 0.998419,
+    "source": "ocr"
+   }
+  ],
+  "page9": [
+   {
+    "text": "评论 28",
+    "box": [
+     100,
+     437,
+     91,
+     36
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "#都在搜: 酸辣炝藕片",
+    "box": [
+     449,
+     437,
+     242,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     777,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     777,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     777,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "王井友",
+    "box": [
+     99,
+     1095,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "江苏",
+    "box": [
+     187,
+     1095,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "1天前",
+    "box": [
+     248,
+     1095,
+     396,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "王腊梅",
+    "box": [
+     99,
+     1229,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "广东",
+    "box": [
+     187,
+     1229,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "2天前",
+    "box": [
+     248,
+     1229,
+     396,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "佳一讲商业 发表评论:",
+    "box": [
+     101,
+     1491,
+     459,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "🔥👍👍👍",
+    "box": [
+     101,
+     1137,
+     129,
+     33
+    ],
+    "score": 0.60124,
+    "source": "ocr"
+   },
+   {
+    "text": "藕遇铁锅炒，容易发黑",
+    "box": [
+     100,
+     1274,
+     268,
+     28
+    ],
+    "score": 0.999003,
+    "source": "ocr"
+   }
+  ],
+  "page9Back": [
+   {
+    "text": "评论 28",
+    "box": [
+     100,
+     437,
+     91,
+     36
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "#都在搜: 酸辣炝藕片",
+    "box": [
+     449,
+     437,
+     242,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "小四",
+    "box": [
+     86,
+     574,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "浙江",
+    "box": [
+     162,
+     575,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "8天前",
+    "box": [
+     223,
+     575,
+     421,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     708,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     709,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     709,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "余CX86",
+    "box": [
+     101,
+     1026,
+     87,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "安徽",
+    "box": [
+     199,
+     1027,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "3天前",
+    "box": [
+     260,
+     1027,
+     384,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "王井友",
+    "box": [
+     99,
+     1344,
+     79,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "江苏",
+    "box": [
+     187,
+     1345,
+     50,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "1天前",
+    "box": [
+     248,
+     1345,
+     396,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "佳一讲商业 发表评论:",
+    "box": [
+     101,
+     1491,
+     459,
+     34
+    ],
+    "score": 1.0,
+    "source": "hierarchy"
+   },
+   {
+    "text": "为啥我炒的藕颜色会发黑",
+    "box": [
+     102,
+     621,
+     291,
+     24
+    ],
+    "score": 0.998496,
+    "source": "ocr"
+   }
+  ]
+ }
+}

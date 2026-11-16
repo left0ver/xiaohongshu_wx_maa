@@ -466,6 +466,50 @@ class CommentPagingTests(unittest.TestCase):
             self.assertEqual(names["丁"]["replyToNickname"], "丙")
             self.assertEqual(ui.labels.count("comments-replies"), 2)
 
+    def _run_pages(self, ui):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "作者", "description": "作品", "authorDouyinId": "sphAuthor001",
+            })
+            return collect_visible_comments(ui, path, video_event, Timings(Path(directory) / "t.jsonl", "run"),
+                                            max_pages=None, max_reply_expansions=0, max_profiles=0)
+
+    def test_sticker_comment_headers_count_as_page_overlap(self):
+        # Hebe-BD00 run acc04e98: 余CX86's sticker comments are the only overlap between pages 7 and 8.
+        data = fixture("comment-pages-sticker-overlap-hebe.json")
+        pages = data["pages"]
+        self.assertEqual([c["nickname"] for c in parse_comment_drawer(pages["page8"], data["height"])["comments"]],
+                         ["王腊梅"])
+        ui = PagingCommentUi([pages["page7"], pages["page8"], pages["page8"]])
+        ui.height = data["height"]
+        result = self._run_pages(ui)
+        self.assertEqual(ui.scroll_backs, 0)
+        self.assertNotIn("comments-page-2-back", ui.labels)
+        self.assertEqual(result["endReason"], "end_of_list")
+        self.assertIn("王腊梅", {e["payload"]["nickname"] for e in result["events"]})
+
+    def test_repeated_overshoot_keeps_the_page_instead_of_bouncing_forever(self):
+        bar = line("我发表评论：", 1500, 110, 200, 25)
+        top = [line("评论3", 400, 25, 90, 29), line("甲广东8月2日", 500), line("甲的评论", 540), bar]
+        top_again = [line("评论3", 400, 25, 90, 29), line("甲广东8月2日", 520), line("甲的评论", 560), bar]
+        bottom = [line("评论3", 400, 25, 90, 29), line("丙广东8月3日", 900), line("丙的评论", 940), bar]
+        # Every forward scroll lands on 丙 and every scroll back on 甲: no page ever overlaps.
+        ui = PagingCommentUi([top, bottom, top_again, bottom, bottom])
+        result = self._run_pages(ui)
+        self.assertEqual(ui.scroll_backs, 1)
+        self.assertEqual(result["endReason"], "end_of_list")
+        self.assertEqual({e["payload"]["nickname"] for e in result["events"]}, {"甲", "丙"})
+
+
+class PagingCommentUi(FakeCommentUi):
+    def __init__(self, snapshots):
+        super().__init__(snapshots)
+        self.scroll_backs = 0
+
+    def scroll_comments_back(self, lines):
+        self.scroll_backs += 1
+
 
 if __name__ == "__main__":
     unittest.main()

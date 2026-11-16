@@ -450,6 +450,10 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         "selfNickname": self_nickname,
         "inputBar": input_bar,
         "comments": comments,
+        # Every comment header on screen, including sticker/emoji-only comments that carry no
+        # readable text and are left out of comments; page-overlap checks need them all.
+        "headers": [{"nickname": h["nickname"], "region": h["region"], "date": h["date"], "level": h["level"]}
+                    for h in headers],
         "commentExpands": comment_expands,
         "replyExpands": reply_expands,
     }
@@ -824,6 +828,11 @@ def _drawer_signature(drawer):
     return [(c["key"], c.get("_headerTop", 0)) for c in drawer["comments"]]
 
 
+def _drawer_identity(drawer):
+    """Which comments a page shows, regardless of where the scroll left them."""
+    return tuple((h["nickname"], h["region"], h["date"], h["level"]) for h in drawer["headers"])
+
+
 def same_comment(a, b):
     """Two OCR readings of one comment: overlapping pages read it again with small differences.
 
@@ -1002,6 +1011,7 @@ def collect_visible_comments(
             complete = False
             last_parent = None
             published_keys = set()
+            overshoot_pages = set()
 
             def canonical_key(key):
                 visited = set()
@@ -1214,15 +1224,22 @@ def collect_visible_comments(
                 ui.scroll_comments(lines)
                 lines = ui.snapshot(f"comments-page-{page_index + 2}")
                 next_drawer = parse(lines)
-                previous_names = [c["nickname"] for c in drawer["comments"]]
-                if (previous_names and next_drawer["comments"] and not next_drawer["empty"]
-                        and not any(nickname_matches(a, c["nickname"])
-                                    for a in previous_names for c in next_drawer["comments"])
+                # Compare headers, not parsed comments: a sticker or emoji-only comment has no
+                # readable body and is not in comments, but its header still proves the overlap.
+                previous_names = [h["nickname"] for h in drawer["headers"]]
+                if (previous_names and next_drawer["headers"] and not next_drawer["empty"]
+                        and not any(nickname_matches(a, h["nickname"])
+                                    for a in previous_names for h in next_drawer["headers"])
                         and hasattr(ui, "scroll_comments_back")):
-                    # No shared comment: the scroll overshot and may have skipped some.
-                    ui.scroll_comments_back(lines)
-                    lines = ui.snapshot(f"comments-page-{page_index + 2}-back")
-                    next_drawer = parse(lines)
+                    forward_identity = _drawer_identity(next_drawer)
+                    # The same overshoot again means scrolling back and forth cannot settle:
+                    # keep this page instead of bouncing between the two forever.
+                    if forward_identity not in overshoot_pages:
+                        overshoot_pages.add(forward_identity)
+                        # No shared comment: the scroll overshot and may have skipped some.
+                        ui.scroll_comments_back(lines)
+                        lines = ui.snapshot(f"comments-page-{page_index + 2}-back")
+                        next_drawer = parse(lines)
                 if _drawer_signature(next_drawer) == prev_sig:
                     absorb(next_drawer)
                     end_reason = "end_of_list"
