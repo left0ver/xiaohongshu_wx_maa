@@ -16,3 +16,4 @@ local.properties
 *-runtime-*.zip
 *.apk
 .DS_Store
+.codegraph
