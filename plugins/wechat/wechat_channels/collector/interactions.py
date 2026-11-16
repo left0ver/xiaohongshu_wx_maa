@@ -42,6 +42,7 @@ from layout import (
     REGION,
     WorkHeaderMissing,
     compact,
+    find_comment_drawer_heading,
     line_height,
     ocr_text_matches,
     profile_name,
@@ -426,11 +427,7 @@ def classify_page_state(lines, height=1605):
     if find(lines, r"^设置$", lambda l: l["box"][0] > 520 and l["box"][1] > height * 0.55):
         return "user_card_overlay"
 
-    if find(
-        lines,
-        r"^评论\s*[\d.万wW]*",
-        lambda l: not (l["box"][0] > 560 and l["box"][1] > height - 140),
-    ) or find(
+    if find_comment_drawer_heading(lines, height) or find(
         lines,
         r"发表评论|说点什么|写评论",
         lambda l: l["box"][1] >= height - 120,
@@ -661,7 +658,7 @@ def _open_comment_drawer_if_needed(ui, lines=None):
     check_stopped(ui)
     if lines is None:
         lines = ui.snapshot("comments-check")
-    if find(lines, r"^评论\s*[\d.万wW]*"):
+    if find_comment_drawer_heading(lines, ui.height):
         return lines, False
     feed_lines = _ensure_on_feed_for_work_bar(ui, lines)
     control = comment_control_in_feed(feed_lines, ui.height, ui)
@@ -670,7 +667,7 @@ def _open_comment_drawer_if_needed(ui, lines=None):
     check_stopped(ui)
     ui.click(control)
     drawer_lines = ui.snapshot("comments")
-    if not find(drawer_lines, r"^评论\s*[\d.万wW]*"):
+    if not find_comment_drawer_heading(drawer_lines, ui.height):
         raise RuntimeError("Comment drawer did not open")
     return drawer_lines, True
 
@@ -1214,7 +1211,7 @@ def _work_matches_spec(ui, lines, target_work):
     attempts = 8
     for attempt in range(attempts):
         check_stopped(ui)
-        if not find(check_lines, r"^评论\s*[\d.万wW]*") and not reopened:
+        if not find_comment_drawer_heading(check_lines, ui.height) and not reopened:
             # A pull at the top of the list can drag the whole sheet closed.
             reopened = True
             check_lines, now_opened = _open_comment_drawer_if_needed(ui, check_lines)

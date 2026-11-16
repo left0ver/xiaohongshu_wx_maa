@@ -20,7 +20,17 @@ from collection import (
     parse_author,
     profile_bio_expand,
 )
-from layout import DATE, REGION, compact, line_height, ocr_text_matches, profile_name, reading_rows
+from layout import (
+    DATE,
+    REGION,
+    compact,
+    find_comment_drawer_heading,
+    is_comment_drawer_heading,
+    line_height,
+    ocr_text_matches,
+    profile_name,
+    reading_rows,
+)
 
 LIKE_BADGE_RE = r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+"
 # A liked comment shows "推荐"; OCR may merge it with the count ("5推荐").
@@ -159,7 +169,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
     rows = reading_rows(lines)
     lh = line_height(lines)
     heading = next(
-        (row for row in rows if any(re.fullmatch(r"评论\s*[\d.万wW]*", item["text"].strip()) for item in row["items"])),
+        (row for row in rows if any(is_comment_drawer_heading(item, height) for item in row["items"])),
         None,
     )
     if heading is None:
@@ -593,7 +603,7 @@ def _recover_to_comment_drawer(ui, max_backs=2):
     for _ in range(max_backs):
         ui.back()
         lines = ui.snapshot("comments-recover")
-        if find(lines, r"^评论\s*[\d.万wW]*") and not (
+        if find_comment_drawer_heading(lines, ui.height) and not (
             find(lines, r"^(?:[√✓]?)\s*(已关注|申请关注|关注)$") and find(lines, r"^(私信|客服)$")
         ) and not find(lines, r"^基础信息$") and not user_card_open(lines, ui.height):
             return lines
@@ -987,7 +997,7 @@ def collect_visible_comments(
                 break
             ui.back()
             feed = ui.snapshot("feed")
-        drawer_already_open = bool(find(feed, r"^评论\s*[\d.万wW]*"))
+        drawer_already_open = bool(find_comment_drawer_heading(feed, ui.height))
         target = None
         if not drawer_already_open:
             target = comment_control_in_feed(feed, ui.height, ui)
@@ -1160,7 +1170,7 @@ def collect_visible_comments(
                             with timings.phase("collect_commenter_profile"):
                                 prof = inspect_commenter_profile(ui, live_match)
                                 lines = ui.snapshot("comments-return")
-                                if user_card_open(lines, ui.height) or not find(lines, r"^评论\s*[\d.万wW]*") and (
+                                if user_card_open(lines, ui.height) or not find_comment_drawer_heading(lines, ui.height) and (
                                     find(lines, r"^(?:[√✓]?)\s*(已关注|关注)$")
                                     or find(lines, r"^(私信|客服)$")
                                     or find(lines, r"^正在观看$")

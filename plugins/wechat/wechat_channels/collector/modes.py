@@ -154,8 +154,18 @@ SEARCH_OTHER_TABS = r"^(?:全部|账号|直播|商品)(?:\n第\s*\d+\s*个标签
 # A result card control describes the whole card: "likes\ntitle\nauthor[\ntime]".
 _CONTROL_CARD_RE = re.compile(r"^(\d+(?:\.\d+)?[万wW]?\+?)\n([^\n]+)\n([^\n]+)(?:\n([^\n]+))?$")
 _CARD_DATE_RE = re.compile(
-    rf"^(?:{DATE}|\d+\s*(?:分钟|小时|天|周|个?月|年)前|刚刚|昨天|前天)$"
+    rf"^(?:{DATE}|\d+\s*(?:分钟|小时|天|周|个?月|年)前|刚刚|昨天|前天"
+    r"|\d+\s*(?:分钟?|小时?|天|周|个?月)[前.…·•]*)$"
 )
+_MERGED_CARD_AUTHOR_DATE_RE = re.compile(
+    rf"^(.+?)[.…·•💖♡♥\s]*((?:{DATE}|\d+\s*(?:分钟|小时|天|周|个?月|年)前|刚刚|昨天|前天"
+    r"|\d+\s*(?:分钟?|小时?)(?:前|[.…·•]*)))$"
+)
+
+
+def _clean_card_date_text(text: str) -> str:
+    cleaned = re.sub(r"^[^\w\u4e00-\u9fff]+", "", compact(text or ""))
+    return cleaned if _CARD_DATE_RE.fullmatch(cleaned) else ""
 
 
 def _atomic_write_json(path: Path, payload):
@@ -1528,30 +1538,52 @@ def parse_search_video_cards(lines, height=1605) -> list[dict]:
                 l
                 for l in col_items
                 if l["box"][0] >= date_min_x
-                and _CARD_DATE_RE.fullmatch(compact(l.get("text", "")))
+                and _clean_card_date_text(l.get("text", ""))
             ),
             key=lambda l: l["box"][1],
         )
 
-        prev_footer_bottom = 310
+        footer_entries = []
         for date_item in date_items:
             dy = date_item["box"][1]
-            if any(ny - 15 <= dy <= ny + 180 for ny in non_video_ys):
-                continue
-
             author_candidates = [
                 l
                 for l in col_items
                 if l is not date_item
                 and l["box"][0] < date_item["box"][0] - 10
                 and abs(l["box"][1] - dy) <= 22
-                and not _CARD_DATE_RE.fullmatch(compact(l.get("text", "")))
+                and not _clean_card_date_text(l.get("text", ""))
             ]
             if not author_candidates:
                 continue
-
             author_item = min(author_candidates, key=lambda l: l["box"][0])
-            author = re.sub(r"[.…·•]+$", "", author_item["text"].strip()).strip()
+            footer_entries.append(
+                (dy, date_item["box"][3], author_item["text"].strip(), _clean_card_date_text(date_item["text"]))
+            )
+
+        for item in col_items:
+            ix, iy, iw, ih = item["box"]
+            if ix >= date_min_x or ix + iw < date_min_x + 40:
+                continue
+            if any(abs(iy - existing_y) <= 22 for existing_y, *_ in footer_entries):
+                continue
+            merged_match = _MERGED_CARD_AUTHOR_DATE_RE.fullmatch(item.get("text", "").strip())
+            if not merged_match:
+                continue
+            raw_author_part, date_part = merged_match.groups()
+            cleaned_author_part = re.sub(r"[.…·•]+$", "", raw_author_part.strip()).strip()
+            if not cleaned_author_part or "#" in cleaned_author_part or len(cleaned_author_part) > 16:
+                continue
+            footer_entries.append((iy, ih, raw_author_part.strip(), compact(date_part)))
+
+        footer_entries.sort(key=lambda entry: entry[0])
+
+        prev_footer_bottom = 310
+        for dy, dh, raw_author_text, published_text in footer_entries:
+            if any(ny - 15 <= dy <= ny + 180 for ny in non_video_ys):
+                continue
+
+            author = re.sub(r"[.…·•]+$", "", raw_author_text).strip()
             if not author or re.fullmatch(r"已关注|关注|广告|推广|赞助", author):
                 continue
 
@@ -1573,7 +1605,7 @@ def parse_search_video_cards(lines, height=1605) -> list[dict]:
             if not title:
                 continue
             if _AD_CARD_RE.search(title):
-                prev_footer_bottom = dy + date_item["box"][3]
+                prev_footer_bottom = dy + dh
                 continue
 
             # Extract optional cover duration and like count
@@ -1611,16 +1643,16 @@ def parse_search_video_cards(lines, height=1605) -> list[dict]:
                     "cardKey": card_key,
                     "column": col_index,
                     "author": author,
-                    "rawAuthor": author_item["text"].strip(),
+                    "rawAuthor": raw_author_text,
                     "title": title,
-                    "publishTime": compact(date_item["text"]),
+                    "publishTime": published_text,
                     "duration": compact(duration_item["text"])[:5] if duration_item else None,
                     "likeCountText": re.sub(r"^[凸👍♡♥\s]+", "", like_item["text"].strip()) if like_item else None,
                     "clickBox": click_box,
                     "footerY": dy,
                 }
             )
-            prev_footer_bottom = dy + date_item["box"][3]
+            prev_footer_bottom = dy + dh
 
     cards.sort(key=lambda c: (c["footerY"] // 60, c["column"]))
     return cards

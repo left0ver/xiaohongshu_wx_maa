@@ -374,7 +374,11 @@ def _profile_or_card_ready(lines, height, author):
 
 def _known_page(lines, height, author):
     from interactions import classify_page_state
-    return classify_page_state(lines, height) != "unknown"
+    return (
+        classify_page_state(lines, height) != "unknown"
+        or _search_results_ready(lines, height, author)
+        or _search_input_ready(lines, height, author)
+    )
 
 
 def _page_state(*states):
@@ -467,14 +471,17 @@ CONTROL_PAGES = {
                     _page_state("channels_feed")),
     **dict.fromkeys(("feed", "before-author", "feed-after-collect", "feed-after-like", "feed-after-author-touch",
                      "feed-after-author-touch-retry", "feed-before-personal", "profile-first-work",
-                     "profile-first-work-retry"), _feed_ready),
+                     "profile-first-work-retry", "search-opened-video-", "preemptive-feed-",
+                     "recommend-feed-", "friends-feed-", "follow-feed-", "city-feed-",
+                     "recommend-recovered-", "friends-recovered-", "follow-recovered-", "city-recovered-"),
+                    _feed_ready),
     **dict.fromkeys(("video-details", "expanded-description", "comments-preemptive-work-header",
                      "comments-preemptive-work-expanded"), _drawer_ready),
     **dict.fromkeys(("comments", "comments-check", "comments-expanded", "comments-replies", "comments-return",
                      "comments-after-skip", "comments-recover", "comments-after-like", "comments-after-post",
                      "comments-after-reply", "comments-after-profile-touch", "comments-after-profile-touch-retry",
                      "comments-after-user-card", "comments-preemptive-start", "comments-composer", "comments-typed",
-                     "comments-reply-composer", "comments-reply-typed", "drawer-recover",
+                     "comments-reply-composer", "comments-reply-typed", "drawer-recover", "comments-locate-",
                      # Scrolled pages (comments-page-N, comments-page-N-back) must be read like the
                      # return check reads them, or the two readings of one comment cannot match.
                      "comments-page-"), _comments_ready),
@@ -483,16 +490,18 @@ CONTROL_PAGES = {
                      "profile-after-first-work-retry", "commenter-profile-before-more"), _profile_ready),
     "commenter-profile": _profile_or_card_ready,
     "profile-menu": _menu_ready, "commenter-profile-menu": _menu_ready,
-    "author-basic-info": _basic_info_ready, "author-basic-info-retry": _basic_info_ready,
-    **dict.fromkeys(("interact-start", "resume-check", "messages-start", "messages-return-check",
-                     "preemptive-restore-check"), _known_page),
+    **dict.fromkeys(("author-basic-info", "author-basic-info-retry", "author-basic-info-ready"), _basic_info_ready),
+    **dict.fromkeys(("interact-start", "resume-check", "resume-clean-", "messages-start", "messages-return-check",
+                     "messages-return-", "preemptive-restore-check", "recover-check-", "recover-after-captcha-",
+                     "recover-"), _known_page),
     "personal-page": _page_state("personal_page"),
     **dict.fromkeys(("messages-center", "messages-comments", "messages-after-like", "messages-after-reply"),
                     _page_state("channels_message_center")),
     **dict.fromkeys(("messages-reply-composer", "messages-reply-typed"), _page_state("composer_overlay")),
     "search-input": _search_input_ready, "search-typed": _search_typed_ready,
     **dict.fromkeys(("search-results", "search-results-retry", "search-video-tab", "search-filter-start",
-                     "search-filter-video-tab", "search-filter-collapsed", "search-cards", "search-after-"),
+                     "search-filter-video-tab", "search-filter-collapsed", "search-cards", "search-cards-",
+                     "search-grid-", "search-return-", "search-after-", "verify-stage-search"),
                     _search_results_ready),
     **dict.fromkeys(("search-filter-panel", "search-filter-panel-reopen", "search-filter-after-"), _search_filter_ready),
     **dict.fromkeys(("search-duration-sheet", "search-scope-sheet"), _search_sheet_ready),
@@ -507,6 +516,9 @@ CONTROL_PAGES = {
                      "dm-chat-after-notice", "link-chat-after-notice"), _chat_ready),
     **dict.fromkeys(("link-video", "link-video-"), _feed_ready),
 }
+
+# Labels that intentionally inspect visual overlays or system dialogs via full-screen OCR.
+OCR_ONLY_LABELS = ("captcha-poll-", "location-modal-check", "probe")
 
 
 def page_check(label):

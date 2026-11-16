@@ -21,7 +21,7 @@ from commands import run
 from foreground import foreground
 from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, refresh_target, text_lines
 from readiness import wait_basic_info
-from layout import line_height
+from layout import find_comment_drawer_heading, line_height
 from probe_reader import prepared_reader
 
 COMMENT_SWIPE_MS = 900
@@ -515,7 +515,7 @@ class MaaUi:
         time.sleep(0.6)
 
     def _comment_swipe(self, lines):
-        heading = find(lines, r"^评论\s*\d*")
+        heading = find_comment_drawer_heading(lines, self.height)
         if not heading:
             raise ValueError("Cannot scroll an unclassified comment drawer")
         height = line_height(lines)

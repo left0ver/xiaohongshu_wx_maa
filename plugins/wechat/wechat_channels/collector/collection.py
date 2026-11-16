@@ -10,7 +10,16 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from layout import REGION, WorkHeaderMissing, label_values, line_height, profile_name, video_values, work_region
+from layout import (
+    REGION,
+    WorkHeaderMissing,
+    find_comment_drawer_heading,
+    label_values,
+    line_height,
+    profile_name,
+    video_values,
+    work_region,
+)
 from readiness import BASIC_INFO_TIMEOUT
 
 
@@ -522,7 +531,7 @@ def ensure_feed(ui, launch=True):
     while navigation_steps < 7:
         lines = ui.snapshot(navigation_label)
         is_profile_grid = navigation_label == "navigation-bottom" and any(line["box"][1] > ui.height - 42 for line in lines)
-        is_comment_drawer = bool(find(lines, r"^评论\s*\d*", lambda line: not (line["box"][0] > 580 and line["box"][1] > ui.height - 130)))
+        is_comment_drawer = bool(find_comment_drawer_heading(lines, ui.height))
         if navigation_label == "navigation-bottom" and not is_profile_grid and not is_comment_drawer and not find(lines, r"^发现$|^推荐$|^视频号$|^(私信|客服)$|^我的视频号$|^正在观看$|^发表评论$|^基础信息$"):
             # Already inside Channels: inspect its top tabs without full-screen OCR.
             lines = ui.snapshot("navigation-top")

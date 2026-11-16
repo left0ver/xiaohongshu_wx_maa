@@ -62,6 +62,23 @@ class MessageTabsTest(unittest.TestCase):
         lines = [{"text": "点赞+65", "box": [193, 78, 80, 30]}, {"text": "评论", "box": [328, 78, 50, 30]}]
         self.assertEqual(self.tabs("messages-center", lines, {}), ([], []))
 
+    def test_comment_swipe_ignores_feed_bottom_bar_comment_icon(self):
+        ui = android_ui.MaaUi.__new__(android_ui.MaaUi)
+        ui.height = 1559
+        feed_only = [
+            {"text": "转发", "box": [458, 1481, 43, 29]},
+            {"text": "评论", "box": [641, 1481, 43, 29]},
+        ]
+        with self.assertRaisesRegex(ValueError, "Cannot scroll an unclassified comment drawer"):
+            ui._comment_swipe(feed_only)
+
+        drawer = [
+            {"text": "评论", "box": [100, 437, 54, 36]},
+            {"text": "评论正文", "box": [100, 620, 300, 30]},
+        ]
+        start, end = ui._comment_swipe(drawer)
+        self.assertGreater(start, end)
+
 
 if __name__ == "__main__":
     unittest.main()

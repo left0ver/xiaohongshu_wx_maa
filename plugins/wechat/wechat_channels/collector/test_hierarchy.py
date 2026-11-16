@@ -1,5 +1,6 @@
 """Semantic parsing, lazy fallbacks and stale-control rejection without a device."""
 
+import ast
 import json
 import sys
 import unittest
@@ -8,8 +9,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from hierarchy import (HierarchyUnavailable, choose_snapshot, complete_for, correct_ocr, field_evidence,
-                       fill_containers, page_lines, refresh_target, text_lines)
+from hierarchy import (CONTROL_PAGES, OCR_ONLY_LABELS, HierarchyUnavailable, choose_snapshot, complete_for,
+                       correct_ocr, field_evidence, fill_containers, page_check, page_lines, refresh_target,
+                       text_lines)
 from layout import reading_rows
 from collection import parse_basic_info
 from test_collection import AUTHOR, DETAILS, INFO, PROFILE, line
@@ -360,6 +362,82 @@ class HierarchyTests(unittest.TestCase):
         for lines in ([], [previous, previous], [moved]):
             with self.subTest(lines=lines), self.assertRaises(RuntimeError):
                 refresh_target(lines, previous)
+
+    def test_search_scroll_grid_return_and_recover_labels_use_hierarchy_without_ocr(self):
+        search_controls = [
+            control("取消", 623, 106, 82, 34),
+            control("今天吃什么", 72, 107, 367, 34),
+            control("搜索", 511, 107, 97, 34),
+            control("全部\n第 1 个标签，共 5 个", 0, 182, 108, 68, attribute="content-desc"),
+            control("视频\n第 2 个标签，共 5 个", 108, 182, 108, 68, attribute="content-desc"),
+            control("不限", 29, 272, 97, 66, attribute="content-desc"),
+            control("最新", 126, 272, 97, 66, attribute="content-desc"),
+            control("最热", 223, 272, 97, 66, attribute="content-desc"),
+            control("1\n...生活的烟火气息 #今天吃什么\n郭俏一起吃点\n9分钟前", 367, 375, 338, 609, attribute="content-desc"),
+        ]
+        for snap_label in (
+            "search-cards-scroll-2",
+            "search-cards-scroll-10",
+            "search-grid-2",
+            "search-grid-recovered-2",
+            "search-return-1",
+            "search-return-recovered-1",
+            "recover-check-0",
+            "verify-stage-search",
+        ):
+            with self.subTest(label=snap_label):
+                templates, ocr = Mock(), Mock()
+                chosen, source = choose_snapshot(snap_label, 1559, None, lambda: search_controls, templates, ocr)
+                self.assertEqual(source, "hierarchy")
+                self.assertEqual(chosen, search_controls)
+                ocr.assert_not_called()
+
+    def test_all_collector_snapshot_labels_are_covered_by_control_pages_or_ocr_allowlist(self):
+        def allowed_ocr(sample):
+            return any(
+                sample == entry or (entry.endswith("-") and sample.startswith(entry))
+                for entry in OCR_ONLY_LABELS
+            )
+
+        collector_dir = Path(__file__).parent
+        samples = set()
+        for py_file in sorted(collector_dir.glob("*.py")):
+            if py_file.name.startswith("test_"):
+                continue
+            parsed = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+            for node in ast.walk(parsed):
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "snapshot" and node.args:
+                    arg = node.args[0]
+                elif (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "call_with_captcha_pause"
+                    and len(node.args) >= 3
+                    and isinstance(node.args[1], ast.Attribute)
+                    and node.args[1].attr == "snapshot"
+                ):
+                    arg = node.args[2]
+                else:
+                    continue
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    samples.add((py_file.name, arg.lineno, arg.value))
+                elif (
+                    isinstance(arg, ast.JoinedStr)
+                    and arg.values
+                    and isinstance(arg.values[0], ast.Constant)
+                    and isinstance(arg.values[0].value, str)
+                ):
+                    prefix = arg.values[0].value
+                    if prefix and not any(key != prefix and key.startswith(prefix) for key in CONTROL_PAGES):
+                        samples.add((py_file.name, arg.lineno, prefix + "1"))
+
+        missing = [
+            f"{fname}:{lineno} ({sample!r})"
+            for fname, lineno, sample in sorted(samples)
+            if page_check(sample) is None and not allowed_ocr(sample)
+        ]
+        self.assertEqual(missing, [], f"Snapshot labels missing from CONTROL_PAGES: {missing}")
 
 
 if __name__ == "__main__":

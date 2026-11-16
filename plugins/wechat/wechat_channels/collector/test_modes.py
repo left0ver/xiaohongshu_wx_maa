@@ -643,6 +643,40 @@ class ModesUnitTests(unittest.TestCase):
             self.assertTrue(auto_report["stages"][1]["videos"][0]["returnedToSearchResults"])
             self.assertEqual(ui.texts_set, ["脱口秀"])
 
+    def test_parse_search_video_cards_handles_truncated_and_merged_narrow_screen_footers(self):
+        # Real Hebe_BD00 OCR snapshots 031-recover-check-0.json & 039-search-cards-scroll-8.json (720x1559).
+        scroll_8_lines = [
+            line("今天吃什么", 88, 100, 159, 44),
+            line("视频", 130, 199, 62, 31),
+            line("00:53", 20, 625, 66, 24),
+            line("凸100", 274, 623, 66, 28),
+            line("吃饭了#农村人的生活#农", 25, 682, 298, 27),
+            line("村美食 #新农人计划", 25, 717, 227, 28),
+            line("花姐农村6小", 25, 768, 290, 32),
+            line("02:20", 376, 623, 62, 28),
+            line("凸1440", 612, 623, 85, 28),
+            line("带你们看看韩国普通家庭都", 379, 682, 307, 27),
+            line("吃些什么！今天婆婆家安..", 377, 716, 306, 31),
+            line("是酒窝夫妇", 411, 769, 138, 28),
+            line("6小..", 594, 764, 68, 34),
+            line("00:25", 20, 1250, 65, 23),
+            line("热乎饭菜，平凡小日子#家", 22, 1304, 307, 32),
+            line("常菜 #好好吃饭 #晚餐分享", 28, 1344, 298, 23),
+            line(" 叶子日…20分", 27, 1391, 283, 33),
+            line("07:41", 372, 1250, 63, 23),
+            line("合理饮食，拒绝浪费！今天", 379, 1305, 305, 28),
+            line("的菜很丰盛哦#美食#农.", 377, 1339, 293, 31),
+            line("幺妹清清.", 422, 1393, 143, 29),
+            line("💖6小..", 551, 1390, 111, 32),
+        ]
+        cards = parse_search_video_cards(scroll_8_lines, height=1559)
+        self.assertEqual([c["author"] for c in cards], ["花姐农村", "是酒窝夫妇", "叶子日", "幺妹清清"])
+        self.assertEqual([c["publishTime"] for c in cards], ["6小", "6小..", "20分", "6小.."])
+        self.assertEqual(cards[0]["likeCountText"], "100")
+        self.assertEqual(cards[1]["likeCountText"], "1440")
+        self.assertEqual(cards[0]["duration"], "00:53")
+        self.assertEqual(cards[3]["duration"], "07:41")
+
 
 if __name__ == "__main__":
     unittest.main()

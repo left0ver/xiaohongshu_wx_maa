@@ -501,6 +501,39 @@ class CommentPagingTests(unittest.TestCase):
         self.assertEqual(result["endReason"], "end_of_list")
         self.assertEqual({e["payload"]["nickname"] for e in result["events"]}, {"甲", "丙"})
 
+    def test_zero_comment_feed_button_is_clicked_not_mistaken_for_open_drawer(self):
+        # Real Hebe_BD00 run b5189083 (030-feed.json -> 020-share-paste-drawer.json):
+        # 0-comment video renders "评论" in the bottom-right action bar (com.tencent.mm:id/c6s).
+        feed_lines = [
+            {"text": "出现点点小插曲，本来不想发的#今天吃什么", "box": [29, 1337, 663, 34]},
+            {"text": "郭俏一起吃点", "box": [120, 1453, 129, 25]},
+            {"text": "1", "box": [383, 1481, 12, 29]},
+            {"text": "转发", "box": [458, 1481, 43, 29]},
+            {"text": "1", "box": [566, 1481, 12, 29]},
+            {"text": "评论", "box": [641, 1481, 43, 29]},
+        ]
+        empty_drawer_lines = [
+            {"text": "评论", "box": [100, 437, 54, 36]},
+            {"text": "郭俏一起吃点", "box": [101, 535, 150, 34]},
+            {"text": "作者", "box": [326, 537, 50, 34]},
+            {"text": "江苏", "box": [387, 537, 50, 34]},
+            {"text": "10分钟前", "box": [449, 537, 214, 34]},
+            {"text": "暂无评论", "box": [310, 1012, 100, 34]},
+            {"text": "佳一讲商业\xa0发表评论:", "box": [101, 1491, 459, 34]},
+        ]
+        with self.assertRaisesRegex(ValueError, "Comment drawer is not visible"):
+            parse_comment_drawer(feed_lines, 1559)
+
+        ui = PagingCommentUi([feed_lines, empty_drawer_lines])
+        ui.height = 1559
+        result = self._run_pages(ui)
+        self.assertEqual(ui.clicks, ["评论"])
+        self.assertEqual(ui.labels, ["feed", "comments"])
+        self.assertEqual(ui.backs, 1)
+        self.assertEqual(result["events"], [])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["endReason"], "empty_comments")
+
 
 class PagingCommentUi(FakeCommentUi):
     def __init__(self, snapshots):

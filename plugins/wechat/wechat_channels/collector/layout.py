@@ -24,6 +24,29 @@ class WorkHeaderMissing(ValueError):
     pass
 
 
+COMMENT_DRAWER_HEADING_RE = re.compile(r"^评论\s*[\d.万wW+]*$")
+
+
+def is_comment_drawer_heading(line, height=None):
+    """True for the drawer's '评论 [count]' header, never the feed bar or message-center tab."""
+    if not COMMENT_DRAWER_HEADING_RE.fullmatch(line.get("text", "").strip()):
+        return False
+    x, y, _, _ = line["box"]
+    if x >= 450 or y < 150:
+        return False
+    if height is not None and y >= height - 180:
+        return False
+    return True
+
+
+def find_comment_drawer_heading(lines, height=None):
+    return next(
+        (line for line in sorted(lines, key=lambda item: (item["box"][1], item["box"][0]))
+         if is_comment_drawer_heading(line, height)),
+        None,
+    )
+
+
 def compact(text):
     # Controls interleave zero-width spaces; they are not text to compare.
     return re.sub(r"[\s\u200b-\u200d\u2060\ufeff]+", "", unicodedata.normalize("NFKC", text))
@@ -110,9 +133,12 @@ def work_region(lines):
     rows = reading_rows(lines)
     height = line_height(lines)
     # Match the title item itself: an avatar misread as a glyph can join its row.
-    heading = next((row for row in rows if re.match(r"^评论\s*\d*", row["text"])
-                    or any(re.fullmatch(r"评论\s*[\d.万wW]*", item["text"].strip()) for item in row["items"])),
-                   None)
+    heading = next(
+        (row for row in rows
+         if (re.match(r"^评论\s*\d*", row["text"]) and row["items"][0]["box"][0] < 450 and row["top"] >= 150)
+         or any(is_comment_drawer_heading(item) for item in row["items"])),
+        None,
+    )
     if not heading:
         raise ValueError("The video details drawer is not open")
     rows = [row for row in rows if row["top"] > heading["bottom"]]
