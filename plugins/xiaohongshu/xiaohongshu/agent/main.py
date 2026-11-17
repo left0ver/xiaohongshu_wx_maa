@@ -59,6 +59,11 @@ class CollectNote(CustomAction):
         device = make_device(context)
 
         def clipboard():
+            for _ in range(3):
+                direct = device.read_clipboard()
+                if isinstance(direct, dict) and direct.get("text") and isinstance(direct.get("timestamp"), int) and direct["timestamp"] > 0:
+                    return direct
+                time.sleep(0.2)
             device.command("am", "start", "--display", "0", "-n", "top.natsuu.mta.xiaohongshu/top.natsuu.mta.MainActivity")
             try:
                 for _ in range(10):

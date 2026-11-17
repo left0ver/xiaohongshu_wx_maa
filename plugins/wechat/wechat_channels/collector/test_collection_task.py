@@ -216,6 +216,17 @@ class ShareLinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previous video"):
             self.run_copy(pasted, previous=LINK)
 
+    def test_direct_clipboard_read_skips_search_and_composer_paste(self):
+        ui = ShareUi([self.SHEET_SCROLLED, FEED_SECOND])
+        ui.read_clipboard = lambda: {"text": f"看看这个视频 {LINK}", "timestamp": 9_999_999_999_999}
+        with patch("collection.time.sleep"):
+            link = copy_share_link(ui, FEED_SECOND)
+        self.assertEqual(link, LINK)
+        self.assertEqual([c["text"] for c in ui.clicks], ["share", "复制链接"])
+        self.assertEqual(ui.keys, [])
+        self.assertEqual(getattr(ui, "cleared", 0), 0)
+        self.assertEqual(ui.backs, 0)
+
 
 class CollectionTaskTests(unittest.TestCase):
     def test_settings_are_checked_before_the_phone_is_touched(self):

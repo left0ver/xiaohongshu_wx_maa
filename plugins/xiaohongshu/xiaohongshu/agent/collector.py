@@ -197,6 +197,27 @@ class Device:
         if "text_set" not in (output or ""):
             raise PageMismatch("Could not set text in active EditText")
 
+    def read_clipboard(self):
+        helper = Path(__file__).with_name("ui-dump.dex")
+        if not helper.is_file():
+            return None
+        try:
+            output = self.command(
+                "env",
+                "CLASSPATH=" + str(helper),
+                "app_process",
+                "/system/bin",
+                "xhs.UiDump",
+                "--get-clipboard",
+            )
+            raw = next(
+                (line.strip() for line in reversed((output or "").splitlines()) if line.strip().startswith("{")),
+                "",
+            )
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
 
 def open_discover(device):
     device.command("am", "start", "--display", "0", "-n", "com.xingin.xhs/.index.v2.IndexActivityV2")

@@ -13,6 +13,7 @@ import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.List;
+import org.json.JSONObject;
 import org.xmlpull.v1.XmlSerializer;
 
 /** Runs under the existing Shizuku shell identity; no idle wait on animated pages. */
@@ -39,6 +40,10 @@ public final class UiDump {
         }
         if (args.length == 2 && args[0].equals("--set-text")) {
             setText(args[1]);
+            return;
+        }
+        if (args.length == 1 && args[0].equals("--get-clipboard")) {
+            System.out.println(readClipboardJson());
             return;
         }
         if (args.length != 1) throw new IllegalArgumentException("output path required");
@@ -235,6 +240,60 @@ public final class UiDump {
         if (proc.waitFor() != 0) {
             throw new IllegalStateException("KEYCODE_PASTE command failed");
         }
+    }
+
+    private static String readClipboardJson() throws Exception {
+        Class<?> sm = Class.forName("android.os.ServiceManager");
+        android.os.IBinder binder = (android.os.IBinder) sm.getMethod("getService", String.class).invoke(null, "clipboard");
+        Object clipboard = Class.forName("android.content.IClipboard$Stub")
+            .getMethod("asInterface", android.os.IBinder.class).invoke(null, binder);
+        android.content.ClipData clip = null;
+        boolean invoked = false;
+        for (java.lang.reflect.Method m : clipboard.getClass().getMethods()) {
+            if (!m.getName().equals("getPrimaryClip")) continue;
+            Class<?>[] p = m.getParameterTypes();
+            try {
+                if (p.length == 1 && p[0] == String.class) {
+                    clip = (android.content.ClipData) m.invoke(clipboard, "com.android.shell");
+                    invoked = true;
+                    break;
+                } else if (p.length == 2 && p[0] == String.class && p[1] == int.class) {
+                    clip = (android.content.ClipData) m.invoke(clipboard, "com.android.shell", 0);
+                    invoked = true;
+                    break;
+                } else if (p.length == 3 && p[0] == String.class && p[1] == String.class && p[2] == int.class) {
+                    clip = (android.content.ClipData) m.invoke(clipboard, "com.android.shell", null, 0);
+                    invoked = true;
+                    break;
+                } else if (p.length == 4 && p[0] == String.class && p[1] == String.class && p[2] == int.class && p[3] == int.class) {
+                    clip = (android.content.ClipData) m.invoke(clipboard, "com.android.shell", null, 0, 0);
+                    invoked = true;
+                    break;
+                } else if (p.length == 5 && p[0] == String.class && p[1] == String.class && p[2] == int.class && p[3] == int.class && p[4] == boolean.class) {
+                    clip = (android.content.ClipData) m.invoke(clipboard, "com.android.shell", null, 0, 0, true);
+                    invoked = true;
+                    break;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (!invoked) {
+            throw new IllegalStateException("Could not read system clipboard");
+        }
+        String clipText = "";
+        long timestamp = 0L;
+        if (clip != null) {
+            if (clip.getDescription() != null) {
+                timestamp = clip.getDescription().getTimestamp();
+            }
+            if (clip.getItemCount() > 0 && clip.getItemAt(0).getText() != null) {
+                clipText = clip.getItemAt(0).getText().toString();
+            }
+        }
+        JSONObject out = new JSONObject();
+        out.put("text", clipText);
+        out.put("timestamp", timestamp);
+        return out.toString();
     }
 
     private static void collectEdits(AccessibilityNodeInfo node, List<AccessibilityNodeInfo> edits, int depth) {

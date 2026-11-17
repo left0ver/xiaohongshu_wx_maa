@@ -478,10 +478,10 @@ def back_to_video(ui, author, label):
 
 
 def copy_share_link(ui, lines, previous_link=None):
-    """转发 → 复制链接, then paste into Channels search to read the clipboard.
+    """转发 → 复制链接, then read directly from system clipboard (with UI-paste fallback).
 
-    WeChat makes a new short link on every copy. Only a link read from the
-    controls is kept: OCR would confuse letters inside the code.
+    WeChat makes a new short link on every copy. Only a link read from clipboard
+    or native controls is kept: OCR would confuse letters inside the code.
     """
     author = author_in_feed(lines, ui.height)["text"].strip()
     ui.click(share_geometry(lines, ui.height))
@@ -497,16 +497,34 @@ def copy_share_link(ui, lines, previous_link=None):
         y = second_row["box"][1] - 40
         ui.swipe(640, y, 80, y, 500)
         sheet = ui.snapshot("share-sheet-scrolled")
+    copied_after = now_ms() - 1000
     ui.click(copy)
     time.sleep(0.8)
     if find(ui.snapshot("share-closed"), r"^复制链接$|^转发给朋友$"):
         ui.back()
-    search = _feed_search_button(ui)
-    if search:
-        link = _paste_into_search(ui, search)
-    else:
-        link = _paste_into_composer(ui, ui.snapshot("share-feed"))
-    back_to_video(ui, author, "share-return")
+    link = None
+    if hasattr(ui, "read_clipboard"):
+        for attempt in range(2):
+            clip = ui.read_clipboard()
+            if isinstance(clip, dict):
+                ts = clip.get("timestamp")
+                match = SHARE_LINK.search(str(clip.get("text") or ""))
+                if match:
+                    candidate = match.group(0)
+                    if candidate == previous_link:
+                        raise ValueError("The clipboard still holds the previous video's link")
+                    if not isinstance(ts, int) or ts <= 0 or ts >= copied_after:
+                        link = candidate
+                        break
+            if attempt == 0:
+                time.sleep(0.25)
+    if not link:
+        search = _feed_search_button(ui)
+        if search:
+            link = _paste_into_search(ui, search)
+        else:
+            link = _paste_into_composer(ui, ui.snapshot("share-feed"))
+        back_to_video(ui, author, "share-return")
     if not link:
         raise ValueError("The copied share link could not be read")
     if link == previous_link:

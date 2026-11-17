@@ -609,6 +609,21 @@ class MaaUi:
         run(["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin",
              "xhs.UiDump", "--paste-text", text], timeout=timeout, stopped=self.stopped)
 
+    def read_clipboard(self, timeout=8):
+        """Read system clipboard text and timestamp directly via shell IClipboard."""
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        helper = Path(__file__).with_name("ui-dump.dex")
+        if not helper.is_file():
+            return None
+        try:
+            out = run(["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin",
+                       "xhs.UiDump", "--get-clipboard"], timeout=timeout, stopped=self.stopped)
+            raw = next((item.strip() for item in reversed((out or "").splitlines()) if item.strip().startswith("{")), "")
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
     def type_ascii(self, text):
         """通过系统按键输入 ASCII 搜索文字。"""
         if self.stopped():
