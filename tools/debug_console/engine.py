@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.debug_console.narrative import (
+    build_timeline,
     ACTION_TO_LINK_TASK,
     deduplicate_visual_lines,
     enrich_run_with_chinese_narrative,
@@ -824,6 +825,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
             "attempts": attempts,
             "recognitionDurationMs": total_attempt_ms,
             "observedAtUnixMs": observed_ts,
+            "hasObservedTimestamp": any(l.get("observedAtUnixMs") for l in lines if isinstance(l, dict)),
             "deltaMs": delta_ms,
             "pageState": page_state,
             "pageStateLabel": PAGE_STATE_LABELS.get(page_state, page_state),
@@ -986,6 +988,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
         "stages": stages,
         "timingEvents": timing_events,
         "snapshots": snapshot_summaries,
+        "timelineSteps": build_timeline(snapshot_summaries, timing_events, payload_files, outcome, error_message),
         "recognitionStats": reco_stats,
         "payloadFiles": payload_files,
         "sqliteAndUploads": sqlite_data,

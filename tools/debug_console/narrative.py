@@ -59,9 +59,125 @@ SOURCE_SHORT_CN = {
     "empty_hierarchy": "空控件树",
 }
 
+STATUS_CN = {
+    "done": "操作已完成", "performed": "操作已执行", "sent": "发送完成",
+    "already_messaged": "已私信过该用户，跳过发送",
+    "already_replied": "已回复过该评论，跳过回复",
+    "already_commented": "已评论过该视频，跳过发表",
+    "already_liked": "已经点赞，跳过点击", "already_collected": "已经收藏，跳过点击",
+    "already_followed": "已经关注，跳过点击", "already_satisfied": "所需操作已经完成",
+    "skipped": "跳过操作", "succeeded": "执行成功", "failed": "执行失败",
+}
+
+MESSAGE_STEPS = {
+    "messages-start": ("检查消息巡检入口", "读取当前视频号页面，准备进入个人页。"),
+    "personal-page": ("打开个人页，定位视频号消息入口", "读取个人页中的视频号消息入口。"),
+    "messages-center": ("打开视频号消息中心", "读取消息中心页签，准备查看评论通知。"),
+    "messages-comments": ("读取评论通知列表", "读取评论通知中的用户昵称、评论内容和回复入口。"),
+    "messages-after-like": ("检查通知点赞后的页面", "读取点赞后的通知列表，供点赞状态验证使用。"),
+    "messages-reply-composer": ("打开通知回复输入框", "点击通知的回复入口后，检查输入框。"),
+    "messages-reply-typed": ("输入通知回复内容，准备发送", "检查已输入的回复内容和发送按钮。"),
+    "messages-after-reply": ("检查通知回复发送后的页面", "读取发送后的页面，检查回复输入框是否已经关闭。"),
+    "messages-return-check": ("检查消息巡检结束后的页面", "识别当前页面，确认是否需要返回视频播放页。"),
+}
+
 
 def get_task_type_cn(task_type: str) -> str:
     return TASK_TYPE_CN.get(task_type, f"视频号任务 ({task_type})")
+
+
+def build_timeline(snapshots, timing_events, payload_files, outcome, error_message):
+    steps = [dict(s, snapshotIndex=i, snapshotSequence=s["sequence"], stepKind="snapshot")
+             for i, s in enumerate(snapshots)]
+    untimed = []
+    timed = []
+    event_titles = {
+        "discoverySending": "发送采集数据", "discoveryAcknowledged": "服务器确认采集数据",
+        "discoveryDeferred": "数据暂缓上传", "videoCollected": "保存视频采集结果",
+        "linkTaskCompleted": "链接任务执行结果", "runCompleted": "任务结束",
+        "modeCompleted": "浏览任务结束", "interactionsCompleted": "互动任务结束",
+        "collectionCompleted": "采集任务结束",
+    }
+    for event in timing_events:
+        kind = event.get("kind")
+        if kind not in event_titles:
+            continue
+        timestamp = event.get("sentAt") or event.get("acknowledgedAt")
+        items = []
+        for key, name in (("batchId", "上传批次"), ("eventTypes", "数据类型"),
+                          ("eventIds", "发送记录"), ("discoveryAckIds", "确认记录"),
+                          ("videoUrl", "视频链接"), ("missingFields", "缺少的字段"),
+                          ("pendingCount", "待上传数量"), ("stage", "处理阶段"), ("error", "错误信息")):
+            value = event.get(key)
+            if value:
+                items.append({"label": name, "value": "、".join(map(str, value)) if isinstance(value, list) else str(value)})
+        status = event.get("status") or event.get("outcome")
+        if status:
+            items.append({"label": "执行结果", "value": STATUS_CN.get(status, status)})
+        step = {"stepKind": "event", "label": kind, "stageGroup": "执行事件",
+                "titleCn": event_titles[kind], "actionCn": "来自任务执行日志。",
+                "sourceCn": "执行日志", "collectedItems": items, "observedAtUnixMs": timestamp,
+                "timingLineIndex": event.get("_lineIndex")}
+        if timestamp:
+            timed.append(step)
+        else:
+            step["stageGroup"] = "执行记录（未记录时间）"
+            untimed.append(step)
+    # 保留画面编号顺序，使用设备时间插入执行事件。
+    for event in sorted(timed, key=lambda s: s["observedAtUnixMs"]):
+        position = next((i for i, step in enumerate(steps)
+                         if step.get("hasObservedTimestamp")
+                         and step["observedAtUnixMs"] > event["observedAtUnixMs"]), len(steps))
+        steps.insert(position, event)
+    steps.extend(untimed)
+    result = payload_files.get("remote-result.json") or payload_files.get("result.json") or {}
+    operation = result.get("operation") or payload_files.get("link-task.json") or {}
+    items = []
+    if operation.get("status"):
+        status = operation["status"]
+        items.append({"label": "操作结果", "value": STATUS_CN.get(status, status)})
+    for key, name in (("like", "视频点赞"), ("collect", "视频收藏"), ("follow", "关注作者"),
+                      ("commentLike", "评论点赞"), ("reply", "回复评论"),
+                      ("comment", "发表评论"), ("message", "发送私信")):
+        detail = operation.get(key)
+        if not isinstance(detail, dict):
+            continue
+        values = []
+        if detail.get("status"):
+            values.append(STATUS_CN.get(detail["status"], detail["status"]))
+        if "verified" in detail:
+            values.append("验证通过" if detail["verified"] else "验证未通过")
+        if "beforeCount" in detail and "afterCount" in detail:
+            values.append(f"数量：{detail['beforeCount']} → {detail['afterCount']}")
+        if detail.get("afterLabel"):
+            values.append(f"按钮状态：{detail['afterLabel']}")
+        text = detail.get("replyText") or detail.get("commentText")
+        if text:
+            values.append(text)
+        if values:
+            items.append({"label": name, "value": "；".join(values)})
+    if result.get("message"):
+        items.append({"label": "执行结论", "value": str(result["message"])})
+    messages = operation.get("messages") or {}
+    if "messagesFound" in messages:
+        items.append({"label": "发现的通知数量", "value": str(messages["messagesFound"])})
+    for message in messages.get("messagesHandled", []):
+        values = [str(message.get("content") or "")]
+        for key, name in (("likeStatus", "点赞"), ("replyStatus", "回复")):
+            if message.get(key):
+                values.append(f"{name}：{STATUS_CN.get(message[key], message[key])}")
+        items.append({"label": f"通知用户 @{message.get('nickname', '')}", "value": "；".join(values)})
+    if "returnedToTask" in messages:
+        items.append({"label": "返回检查", "value": "已经返回任务页面" if messages["returnedToTask"] else "尚未返回任务页面"})
+    if error_message:
+        items.append({"label": "错误信息", "value": str(error_message)})
+    if items or outcome in ("succeeded", "failed"):
+        steps.append({"stepKind": "result", "label": "task-result", "stageGroup": "任务结果",
+                      "titleCn": STATUS_CN.get(outcome, "任务结果"), "sourceCn": "任务结果文件",
+                      "actionCn": "查看本次任务记录的操作结果。", "collectedItems": items})
+    for index, step in enumerate(steps, 1):
+        step["sequence"] = index
+    return steps
 
 
 def deduplicate_visual_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -294,7 +410,8 @@ def enrich_run_with_chinese_narrative(
             title_cn = "在输入框粘贴目标视频链接，点击【发送】"
             action_cn = "已将目标视频号分享链接填入输入框，点击右侧「发送」按钮发出消息。"
             ui_theme = "light"
-            url_line = _find_line(lines, r"https://(?:weixin\.qq\.com/sph/|channels\.weixin\.qq\.com/)")
+            url_line = _find_line(lines, r"https://(?:weixin\.qq\.com/sph/|channels\.weixin\.qq\.com/)",
+                                  lambda l: bool(known_share_link and known_share_link in l["text"]))
             if url_line:
                 collected_items.append({"label": "粘贴的目标链接", "value": url_line["text"].strip()})
                 highlight_boxes.append({"box": url_line["box"], "label": "已输入链接"})
@@ -653,11 +770,11 @@ def enrich_run_with_chinese_narrative(
                         if operation.get("action") == "likeComment" and cm.get("_likeBox"):
                             lx, ly, lw, lh = cm["_likeBox"]
                             click_target = {"x": lx + lw // 2, "y": ly + lh // 2, "label": f"点击给 @{want_nick} 的评论点赞"}
-                        elif cm.get("_nameBox"):
+                        elif operation.get("action") == "messageCommenter" and not operation.get("status", "").startswith("already_") and cm.get("_nameBox"):
                             nx, ny, nw, nh = cm["_nameBox"]
                             click_target = {"x": nx + min(nw, 32) // 2, "y": ny + nh // 2, "label": f"点击 @{want_nick} 昵称左端"}
                         break
-            elif cm_list and cm_list[0].get("_nameBox"):
+            elif not operation and cm_list and cm_list[0].get("_nameBox"):
                 nx, ny, nw, nh = cm_list[0]["_nameBox"]
                 click_target = {"x": nx + min(nw, 32) // 2, "y": ny + nh // 2, "label": f"点击评论者 @{cm_list[0].get('nickname')} 昵称左端 (x+16)"}
 
@@ -714,13 +831,13 @@ def enrich_run_with_chinese_narrative(
 
         elif label in ("comments-reply-composer", "comments-composer"):
             stage_group = "三、定位目标评论并执行互动"
-            title_cn = "点击目标评论唤醒回复输入框"
-            action_cn = "已弹出底部评论/回复输入键盘，准备输入回复文字。"
+            title_cn = "打开视频评论输入框" if label == "comments-composer" else "打开目标评论的回复输入框"
+            action_cn = "检查底部输入框，准备输入评论文字。" if label == "comments-composer" else "检查目标评论的回复输入框，准备输入回复文字。"
             ui_theme = "comment-drawer"
 
         elif label in ("comments-reply-typed", "comments-typed"):
             stage_group = "三、定位目标评论并执行互动"
-            title_cn = "在回复框填入评论内容，准备点击【发送/回复】"
+            title_cn = "输入视频评论内容，准备点击【发送】" if label == "comments-typed" else "输入回复内容，准备点击【发送/回复】"
             action_cn = "已将预设的评论/回复文本填入输入框，点击右侧发送按钮提交。"
             ui_theme = "comment-drawer"
             send_btn = _find_line(lines, r"^(?:发送|回复)$", lambda l: l["box"][0] > 520)
@@ -740,15 +857,50 @@ def enrich_run_with_chinese_narrative(
                 if rep.get("replyText") or rep.get("commentText"):
                     collected_items.append({"label": "已发送内容", "value": str(rep.get("replyText") or rep.get("commentText"))})
 
-        elif label in ("profile-follow-check", "profile-after-follow"):
+        elif label == "profile-follow-check":
+            stage_group = "四、检查个人主页状态"
+            title_cn = "检查返回后的个人主页"
+            action_cn = "读取当前页面，确认是否已经返回个人主页。"
+            ui_theme = "light"
+
+        elif label == "profile-after-follow":
             stage_group = "三、执行主页关注并校验状态"
-            title_cn = "在作者主页点击【关注】，校验按钮变为【已关注】"
-            action_cn = "识别作者主页上的关注按钮状态，确认关注动作已生效。"
+            title_cn = "读取点击关注后的按钮状态"
+            action_cn = "读取个人主页上的关注按钮，供操作结果验证使用。"
             ui_theme = "light"
             fbtn = _find_line(lines, r"^(?:[√✓]?\s*)?(?:已关注|互相关注|申请关注|关注)$")
             if fbtn:
                 collected_items.append({"label": "当前关注按钮状态", "value": fbtn["text"].strip()})
                 highlight_boxes.append({"box": fbtn["box"], "label": f"状态: {fbtn['text']}"})
+
+        elif label in MESSAGE_STEPS or label.startswith("messages-return-"):
+            stage_group = "消息中心巡检与回复"
+            if label in MESSAGE_STEPS:
+                title_cn, action_cn = MESSAGE_STEPS[label]
+            else:
+                title_cn = "从消息中心返回视频播放页"
+                action_cn = "按返回键后读取页面，检查是否已经回到视频播放页。"
+            if label == "messages-reply-typed":
+                send_btn = _find_line(lines, r"^(发送|回复)$", lambda l: l["box"][0] > 500)
+                if send_btn:
+                    bx, by, bw, bh = send_btn["box"]
+                    click_target = {"x": bx + bw // 2, "y": by + bh // 2, "label": "点击发送回复"}
+
+        elif label in ("feed-after-like", "feed-after-collect"):
+            stage_group = "视频点赞与收藏"
+            title_cn = "读取视频点赞后的状态" if label == "feed-after-like" else "读取视频收藏后的状态"
+            action_cn = "读取互动按钮和数量，操作验证结果见任务结果步骤。"
+            ui_theme = "dark-video"
+
+        elif label.startswith(("feed-after-author-touch", "link-after-dm-")):
+            stage_group = "返回视频播放页"
+            title_cn = "从个人主页返回视频播放页"
+            action_cn = "按返回键后读取页面，检查视频播放页是否恢复。"
+            ui_theme = "dark-video"
+
+        elif label == "navigation-control-resolved":
+            title_cn = "确认视频号导航入口"
+            action_cn = "读取已定位的导航控件，确认进入视频号的入口。"
 
         elif label.startswith("dm-"):
             stage_group = "四、私信会话发送与送达校验"
@@ -929,16 +1081,8 @@ def enrich_run_with_chinese_narrative(
         if operation.get("matchedNickname") or operation.get("nickname"):
             operation_summary_items.append({"label": "目标评论用户", "value": f"@{operation.get('matchedNickname') or operation.get('nickname')}"})
         if operation.get("status"):
-            status_map = {
-                "done": "✅ 操作已完成",
-                "performed": "✅ 操作已执行并验证成功",
-                "sent": "✅ 消息/评论已成功发送",
-                "already_messaged": "⏭️ 历史已私信过该用户（防重跳过）",
-                "already_liked": "⏭️ 之前已点赞过（防重跳过）",
-                "already_followed": "⏭️ 之前已关注过（防重跳过）",
-            }
             st_val = str(operation["status"])
-            operation_summary_items.append({"label": "动作完成状态", "value": status_map.get(st_val, st_val)})
+            operation_summary_items.append({"label": "动作完成状态", "value": STATUS_CN.get(st_val, st_val)})
         for sub_k, sub_label in (
             ("like", "视频点赞结果"),
             ("collect", "视频收藏结果"),

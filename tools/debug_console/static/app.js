@@ -254,7 +254,7 @@
             : ""
         }
         <div class="run-card-foot">
-          <span>${formatTime(r.mtime)} · <b>${r.snapshotCount || 0} 个步骤</b></span>
+          <span>${formatTime(r.mtime)} · <b>${r.snapshotCount || 0} 个画面</b></span>
           <div style="display:flex;align-items:center;gap:6px;">
             <span>${escapeHtml(srcLabel)}</span>
             ${pullBtn}
@@ -311,7 +311,7 @@
     renderCenterTaskSummary(run);
     renderCenterTimeline(run);
 
-    if (run.snapshots && run.snapshots.length > 0) {
+    if (run.timelineSteps && run.timelineSteps.length > 0) {
       selectSnapshotByIndex(0);
     } else {
       state.activeSnapshotIndex = -1;
@@ -419,7 +419,7 @@
           <div>
             <h2 class="summary-title">${escapeHtml(ov.taskTypeCn || "视频号任务")}</h2>
             <div class="summary-meta">
-              <span>📊 共执行 <b>${reco.totalSnapshots || 0}</b> 个画面步骤</span>
+              <span>📊 <b>${run.timelineSteps.length}</b> 个步骤 · ${reco.totalSnapshots || 0} 个画面</span>
               <span>⏱️ 识别总耗时 <b>${formatMs(reco.totalRecognitionMs || 0)}</b></span>
               ${
                 run.totalTaskDurationMs
@@ -446,7 +446,7 @@
 
   function renderCenterTimeline(run) {
     const container = $("timelineStagesContainer");
-    const snaps = run.snapshots || [];
+    const snaps = run.timelineSteps || [];
 
     if (snaps.length === 0) {
       container.innerHTML = `
@@ -518,7 +518,7 @@
             <span class="t-step-num">第 ${snap.sequence} 步</span>
             <span class="t-step-title">${escapeHtml(snap.titleCn || snap.label)}</span>
             <span class="badge badge-blue" title="底层快照文件名: ${escapeHtml(snap.filename)}">
-              ${escapeHtml(snap.sourceCn || snap.source)} · ${formatMs(snap.recognitionDurationMs)}
+              ${escapeHtml(snap.sourceCn || snap.source)}${snap.stepKind === "snapshot" ? ` · ${formatMs(snap.recognitionDurationMs)}` : ""}
             </span>
           </div>
           <div class="t-step-desc">${escapeHtml(snap.actionCn || "")}</div>
@@ -538,7 +538,7 @@
   }
 
   async function selectSnapshotByIndex(idx, hotReload = false) {
-    const snaps = state.activeRun?.snapshots || [];
+    const snaps = state.activeRun?.timelineSteps || [];
     if (idx < 0 || idx >= snaps.length) return;
     state.activeSnapshotIndex = idx;
     state.selectedLineIndex = -1;
@@ -551,7 +551,9 @@
     });
 
     const snapSummary = snaps[idx];
-    $("rightScreenTitle").textContent = `📱 第 ${snapSummary.sequence} 步画面 (${snapSummary.snapshotsTotal || snaps.length}步之${snapSummary.sequence})`;
+    $("rightScreenTitle").textContent = snapSummary.stepKind === "snapshot"
+      ? `📱 第 ${snapSummary.sequence} 步画面（共 ${snaps.length} 步）`
+      : `第 ${snapSummary.sequence} 步 · ${snapSummary.sourceCn}`;
 
     // Update top caption in right panel
     const actionParts = [`<b>第 ${snapSummary.sequence} 步：</b>${escapeHtml(snapSummary.titleCn || snapSummary.label)}`];
@@ -563,6 +565,18 @@
     }
     $("screenStepActionText").innerHTML = actionParts.join(" &nbsp;|&nbsp; ");
 
+    const hasSnapshot = snapSummary.stepKind === "snapshot";
+    $("screenCanvas").hidden = !hasSnapshot;
+    $("screenCanvas").style.display = hasSnapshot ? "" : "none";
+    $("btnQuickHotReplay").disabled = !hasSnapshot;
+    if (!hasSnapshot) {
+      state.activeSnapshot = null;
+      state.activeFrameImg = null;
+      renderRawLinesTable();
+      $("screenStepActionText").textContent = `${snapSummary.titleCn}。此步骤记录执行结果，没有手机画面。`;
+      return;
+    }
+
     try {
       const params = new URLSearchParams({
         runRef: state.activeRun.runRef || state.activeRunRef,
@@ -570,6 +584,7 @@
         hotReload: hotReload ? "1" : "0",
       });
       const data = await apiGet(`/api/runs/snapshot?${params.toString()}`);
+      if (state.activeRun?.timelineSteps?.[state.activeSnapshotIndex] !== snapSummary) return;
       state.activeSnapshot = {
         ...data.snapshot,
         summaryMeta: snapSummary,
@@ -596,13 +611,16 @@
       drawCanvas();
       return;
     }
+    const requestedSnapshot = state.activeSnapshot;
     const img = new Image();
     img.onload = () => {
+      if (state.activeSnapshot !== requestedSnapshot) return;
       state.frameImageCache[url] = img;
       state.activeFrameImg = img;
       drawCanvas();
     };
     img.onerror = () => {
+      if (state.activeSnapshot !== requestedSnapshot) return;
       state.activeFrameImg = null;
       drawCanvas();
     };
@@ -941,7 +959,7 @@
       state.activeRunRef = res.probe.runRef;
       state.activeRun = res.run;
       onRunLoaded(res.run);
-      const lastIdx = (res.run.snapshots || []).length - 1;
+      const lastIdx = (res.run.timelineSteps || []).findLastIndex((step) => step.stepKind === "snapshot");
       if (lastIdx >= 0) await selectSnapshotByIndex(lastIdx);
       showToast(`📸 已抓取手机当前屏幕 (${res.probe.lineCount} 项控件)！`);
       loadRuns();
@@ -1097,7 +1115,7 @@
       if (state.activeSnapshotIndex > 0) selectSnapshotByIndex(state.activeSnapshotIndex - 1);
     });
     $("btnNextStep").addEventListener("click", () => {
-      const len = state.activeRun?.snapshots?.length || 0;
+      const len = state.activeRun?.timelineSteps?.length || 0;
       if (state.activeSnapshotIndex + 1 < len) selectSnapshotByIndex(state.activeSnapshotIndex + 1);
     });
 
@@ -1109,7 +1127,7 @@
           selectSnapshotByIndex(state.activeSnapshotIndex - 1);
         }
       } else if (e.key === "ArrowDown" || e.key === "ArrowRight") {
-        const len = state.activeRun?.snapshots?.length || 0;
+        const len = state.activeRun?.timelineSteps?.length || 0;
         if (state.activeSnapshotIndex + 1 < len) {
           e.preventDefault();
           selectSnapshotByIndex(state.activeSnapshotIndex + 1);
