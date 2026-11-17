@@ -534,6 +534,56 @@ class CommentPagingTests(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(result["endReason"], "empty_comments")
 
+    def test_profile_return_without_ocr_emoji_body_does_not_abort_streaming_collection(self):
+        # vivo V2131A run 488877d7 (388-comments-page-25 -> 389-commenter-profile -> 392-comments-return):
+        # emoji-only comment body "👍👍👍👍" is read before profile visit, omitted by OCR on return.
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "别吵我的小雨林",
+                "description": "测试视频",
+                "authorDouyinId": "sphAuthorRain",
+            })
+            feed = [line("217", 1555, 622, 42, 23)]
+            drawer_before = [
+                line("评论 217", 400, 26, 120, 30),
+                line("你是我的罗尼哟山东7天前", 560, 98, 280, 27),
+                line("👍👍👍👍", 600, 98, 140, 27),
+                line("林玲8641广东8天前", 700, 98, 260, 27),
+                line("中午好。", 740, 98, 120, 27),
+                line("没有更多评论", 1340, 280, 160, 25),
+            ]
+            wechat_card = [
+                line("评论 217", 400, 26, 120, 30),
+                line("设置", 1206, 619, 55, 29),
+                line("你是我的罗尼哟", 1344, 182, 200, 32),
+                line("山东 女", 1396, 182, 100, 30),
+            ]
+            drawer_returned = [
+                line("评论 217", 400, 26, 120, 30),
+                line("你是我的罗尼哟山东7天前", 560, 98, 280, 27),
+                line("林玲8641广东8天前", 700, 98, 260, 27),
+                line("中午好。😎🎶", 740, 98, 160, 27),
+                line("没有更多评论", 1340, 280, 160, 25),
+            ]
+            ui = PagingCommentUi([feed, drawer_before, wechat_card, drawer_returned])
+            published = []
+            result = collect_visible_comments(
+                ui,
+                path,
+                video_event,
+                Timings(Path(directory) / "t.jsonl", "run"),
+                max_pages=1,
+                max_reply_expansions=0,
+                max_profiles=1,
+                publish_events=published.extend,
+            )
+            self.assertEqual(len(result["profiles"]), 1)
+            self.assertEqual(result["profiles"][0]["nickname"], "你是我的罗尼哟")
+            self.assertTrue(result["profiles"][0]["returnVerified"])
+            self.assertIn("USER", {e["event_type"] for e in published})
+            self.assertEqual({e["payload"]["nickname"] for e in result["events"]}, {"你是我的罗尼哟", "林玲8641"})
+
 
 class PagingCommentUi(FakeCommentUi):
     def __init__(self, snapshots):

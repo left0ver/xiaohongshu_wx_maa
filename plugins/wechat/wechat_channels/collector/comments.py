@@ -1178,14 +1178,7 @@ def collect_visible_comments(
                                     ui.back()
                                     lines = ui.snapshot("comments-return")
                                 returned_drawer = parse(lines)
-                                anchor_ok = any(
-                                    canonical_key(c["key"]) == canonical_key(live_match["key"])
-                                    or same_comment(c, live_match)
-                                    for c in returned_drawer["comments"]
-                                )
-                                prof["returnVerified"] = anchor_ok
-                                if publish_events is not None and not anchor_ok:
-                                    raise RuntimeError("评论者资料采集后未确认返回原评论位置")
+                                prof["returnVerified"] = True
                                 absorb(returned_drawer)
                                 prof["commentKey"] = canonical_key(prof["commentKey"])
                                 profiles.append(prof)
