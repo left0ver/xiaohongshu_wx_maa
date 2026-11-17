@@ -44,6 +44,13 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from tools.debug_console.narrative import (
+    ACTION_TO_LINK_TASK,
+    deduplicate_visual_lines,
+    enrich_run_with_chinese_narrative,
+    get_task_type_cn,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WECHAT_COLLECTOR_DIR = REPO_ROOT / "plugins" / "wechat" / "wechat_channels" / "collector"
 XHS_AGENT_DIR = REPO_ROOT / "plugins" / "xiaohongshu" / "xiaohongshu" / "agent"
@@ -376,20 +383,41 @@ def list_adb_devices() -> list[dict[str, Any]]:
     return devices
 
 
-def list_device_runs(serial: str, scope_path: str = "/data/local/tmp/wechat-channels-data", limit: int = 35) -> list[dict[str, Any]]:
+def list_device_runs(serial: str, scope_path: str = "/data/local/tmp/wechat-channels-data", limit: int = 25) -> list[dict[str, Any]]:
     """Fast batch inspection of recent runs on an ADB device without pulling full directories."""
     runs_dir = f"{scope_path.rstrip('/')}/runs"
+    cap = min(int(limit), 30)
     script = f"""
 cd "{runs_dir}" 2>/dev/null || exit 0
-for rid in $(ls -1t 2>/dev/null | head -n {int(limit)}); do
+for rid in $(ls -1t 2>/dev/null | head -n {cap}); do
   [ -d "$rid" ] || continue
   mtime=$(stat -c %Y "$rid" 2>/dev/null || echo 0)
-  snaps=$(ls -1 "$rid"/[0-9][0-9][0-9]-*.json 2>/dev/null | wc -l)
-  npys=$(ls -1 "$rid"/*.npy "$rid"/*.png 2>/dev/null | wc -l)
-  last_timing=$(tail -n 3 "$rid/timings.jsonl" 2>/dev/null | tr '\\n' ' ')
-  rem_res=$(cat "$rid/remote-result.json" 2>/dev/null | tr '\\n' ' ')
-  files=$(ls -1 "$rid"/*.json 2>/dev/null | xargs -n 1 basename 2>/dev/null | grep -vE '^[0-9]{{3}}-' | tr '\\n' ',')
-  echo "RUN|$rid|$mtime|$snaps|$npys|$files|$rem_res|$last_timing"
+  set -- "$rid"/[0-9][0-9][0-9]-*.json
+  if [ -e "$1" ]; then snaps=$#; else snaps=0; fi
+  set -- "$rid"/*.npy "$rid"/*.png
+  npys=0
+  for f in "$@"; do [ -e "$f" ] && npys=$((npys + 1)); done
+  files=""
+  for jf in collection.json link-task.json interactions.json mode.json comments.json video.json remote-result.json result.json; do
+    [ -f "$rid/$jf" ] && files="$files,$jf"
+  done
+  rem_res=""
+  if [ -f "$rid/remote-result.json" ]; then
+    rem_res=$(cat "$rid/remote-result.json" 2>/dev/null)
+  elif [ -f "$rid/link-task.json" ]; then
+    rem_res=$(cat "$rid/link-task.json" 2>/dev/null)
+  elif [ -f "$rid/result.json" ]; then
+    rem_res=$(cat "$rid/result.json" 2>/dev/null)
+  fi
+  last_timing=""
+  if [ -f "$rid/timings.jsonl" ]; then
+    last_timing=$(tail -n 3 "$rid/timings.jsonl" 2>/dev/null)
+  fi
+  snap_names=""
+  for sf in "$rid"/[0-9][0-9][0-9]-*.json; do
+    [ -e "$sf" ] && snap_names="$snap_names,${{sf##*/}}"
+  done
+  printf 'RUN|%s|%s|%s|%s|%s|%s|%s|%s\\n' "$rid" "$mtime" "$snaps" "$npys" "$files" "$snap_names" "$(echo "$rem_res" | tr '\\n' ' ')" "$(echo "$last_timing" | tr '\\n' ' ')"
 done
 """
     out = str(run_adb(serial, ["shell", script], timeout=10.0))
@@ -398,24 +426,18 @@ done
     for line in out.splitlines():
         if not line.startswith("RUN|"):
             continue
-        parts = line.split("|", 7)
-        if len(parts) < 8:
+        parts = line.split("|", 8)
+        if len(parts) < 9:
             continue
-        _, rid, mtime_s, snaps_s, npys_s, files_s, rem_res_s, last_timing_s = parts
+        _, rid, mtime_s, snaps_s, npys_s, files_s, snap_names_s, rem_res_s, last_timing_s = parts
         mtime = int(mtime_s.strip() or "0")
         snap_count = int(snaps_s.strip() or "0")
         frame_count = int(npys_s.strip() or "0")
         files = [f for f in files_s.split(",") if f]
 
-        task_type = _infer_task_type_from_hints(files, rem_res_s, last_timing_s)
+        task_type = _infer_task_type_from_hints(files, rem_res_s, last_timing_s, snap_names_s)
         outcome = _infer_outcome_from_hints(rem_res_s, last_timing_s)
-        summary_msg = ""
-        if rem_res_s.strip().startswith("{"):
-            try:
-                rem_obj = json.loads(rem_res_s)
-                summary_msg = rem_obj.get("message") or ""
-            except Exception:
-                pass
+        summary_msg = _infer_summary_from_hints(rem_res_s, last_timing_s)
 
         local_cache_dir = CACHE_ROOT / serial / scope_slug / "runs" / rid
         is_synced = (local_cache_dir / "timings.jsonl").is_file() or any(local_cache_dir.glob("*.json"))
@@ -433,6 +455,7 @@ done
             "frameCount": frame_count,
             "resultFiles": files,
             "taskType": task_type,
+            "taskTypeCn": get_task_type_cn(task_type),
             "outcome": outcome,
             "summaryMessage": summary_msg,
         })
@@ -490,17 +513,38 @@ def sync_device_run(serial: str, scope_path: str, run_id: str, include_sqlite: b
     return target_run_dir
 
 
-def _infer_task_type_from_hints(files: list[str], rem_res_s: str, last_timing_s: str) -> str:
+def _infer_task_type_from_hints(files: list[str], rem_res_s: str, last_timing_s: str, snap_names_s: str = "") -> str:
     if rem_res_s.strip().startswith("{"):
         try:
             obj = json.loads(rem_res_s)
             if obj.get("task"):
                 return str(obj["task"])
+            act = obj.get("action") or (obj.get("operation", {}) if isinstance(obj.get("operation"), dict) else {}).get("action")
+            if act in ACTION_TO_LINK_TASK:
+                return ACTION_TO_LINK_TASK[act]
         except Exception:
             pass
+    m_act = re.search(r'"action"\s*:\s*"([a-zA-Z]+)"', last_timing_s)
+    if m_act and m_act.group(1) in ACTION_TO_LINK_TASK:
+        return ACTION_TO_LINK_TASK[m_act.group(1)]
+
     if "collection.json" in files or "collectionCompleted" in last_timing_s:
         return "collect_channels"
-    if "link-task.json" in files or "linkTaskCompleted" in last_timing_s:
+    if "link-task.json" in files or "linkTaskCompleted" in last_timing_s or "link-" in snap_names_s:
+        if "commenter-profile" in snap_names_s and "dm-" in snap_names_s:
+            return "link_message_commenter"
+        if "author-profile" in snap_names_s and "dm-" in snap_names_s:
+            return "link_message_author"
+        if "profile-after-follow" in snap_names_s or "profile-follow-check" in snap_names_s:
+            return "link_follow_author"
+        if "comments-reply" in snap_names_s or "comments-after-reply" in snap_names_s:
+            return "link_reply_comment"
+        if "comments-after-like" in snap_names_s or "comments-locate" in snap_names_s:
+            return "link_like_comment"
+        if "comments-composer" in snap_names_s or "comments-after-post" in snap_names_s:
+            return "link_comment_video"
+        if "link-video" in snap_names_s:
+            return "link_like_video"
         return "link_task"
     if "interactions.json" in files or "interactionsCompleted" in last_timing_s:
         return "interact_work"
@@ -511,6 +555,45 @@ def _infer_task_type_from_hints(files: list[str], rem_res_s: str, last_timing_s:
     if "video.json" in files or "videoCollected" in last_timing_s:
         return "collect_video"
     return "wechat_task"
+
+
+def _infer_summary_from_hints(rem_res_s: str, last_timing_s: str) -> str:
+    status_cn_map = {
+        "done": "已完成",
+        "performed": "已执行并验证",
+        "sent": "已发送",
+        "already_messaged": "已私信过（防重跳过）",
+        "already_liked": "已点赞过（防重跳过）",
+        "already_collected": "已收藏过（防重跳过）",
+        "already_followed": "已关注过（防重跳过）",
+        "already_replied": "已回复过（防重跳过）",
+        "already_commented": "已评论过（防重跳过）",
+    }
+    if rem_res_s.strip().startswith("{"):
+        try:
+            obj = json.loads(rem_res_s)
+            if obj.get("error") and isinstance(obj["error"], str):
+                return obj["error"]
+            op = obj.get("operation") if isinstance(obj.get("operation"), dict) else obj
+            if isinstance(op, dict) and (op.get("action") or op.get("author") or op.get("status")):
+                parts = []
+                if op.get("author"):
+                    parts.append(f"作者 @{op['author']}")
+                if op.get("matchedNickname") or op.get("nickname"):
+                    parts.append(f"评论者 @{op.get('matchedNickname') or op.get('nickname')}")
+                st = str(op.get("status") or "")
+                if st:
+                    parts.append(status_cn_map.get(st, st))
+                if parts:
+                    return " · ".join(parts)
+            if obj.get("message") and isinstance(obj["message"], str):
+                return obj["message"]
+        except Exception:
+            pass
+    m_err = re.search(r'"error"\s*:\s*"([^"]+)"', last_timing_s)
+    if m_err:
+        return m_err.group(1)
+    return ""
 
 
 def _infer_outcome_from_hints(rem_res_s: str, last_timing_s: str) -> str:
@@ -572,27 +655,19 @@ def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
             except Exception:
                 pass
         rem_res_s = ""
-        if (rdir / "remote-result.json").is_file():
-            try:
-                rem_res_s = (rdir / "remote-result.json").read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
-        elif (rdir / "result.json").is_file():
-            try:
-                rem_res_s = (rdir / "result.json").read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        for rfile in ("remote-result.json", "link-task.json", "result.json"):
+            if (rdir / rfile).is_file():
+                try:
+                    rem_res_s = (rdir / rfile).read_text(encoding="utf-8", errors="replace")
+                    break
+                except Exception:
+                    pass
 
         rel_path = str(rdir.relative_to(REPO_ROOT))
-        task_type = _infer_task_type_from_hints(json_files, rem_res_s, last_lines)
+        snap_names_s = ",".join(snaps)
+        task_type = _infer_task_type_from_hints(json_files, rem_res_s, last_lines, snap_names_s)
         outcome = _infer_outcome_from_hints(rem_res_s, last_lines)
-        summary_msg = ""
-        if rem_res_s.strip().startswith("{"):
-            try:
-                rem_obj = json.loads(rem_res_s)
-                summary_msg = rem_obj.get("message") or rem_obj.get("error") or ""
-            except Exception:
-                pass
+        summary_msg = _infer_summary_from_hints(rem_res_s, last_lines)
 
         entries.append({
             "id": f"local:{rel_path}",
@@ -607,6 +682,7 @@ def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
             "frameCount": len(frames),
             "resultFiles": sorted(json_files),
             "taskType": task_type,
+            "taskTypeCn": get_task_type_cn(task_type),
             "outcome": outcome,
             "summaryMessage": summary_msg,
         })
@@ -671,6 +747,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
 
     # 2. Read all snapshot files (001-<label>.json)
     snapshot_summaries: list[dict[str, Any]] = []
+    snapshots_raw_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     snap_files = sorted(
         (f for f in run_dir.glob("[0-9][0-9][0-9]-*.json") if SNAPSHOT_FILE_RE.match(f.name)),
         key=lambda p: p.name,
@@ -734,7 +811,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
             if isinstance(v, dict) and "value" in v
         }
 
-        snapshot_summaries.append({
+        snap_summary = {
             "sequence": seq,
             "filename": snap_file.name,
             "label": data.get("label") or label,
@@ -757,7 +834,9 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
             "hasFrame": has_frame,
             "frameType": "png" if png_file.is_file() else ("npy" if npy_file.is_file() else None),
             "previewTexts": [l.get("text", "").strip() for l in lines[:8] if l.get("text", "").strip()],
-        })
+        }
+        snapshot_summaries.append(snap_summary)
+        snapshots_raw_pairs.append((snap_summary, data))
 
     # 3. Read output JSON payloads (video.json, comments.json, collection.json, etc.)
     payload_files: dict[str, Any] = {}
@@ -887,6 +966,15 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
     # 5. Locate associated SQLite & auxiliary files (in run_dir, parent, or parent.parent)
     sqlite_data = inspect_sqlite_and_uploads(run_dir)
 
+    # 6. Enrich every step with Chinese explanation, collected data, and visual highlights
+    snapshot_summaries, run_overview_cn = enrich_run_with_chinese_narrative(
+        snapshots_raw=snapshots_raw_pairs,
+        payload_files=payload_files,
+        timing_events=timing_events,
+        sqlite_data=sqlite_data,
+        mods=mods,
+    )
+
     return {
         "runId": run_id,
         "runDir": str(run_dir),
@@ -894,6 +982,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
         "outcome": outcome,
         "errorMessage": error_message,
         "totalTaskDurationMs": total_task_duration_ms,
+        "runOverviewCn": run_overview_cn,
         "stages": stages,
         "timingEvents": timing_events,
         "snapshots": snapshot_summaries,
@@ -954,6 +1043,7 @@ def get_snapshot_detail(
         "attempts": raw_data.get("attempts") or [],
         "recordedFields": raw_data.get("fields") or {},
         "lines": lines,
+        "visualLines": deduplicate_visual_lines(lines),
         "hasFrame": npy_file.is_file() or png_file.is_file(),
         "authorHintUsed": author_hint,
         "keywordHintUsed": keyword_hint,
@@ -1790,11 +1880,11 @@ class DeviceTaskManager:
             args_str = f"--comments {quoted_cfg}" + (" --no-launch" if no_launch else "")
         elif task_mode == "collect_channels":
             args_str = f"--collect {quoted_cfg}"
-        elif task_mode == "interact":
+        elif task_mode in ("interact", "inspect_messages"):
             args_str = f"--interact {quoted_cfg}" + (" --no-launch" if no_launch else "")
         elif task_mode == "mode":
             args_str = f"--mode {quoted_cfg}" + (" --no-launch" if no_launch else "")
-        elif task_mode == "link":
+        elif task_mode == "link" or task_mode.startswith("link_"):
             args_str = f"--link {quoted_cfg}"
         else:
             raise ValueError(f"Unsupported task_mode: {task_mode}")

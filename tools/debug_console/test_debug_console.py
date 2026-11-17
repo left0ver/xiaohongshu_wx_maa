@@ -95,7 +95,7 @@ class TestDebugConsole(unittest.TestCase):
 
             with urlopen(f"{base}/", timeout=5) as resp:
                 html = resp.read().decode("utf-8")
-                self.assertIn("MAA 全流程调试台", html)
+                self.assertIn("视频号任务执行全流程调试台", html)
 
             with urlopen(f"{base}/api/runs?source=local&limit=5", timeout=10) as resp:
                 runs_resp = json.loads(resp.read().decode("utf-8"))

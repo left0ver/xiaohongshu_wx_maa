@@ -32,36 +32,26 @@
         maxProfiles: 2,
       },
     },
-    collect_comments: {
-      maxPages: 3,
-      maxReplyExpansions: 1,
-      maxProfiles: 2,
-    },
+    collect_comments: { maxPages: 3, maxReplyExpansions: 1, maxProfiles: 2 },
     collect_video: {},
-    interact: {
-      ensureFeed: true,
-      likeWork: true,
-      collectWork: false,
-      commentText: "",
-      likeComment: false,
-    },
-    link: {
-      action: "likeVideo",
-      link: "https://weixin.qq.com/sph/example",
-    },
-    mode: {
-      mode: "recommend",
-      maxItems: 1,
-    },
+    interact: { ensureFeed: true, likeWork: true },
+    inspect_messages: { ensureFeed: true, inspectMessages: { like: true, maxMessages: 1, replyText: "" } },
+    link_like_video: { action: "likeVideo", link: "https://weixin.qq.com/sph/example" },
+    link_follow_author: { action: "followAuthor", link: "https://weixin.qq.com/sph/example" },
+    link_message_author: { action: "messageAuthor", link: "https://weixin.qq.com/sph/example", text: "你好" },
+    link_comment_video: { action: "commentVideo", link: "https://weixin.qq.com/sph/example", text: "拍得真棒！" },
+    link_like_comment: { action: "likeComment", link: "https://weixin.qq.com/sph/example", nickname: "目标评论者昵称" },
+    link_reply_comment: { action: "replyComment", link: "https://weixin.qq.com/sph/example", nickname: "目标评论者昵称", text: "赞同！" },
+    link_message_commenter: { action: "messageCommenter", link: "https://weixin.qq.com/sph/example", nickname: "目标评论者昵称", text: "你好" },
+    link: { action: "likeVideo", link: "https://weixin.qq.com/sph/example" },
     test: {},
   };
 
-  // --- Helpers ---
   function $(id) {
     return document.getElementById(id);
   }
 
-  function showToast(msg, duration = 3000) {
+  function showToast(msg, duration = 3200) {
     const el = $("toastBox");
     el.textContent = msg;
     el.style.display = "block";
@@ -82,8 +72,8 @@
   function formatMs(ms) {
     if (ms === null || ms === undefined) return "-";
     const n = Number(ms);
-    if (n < 1000) return `${n}ms`;
-    return `${(n / 1000).toFixed(2)}s`;
+    if (n < 1000) return `${n}毫秒`;
+    return `${(n / 1000).toFixed(1)}秒`;
   }
 
   function formatTime(epochSecOrMs) {
@@ -121,7 +111,7 @@
     return data;
   }
 
-  // --- Device & Scope Loading ---
+  // --- 1. Device & Scope Loading ---
   async function loadDevices() {
     try {
       const data = await apiGet("/api/devices");
@@ -129,14 +119,13 @@
       const sel = $("deviceSelect");
       sel.innerHTML = "";
       if (state.devices.length === 0) {
-        sel.innerHTML = `<option value="">未检测到 ADB 设备 (仅本地模式)</option>`;
+        sel.innerHTML = `<option value="">未连接手机 (仅查看本地缓存)</option>`;
         state.selectedSerial = "";
       } else {
         for (const d of state.devices) {
           const opt = document.createElement("option");
           opt.value = d.serial;
-          const fg = d.foregroundPackage ? ` · ${d.foregroundPackage.split(".").pop()}` : "";
-          opt.textContent = `${d.model} (${d.serial}) [${d.physicalWidth || 720}x${d.physicalHeight || 1600}]${fg}`;
+          opt.textContent = `${d.model} (${d.serial})`;
           sel.appendChild(opt);
         }
         if (!state.selectedSerial || !state.devices.some((d) => d.serial === state.selectedSerial)) {
@@ -157,14 +146,14 @@
     const appsBadges = $("installedAppsBadges");
     if (appsBadges) {
       appsBadges.innerHTML = (dev?.installedApps || [])
+        .filter((app) => app.package.includes("wechat"))
         .map((app) => {
           const isDbg = app.buildType === "debug";
           const cls = isDbg ? "badge-ocr" : "badge-succeeded";
-          const icon = isDbg ? "🐞 Debug" : "🟢 正式版";
-          const shortPkg = app.package.replace("top.natsuu.mta.", "");
-          return `<span class="badge ${cls}" title="${escapeHtml(app.label)} | 包名: ${escapeHtml(app.package)} | UID: ${escapeHtml(
-            app.uid
-          )}">${icon} ${escapeHtml(shortPkg)} v${escapeHtml(app.version)}</span>`;
+          const icon = isDbg ? "🐞 Debug版" : "🟢 正式版";
+          return `<span class="badge ${cls}" title="${escapeHtml(app.label)} (包名: ${escapeHtml(app.package)})">${icon} v${escapeHtml(
+            app.version
+          )}</span>`;
         })
         .join("");
     }
@@ -174,18 +163,20 @@
     for (const s of scopes) {
       const opt = document.createElement("option");
       opt.value = s.path;
-      opt.textContent = `${s.label} (${s.runCount} runs)`;
+      opt.textContent = `${s.label} (${s.runCount}条)`;
       scopeSel.appendChild(opt);
     }
+    // Prefer a scope with runs if default has none
     if (scopes.some((s) => s.path === state.selectedScope)) {
       scopeSel.value = state.selectedScope;
     } else {
-      state.selectedScope = scopes[0].path;
+      const best = scopes.find((s) => s.runCount > 0) || scopes[0];
+      state.selectedScope = best.path;
       scopeSel.value = state.selectedScope;
     }
   }
 
-  // --- Run List Loading & Filtering ---
+  // --- 2. Left Panel: Task Run List ---
   async function loadRuns() {
     const container = $("runListContainer");
     try {
@@ -199,14 +190,16 @@
       state.runs = data.runs || [];
       renderRunList();
       if (!state.activeRunRef && state.runs.length > 0) {
-        // Automatically select the first local or synced run for immediate feedback
-        const firstReady = state.runs.find((r) => r.synced) || state.runs[0];
-        if (firstReady) {
-          selectRun(firstReady);
+        const bestInitial =
+          state.runs.find((r) => r.synced && r.snapshotCount > 5) ||
+          state.runs.find((r) => r.synced) ||
+          state.runs[0];
+        if (bestInitial) {
+          selectRun(bestInitial);
         }
       }
     } catch (err) {
-      container.innerHTML = `<div style="padding:14px;color:var(--red);">加载任务列表失败: ${escapeHtml(err.message)}</div>`;
+      container.innerHTML = `<div style="padding:16px;color:var(--red);">加载任务列表失败: ${escapeHtml(err.message)}</div>`;
     }
   }
 
@@ -216,59 +209,57 @@
     const filtered = state.runs.filter((r) => {
       if (state.outcomeFilter !== "all" && r.outcome !== state.outcomeFilter) return false;
       if (!q) return true;
-      const hay = `${r.runId} ${r.taskType} ${r.label || ""} ${r.summaryMessage || ""} ${r.serial || ""}`.toLowerCase();
+      const hay = `${r.runId} ${r.taskTypeCn || ""} ${r.taskType} ${r.summaryMessage || ""} ${r.serial || ""}`.toLowerCase();
       return hay.includes(q);
     });
 
+    $("runCountBadge").textContent = `${filtered.length} 条`;
+
     if (filtered.length === 0) {
-      container.innerHTML = `<div style="padding:18px;color:var(--text-muted);text-align:center;">无匹配的任务记录</div>`;
+      container.innerHTML = `<div style="padding:24px;color:var(--text-muted);text-align:center;">没有符合筛选条件的任务记录</div>`;
       return;
     }
 
     container.innerHTML = "";
     for (const r of filtered) {
       const card = document.createElement("div");
-      card.className = `run-card ${state.activeRunRef === r.id ? "active" : ""}`;
+      const isFailed = r.outcome === "failed";
+      card.className = `run-card ${state.activeRunRef === r.id ? "active" : ""} ${isFailed ? "failed-card" : ""}`;
+
       const statusBadge =
         r.outcome === "succeeded"
-          ? `<span class="badge badge-succeeded">SUCCESS</span>`
+          ? `<span class="badge badge-succeeded">✅ 成功</span>`
           : r.outcome === "failed"
-          ? `<span class="badge badge-failed">FAILED</span>`
-          : `<span class="badge badge-unknown">${escapeHtml((r.outcome || "RUN").toUpperCase())}</span>`;
+          ? `<span class="badge badge-failed">❌ 失败</span>`
+          : `<span class="badge badge-warning">⏳ 执行中/未知</span>`;
 
-      const srcBadge =
+      const srcLabel =
         r.sourceType === "adb"
-          ? `<span class="badge badge-blue">📱 ${escapeHtml(r.serial?.slice(-4) || "ADB")}</span>`
-          : `<span class="badge" style="background:#334155;color:#cbd5e1;">💻 LOCAL</span>`;
+          ? `📱 手机 (${r.serial?.slice(-4) || "ADB"})`
+          : `💻 已同步缓存`;
 
       const pullBtn =
         r.sourceType === "adb" && !r.synced
-          ? `<button class="btn btn-sm btn-primary btn-pull-run" data-runid="${escapeHtml(r.runId)}" style="padding:1px 6px;font-size:10px;">⬇️ 拉取</button>`
+          ? `<button class="btn btn-sm btn-primary btn-pull-run" style="padding:2px 8px;">⬇️ 拉取查看</button>`
           : "";
 
       card.innerHTML = `
-        <div class="run-card-top">
-          <span class="run-id-mono" title="${escapeHtml(r.label || r.runId)}">${escapeHtml(r.runId.slice(0, 18))}</span>
-          <div style="display:flex;gap:4px;align-items:center;">
-            ${srcBadge}
-            ${statusBadge}
-          </div>
-        </div>
-        <div class="run-meta-row">
-          <span style="color:#38bdf8;font-weight:600;">${escapeHtml(r.taskType)}</span>
-          <span>📷 ${r.snapshotCount || 0} 步 · 🖼️ ${r.frameCount || 0}</span>
-        </div>
-        <div class="run-meta-row">
-          <span>${formatTime(r.mtime)}</span>
-          ${pullBtn}
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+          <div class="run-card-title">${escapeHtml(r.taskTypeCn || r.taskType)}</div>
+          ${statusBadge}
         </div>
         ${
           r.summaryMessage
-            ? `<div style="font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(
-                r.summaryMessage
-              )}</div>`
+            ? `<div class="run-card-msg">${escapeHtml(r.summaryMessage)}</div>`
             : ""
         }
+        <div class="run-card-foot">
+          <span>${formatTime(r.mtime)} · <b>${r.snapshotCount || 0} 个步骤</b></span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span>${escapeHtml(srcLabel)}</span>
+            ${pullBtn}
+          </div>
+        </div>
       `;
 
       card.addEventListener("click", (ev) => {
@@ -285,7 +276,7 @@
 
   async function pullAndOpenAdbRun(runItem) {
     try {
-      showToast(`正在从手机 ${runItem.serial} 拉取 ${runItem.runId.slice(0, 8)}...`);
+      showToast(`正在从手机拉取任务记录 (${runItem.runId.slice(0, 8)})...`);
       const res = await apiPost("/api/runs/sync", {
         serial: runItem.serial,
         scopePath: runItem.scopePath,
@@ -297,7 +288,7 @@
       state.activeRun = res.run;
       renderRunList();
       onRunLoaded(res.run);
-      showToast("拉取成功！");
+      showToast("拉取完成！");
     } catch (err) {
       showToast(`拉取失败: ${err.message}`, 4500);
     }
@@ -307,7 +298,6 @@
     try {
       state.activeRunRef = runItem.id;
       renderRunList();
-      $("activeRunHeaderBadge").textContent = `正在加载 ${runItem.runId}...`;
       const data = await apiGet(`/api/runs/detail?runRef=${encodeURIComponent(runItem.id)}`);
       state.activeRun = data.run;
       onRunLoaded(data.run);
@@ -317,151 +307,234 @@
   }
 
   function onRunLoaded(run) {
-    $("activeRunHeaderBadge").textContent = `Run: ${run.runId} (${run.relPath})`;
-    renderRunOverview(run);
-    renderStepTimeline(run);
-    renderSqliteAndUploadsTab(run);
+    $("activeRunIdLabel").textContent = `任务ID: ${run.runId.slice(0, 12)}`;
+    renderCenterTaskSummary(run);
+    renderCenterTimeline(run);
 
     if (run.snapshots && run.snapshots.length > 0) {
       selectSnapshotByIndex(0);
     } else {
       state.activeSnapshotIndex = -1;
       state.activeSnapshot = null;
-      clearSnapshotInspector();
+      drawCanvas();
     }
   }
 
-  // --- Tab 1: Overview Bar, Waterfall & Timeline ---
-  function renderRunOverview(run) {
-    const kpiRow = $("runKpiRow");
-    const dbCounts = run.sqliteAndUploads?.counts || {};
+  // --- 3. Center Panel: Task Summary & Chinese Step-by-Step Timeline ---
+  function renderCenterTaskSummary(run) {
+    const container = $("taskSummaryContainer");
+    const ov = run.runOverviewCn || {};
     const reco = run.recognitionStats || {};
-    const outcomeBadge =
+    const statusBadge =
       run.outcome === "succeeded"
-        ? `<span class="badge badge-succeeded">✅ SUCCEEDED</span>`
+        ? `<span class="badge badge-succeeded" style="font-size:13px;padding:4px 12px;">✅ 任务执行成功</span>`
         : run.outcome === "failed"
-        ? `<span class="badge badge-failed">❌ FAILED</span>`
-        : `<span class="badge badge-unknown">${escapeHtml(run.outcome)}</span>`;
+        ? `<span class="badge badge-failed" style="font-size:13px;padding:4px 12px;">❌ 任务执行失败</span>`
+        : `<span class="badge badge-warning" style="font-size:13px;padding:4px 12px;">⏳ 状态未知</span>`;
 
-    const srcSummary = Object.entries(reco.bySource || {})
-      .map(([k, v]) => `${k}:${v}`)
-      .join(" / ") || "-";
+    const opItemsHtml = (ov.operationItems || [])
+      .map(
+        (item) => `
+        <div class="overview-kv">
+          <div class="overview-kv-label">${escapeHtml(item.label)}</div>
+          <div class="overview-kv-val">${escapeHtml(item.value)}</div>
+        </div>
+      `
+      )
+      .join("");
 
-    kpiRow.innerHTML = `
-      <div class="kpi-group">
-        ${outcomeBadge}
-        <div class="kpi-item"><span class="kpi-label">Run ID:</span><span class="kpi-val">${escapeHtml(run.runId.slice(0, 12))}</span></div>
-        <div class="kpi-item"><span class="kpi-label">阶段总耗时:</span><span class="kpi-val" style="color:var(--accent);">${formatMs(run.totalTaskDurationMs)}</span></div>
-        <div class="kpi-item"><span class="kpi-label">页面快照数:</span><span class="kpi-val">${reco.totalSnapshots || 0} 步</span></div>
-        <div class="kpi-item"><span class="kpi-label">识别累计耗时:</span><span class="kpi-val">${formatMs(reco.totalRecognitionMs || 0)}</span></div>
-        <div class="kpi-item"><span class="kpi-label">识别来源分布:</span><span class="kpi-val">${escapeHtml(srcSummary)}</span></div>
-        <div class="kpi-item"><span class="kpi-label">控件树空退化次数:</span><span class="kpi-val" style="color:${reco.hierarchyFallbacks > 0 ? "var(--amber)" : "var(--green)"};">${reco.hierarchyFallbacks || 0}</span></div>
-      </div>
-      <div class="kpi-group">
-        <div class="kpi-item"><span class="kpi-label">SQLite 草稿:</span><span class="kpi-val">视频 ${dbCounts.videos || 0} · 评论 ${dbCounts.comments || 0} · 用户 ${dbCounts.users || 0}</span></div>
-        <div class="kpi-item"><span class="kpi-label">上报 ACK:</span><span class="kpi-val" style="color:var(--green);">${dbCounts.acknowledgedUploads || 0}</span></div>
+    // Render collected videos table if any
+    const videos = ov.collectedVideos || [];
+    let videosHtml = "";
+    if (videos.length > 0) {
+      videosHtml = `
+        <div style="margin-top:14px;">
+          <div style="font-weight:700;font-size:13.5px;color:#0f172a;margin-bottom:6px;">
+            🎬 本次任务采集到的视频与作者数据（共 ${videos.length} 条）
+          </div>
+          ${videos
+            .map(
+              (v) => `
+              <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <strong style="font-size:14px;color:#166534;">作者：@${escapeHtml(v.authorNickname || "-")}</strong>
+                  <span class="badge badge-succeeded">公开视频号ID：${escapeHtml(v.channelId || "未公开")}</span>
+                </div>
+                <div style="font-size:13px;color:#0f172a;margin-bottom:6px;">
+                  <b>视频文案：</b>${escapeHtml(v.description || "-")}
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:#475569;">
+                  <span><b>发布时间：</b>${escapeHtml(v.publishTimeText || "-")}</span>
+                  <span><b>发布地点：</b>${escapeHtml(v.publishLocation || "-")}</span>
+                  <span><b>作者简介：</b>${escapeHtml(v.authorBio || "-")}</span>
+                  <span><b>IP 属地：</b>${escapeHtml(v.authorIpLocation || "-")}</span>
+                  <span><b>分享短链：</b><code>${escapeHtml(v.videoUrl || "-")}</code></span>
+                </div>
+              </div>
+            `
+            )
+            .join("")}
+        </div>
+      `;
+    }
+
+    // Render collected comments summary if any
+    const comments = ov.collectedComments || [];
+    let commentsHtml = "";
+    if (comments.length > 0) {
+      commentsHtml = `
+        <details style="margin-top:10px;background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:8px 12px;">
+          <summary style="cursor:pointer;font-weight:700;font-size:13px;color:#0f172a;">
+            💬 展开查看本次从评论区提取到的全部评论明细（共 ${comments.length} 条）
+          </summary>
+          <div style="margin-top:8px;max-height:220px;overflow-y:auto;">
+            <table class="data-table">
+              <thead>
+                <tr><th>#</th><th>评论者昵称</th><th>评论内容</th><th>地区 / 时间</th><th>点赞数</th></tr>
+              </thead>
+              <tbody>
+                ${comments
+                  .map(
+                    (c, idx) => `
+                    <tr>
+                      <td>${idx + 1}</td>
+                      <td><b>@${escapeHtml(c.nickname || "-")}</b></td>
+                      <td>${escapeHtml(c.content || "-")}</td>
+                      <td>${escapeHtml([c.ipLocation, c.commentTime].filter(Boolean).join(" · ") || "-")}</td>
+                      <td>${c.likeCount ?? 0}</td>
+                    </tr>
+                  `
+                  )
+                  .join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+    }
+
+    container.innerHTML = `
+      <div class="summary-box">
+        <div class="summary-header">
+          <div>
+            <h2 class="summary-title">${escapeHtml(ov.taskTypeCn || "视频号任务")}</h2>
+            <div class="summary-meta">
+              <span>📊 共执行 <b>${reco.totalSnapshots || 0}</b> 个画面步骤</span>
+              <span>⏱️ 识别总耗时 <b>${formatMs(reco.totalRecognitionMs || 0)}</b></span>
+              ${
+                run.totalTaskDurationMs
+                  ? `<span>🏁 流程总耗时 <b>${formatMs(run.totalTaskDurationMs)}</b></span>`
+                  : ""
+              }
+            </div>
+          </div>
+          ${statusBadge}
+        </div>
+
+        ${
+          run.errorMessage
+            ? `<div class="error-alert">🚨 <b>任务中断 / 失败原因：</b>${escapeHtml(run.errorMessage)}</div>`
+            : ""
+        }
+
+        ${opItemsHtml ? `<div class="collected-overview-grid">${opItemsHtml}</div>` : ""}
+        ${videosHtml}
+        ${commentsHtml}
       </div>
     `;
-
-    const errBanner = $("runErrorBanner");
-    if (run.errorMessage) {
-      errBanner.style.display = "flex";
-      errBanner.className = "error-banner";
-      errBanner.innerHTML = `
-        <span>🚨 <strong>任务异常中止原因:</strong> ${escapeHtml(run.errorMessage)}</span>
-        <span style="font-size:11px;color:#fecdd3;">定位提示：请查看时间线最后一步快照与页面状态</span>
-      `;
-    } else {
-      errBanner.style.display = "none";
-    }
-
-    // Waterfall stages
-    const strip = $("stageWaterfallStrip");
-    strip.innerHTML = "";
-    const stages = run.stages || [];
-    const maxDur = Math.max(1000, ...stages.map((s) => s.durationMs || 0));
-    for (const st of stages) {
-      const pct = Math.min(100, Math.round(((st.durationMs || 0) / maxDur) * 100));
-      const isSlow = (st.durationMs || 0) >= 15000;
-      const pill = document.createElement("div");
-      pill.className = `stage-pill ${st.outcome || ""}`;
-      pill.innerHTML = `
-        <div class="stage-pill-top">
-          <span title="${escapeHtml(st.name)}">${escapeHtml(st.label)}</span>
-          <span style="font-family:var(--font-mono);color:${isSlow ? "var(--amber)" : "var(--accent)"};">
-            ${st.durationMs ? formatMs(st.durationMs) : st.outcome}
-          </span>
-        </div>
-        <div class="stage-bar-track">
-          <div class="stage-bar-fill ${isSlow ? "slow" : ""}" style="width:${st.durationMs ? Math.max(6, pct) : 100}%;"></div>
-        </div>
-      `;
-      strip.appendChild(pill);
-    }
   }
 
-  function renderStepTimeline(run) {
-    const listEl = $("stepTimelineList");
+  function renderCenterTimeline(run) {
+    const container = $("timelineStagesContainer");
     const snaps = run.snapshots || [];
-    $("stepCountLabel").textContent = String(snaps.length);
 
     if (snaps.length === 0) {
-      // If no snapshots exist, show timingEvents instead
-      const events = run.timingEvents || [];
-      if (events.length === 0) {
-        listEl.innerHTML = `<div style="padding:16px;color:var(--text-muted);text-align:center;">该运行目录无快照文件 (001-*.json)</div>`;
-        return;
-      }
-      listEl.innerHTML = `<div style="padding:8px;color:var(--text-muted);font-size:11.5px;">该运行仅包含 timings.jsonl 事件流（共 ${events.length} 条）：</div>`;
-      for (const ev of events) {
-        const div = document.createElement("div");
-        div.className = "step-item";
-        div.innerHTML = `
-          <div class="step-item-head">
-            <span class="step-seq">#${ev._lineIndex + 1}</span>
-            <span class="step-label">${escapeHtml(ev.kind || "event")}</span>
-            ${ev.durationMs !== undefined ? `<span class="badge badge-blue">${formatMs(ev.durationMs)}</span>` : ""}
-          </div>
-          <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-muted);word-break:break-all;">
-            ${escapeHtml(JSON.stringify(ev))}
-          </div>
-        `;
-        listEl.appendChild(div);
-      }
+      container.innerHTML = `
+        <div class="summary-box" style="text-align:center;color:var(--text-muted);">
+          该任务无需操作手机画面（或未生成步骤快照），请查看上方执行结论。
+        </div>
+      `;
       return;
     }
 
-    listEl.innerHTML = "";
-    snaps.forEach((s, idx) => {
-      const item = document.createElement("div");
-      item.className = `step-item ${state.activeSnapshotIndex === idx ? "active" : ""}`;
-      const srcClass = `badge-${s.source || "unknown"}`;
-      const hasFallback = (s.attempts || []).some((a) => a.reason);
-      const abnBadge =
-        s.abnormal && s.abnormal.kind && !["none", "unknown"].includes(s.abnormal.kind)
-          ? `<span class="badge badge-failed">⚠️ ${escapeHtml(s.abnormal.reason)}</span>`
-          : "";
-      const frameBadge = s.hasFrame ? `<span title="含原始画面截图">🖼️</span>` : "";
+    // Group consecutive steps by `stageGroup`
+    const groups = [];
+    for (let i = 0; i < snaps.length; i++) {
+      const s = snaps[i];
+      const gName = s.stageGroup || "执行步骤";
+      if (groups.length === 0 || groups[groups.length - 1].name !== gName) {
+        groups.push({ name: gName, items: [] });
+      }
+      groups[groups.length - 1].items.push({ snap: s, index: i });
+    }
 
-      item.innerHTML = `
-        <div class="step-item-head">
-          <span class="step-seq">#${String(s.sequence).padStart(3, "0")}</span>
-          <span class="step-label" title="${escapeHtml(s.filename)}">${escapeHtml(s.label)} ${frameBadge}</span>
-          <span class="badge ${srcClass}">${escapeHtml(s.source)}</span>
-        </div>
-        <div class="step-sub">
-          <span style="color:#38bdf8;">${escapeHtml(s.pageState)}</span>
-          <span>识别 ${formatMs(s.recognitionDurationMs)} ${s.deltaMs ? `(Δ+${formatMs(s.deltaMs)})` : ""}</span>
-        </div>
-        <div class="step-sub">
-          <span>${s.lineCount} 行文本</span>
-          ${hasFallback ? `<span style="color:var(--amber);">⚡ 控件树回退</span>` : ""}
-          ${abnBadge}
+    container.innerHTML = "";
+    for (const grp of groups) {
+      const sec = document.createElement("div");
+      sec.className = "stage-section";
+      sec.innerHTML = `
+        <div class="stage-section-header">
+          <span>📂 ${escapeHtml(grp.name)}</span>
+          <span class="badge badge-blue">${grp.items.length} 个步骤</span>
         </div>
       `;
-      item.addEventListener("click", () => selectSnapshotByIndex(idx));
-      listEl.appendChild(item);
-    });
+
+      const listEl = document.createElement("div");
+      listEl.className = "timeline-list";
+
+      for (const { snap, index } of grp.items) {
+        const card = document.createElement("div");
+        card.className = `t-step-card ${state.activeSnapshotIndex === index ? "active" : ""}`;
+        card.dataset.stepIndex = String(index);
+
+        const clickHtml = snap.clickTarget
+          ? `<div class="t-step-action-pill">👆 <b>本步动作：</b>${escapeHtml(snap.clickTarget.label)} (坐标 X:${snap.clickTarget.x}, Y:${snap.clickTarget.y})</div>`
+          : "";
+
+        const collected = snap.collectedItems || [];
+        const CIRCLED_NUMS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+        let dataBoxHtml = "";
+        if (collected.length > 0) {
+          dataBoxHtml = `
+            <div class="t-step-data-box">
+              <div class="t-step-data-title">📦 本步收集 / 提取到的数据（共 ${collected.length} 项）</div>
+              ${collected
+                .map((item, cIdx) => {
+                  const numBadge = CIRCLED_NUMS[cIdx] || `${cIdx + 1}.`;
+                  return `
+                  <div class="t-step-data-row">
+                    <span class="t-step-data-k">${numBadge} ${escapeHtml(item.label)}</span>
+                    <span class="t-step-data-v">${escapeHtml(item.value)}</span>
+                  </div>
+                `;
+                })
+                .join("")}
+            </div>
+          `;
+        }
+
+        card.innerHTML = `
+          <div class="t-step-head">
+            <span class="t-step-num">第 ${snap.sequence} 步</span>
+            <span class="t-step-title">${escapeHtml(snap.titleCn || snap.label)}</span>
+            <span class="badge badge-blue" title="底层快照文件名: ${escapeHtml(snap.filename)}">
+              ${escapeHtml(snap.sourceCn || snap.source)} · ${formatMs(snap.recognitionDurationMs)}
+            </span>
+          </div>
+          <div class="t-step-desc">${escapeHtml(snap.actionCn || "")}</div>
+          ${clickHtml}
+          ${dataBoxHtml}
+        `;
+
+        card.addEventListener("click", () => {
+          selectSnapshotByIndex(index);
+        });
+        listEl.appendChild(card);
+      }
+
+      sec.appendChild(listEl);
+      container.appendChild(sec);
+    }
   }
 
   async function selectSnapshotByIndex(idx, hotReload = false) {
@@ -471,31 +544,37 @@
     state.selectedLineIndex = -1;
     state.hoveredLineIndex = -1;
 
-    // Highlight active timeline step
-    const items = $("stepTimelineList").querySelectorAll(".step-item");
-    items.forEach((el, i) => el.classList.toggle("active", i === idx));
-    items[idx]?.scrollIntoView({ block: "nearest" });
+    // Highlight active step card in center timeline
+    document.querySelectorAll(".t-step-card").forEach((el) => {
+      const isAct = Number(el.dataset.stepIndex) === idx;
+      el.classList.toggle("active", isAct);
+    });
 
     const snapSummary = snaps[idx];
+    $("rightScreenTitle").textContent = `📱 第 ${snapSummary.sequence} 步画面 (${snapSummary.snapshotsTotal || snaps.length}步之${snapSummary.sequence})`;
+
+    // Update top caption in right panel
+    const actionParts = [`<b>第 ${snapSummary.sequence} 步：</b>${escapeHtml(snapSummary.titleCn || snapSummary.label)}`];
+    if (snapSummary.clickTarget) {
+      actionParts.push(`<span style="color:var(--red);">🎯 ${escapeHtml(snapSummary.clickTarget.label)}</span>`);
+    }
+    if ((snapSummary.collectedItems || []).length > 0) {
+      actionParts.push(`<span style="color:var(--green);">📦 提取了 ${snapSummary.collectedItems.length} 项数据</span>`);
+    }
+    $("screenStepActionText").innerHTML = actionParts.join(" &nbsp;|&nbsp; ");
+
     try {
       const params = new URLSearchParams({
         runRef: state.activeRun.runRef || state.activeRunRef,
         filename: snapSummary.filename,
         hotReload: hotReload ? "1" : "0",
       });
-      const authorHint = $("replayAuthorInput")?.value?.trim();
-      const kwHint = $("replayKeywordInput")?.value?.trim();
-      if (authorHint) params.set("author", authorHint);
-      if (kwHint) params.set("keyword", kwHint);
-
       const data = await apiGet(`/api/runs/snapshot?${params.toString()}`);
-      state.activeSnapshot = data.snapshot;
+      state.activeSnapshot = {
+        ...data.snapshot,
+        summaryMeta: snapSummary,
+      };
 
-      if (data.snapshot.authorHintUsed && !$("replayAuthorInput").value) {
-        $("replayAuthorInput").value = data.snapshot.authorHintUsed;
-      }
-
-      // Load frame image if available
       state.activeFrameImg = null;
       if (data.snapshot.hasFrame) {
         const frameUrl = `/api/runs/frame?runRef=${encodeURIComponent(
@@ -505,11 +584,9 @@
       } else {
         drawCanvas();
       }
-
-      renderSnapshotInspector(data.snapshot);
-      renderReplayLab(data.snapshot);
+      renderRawLinesTable();
     } catch (err) {
-      showToast(`加载快照详情失败: ${err.message}`);
+      showToast(`加载步骤画面失败: ${err.message}`);
     }
   }
 
@@ -532,241 +609,303 @@
     img.src = url;
   }
 
-  function clearSnapshotInspector() {
-    $("stepSummaryContent").textContent = "该运行无快照数据";
-    $("linesTableBody").innerHTML = "";
-    $("linesCountBadge").textContent = "0";
-    drawCanvas();
+  // --- 4. Right Panel: Intuitive Phone Screen Reconstruction Canvas ---
+  function drawRoundedRect(ctx, x, y, w, h, r) {
+    const radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
   }
 
-  // --- Center Column: 720xH Visual Screen & Box Canvas ---
   function drawCanvas() {
     const canvas = $("screenCanvas");
     const ctx = canvas.getContext("2d");
     const snap = state.activeSnapshot;
-    const zoom = parseFloat($("canvasZoomSelect").value || "0.55");
+    const meta = snap?.summaryMeta || {};
 
     const logicalW = snap?.width || 720;
-    const logicalH = snap?.height || 1600;
-    canvas.width = Math.round(logicalW * zoom);
-    canvas.height = Math.round(logicalH * zoom);
+    const logicalH = snap?.height || 1560;
+    const stageEl = canvas.closest(".phone-stage");
+    const availH = stageEl ? Math.max(400, stageEl.clientHeight - 84) : 520;
+    const scale = Math.min(0.42, Math.max(0.28, availH / logicalH));
+    state.currentCanvasScale = scale;
+    canvas.width = Math.round(logicalW * scale);
+    canvas.height = Math.round(logicalH * scale);
 
     ctx.save();
-    ctx.scale(zoom, zoom);
+    ctx.scale(scale, scale);
 
-    // 1. Background (Screenshot or Dark Phone Wireframe)
+    const theme = meta.uiTheme || "light";
+
+    // 1. Draw Realistic Phone Screen Background
     if (state.activeFrameImg) {
       ctx.drawImage(state.activeFrameImg, 0, 0, logicalW, logicalH);
-      // Slight dim overlay so bounding boxes stand out clearly
-      ctx.fillStyle = "rgba(9, 13, 20, 0.18)";
+    } else if (theme === "dark-video") {
+      // Dark Video Player Theme
+      const grad = ctx.createLinearGradient(0, 0, 0, logicalH);
+      grad.addColorStop(0, "#18181b");
+      grad.addColorStop(0.7, "#27272a");
+      grad.addColorStop(1, "#09090b");
+      ctx.fillStyle = grad;
       ctx.fillRect(0, 0, logicalW, logicalH);
+
+      // Subtle center video play icon watermark
+      ctx.save();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+      ctx.beginPath();
+      ctx.arc(logicalW / 2, logicalH * 0.42, 68, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
+      ctx.beginPath();
+      ctx.moveTo(logicalW / 2 - 18, logicalH * 0.42 - 28);
+      ctx.lineTo(logicalW / 2 - 18, logicalH * 0.42 + 28);
+      ctx.lineTo(logicalW / 2 + 30, logicalH * 0.42);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else if (theme === "comment-drawer") {
+      // Top dark video + bottom white comment drawer sheet
+      ctx.fillStyle = "#18181b";
+      ctx.fillRect(0, 0, logicalW, logicalH);
+      const drawerTop = Math.round(logicalH * 0.26);
+      ctx.fillStyle = "#f8fafc";
+      drawRoundedRect(ctx, 0, drawerTop, logicalW, logicalH - drawerTop, 28);
+      ctx.fill();
+      // Bottom input bar background
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, logicalH - 110, logicalW, 110);
     } else {
-      ctx.fillStyle = "#0b1120";
+      // Clean WeChat Light UI Theme
+      ctx.fillStyle = "#f1f5f9";
       ctx.fillRect(0, 0, logicalW, logicalH);
-      // Draw subtle coordinate grid every 100px
-      ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
-      ctx.lineWidth = 1;
-      for (let x = 0; x <= logicalW; x += 120) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, logicalH);
-        ctx.stroke();
-      }
-      for (let y = 0; y <= logicalH; y += 200) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(logicalW, y);
-        ctx.stroke();
-        ctx.fillStyle = "rgba(148, 163, 184, 0.28)";
-        ctx.font = "14px monospace";
-        ctx.fillText(`Y=${y}`, 6, y + 16);
-      }
+      // Top WeChat navigation bar background
+      ctx.fillStyle = "#e2e8f0";
+      ctx.fillRect(0, 0, logicalW, 150);
+      // Bottom bar background
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, logicalH - 130, logicalW, 130);
     }
+
+    // Top Status Bar Mock (`9:41  5G 100%`)
+    ctx.fillStyle = theme === "light" ? "#475569" : "rgba(255,255,255,0.75)";
+    ctx.font = "bold 20px -apple-system, sans-serif";
+    ctx.fillText("9:41", 32, 42);
+    ctx.fillText("5G  100%", logicalW - 135, 42);
 
     if (!snap) {
       ctx.fillStyle = "#64748b";
-      ctx.font = "22px sans-serif";
-      ctx.fillText("请选择左侧步骤查看 720×H 画面与识别框", 130, logicalH / 2);
+      ctx.font = "24px -apple-system, sans-serif";
+      ctx.fillText("请在左侧或中间选择步骤", 210, logicalH / 2);
       ctx.restore();
       return;
     }
 
-    const showLines = $("chkLayerLines").checked;
-    const showSemantic = $("chkLayerSemantic").checked;
-    const showClicks = $("chkLayerClicks").checked;
-    const showRoi = $("chkLayerRoi").checked;
-    const showText = $("chkLayerText").checked;
-
-    // 2. ROI Box
-    if (showRoi && Array.isArray(snap.roi) && snap.roi.length === 4) {
+    // 2. Subtle Scan Region (ROI) if present
+    if (meta.roiCn && Array.isArray(snap.roi) && snap.roi[2] > 0 && snap.roi[3] > 0) {
       const [rx, ry, rw, rh] = snap.roi;
-      if (rw > 0 && rh > 0) {
-        ctx.save();
-        ctx.strokeStyle = "#38bdf8";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([10, 6]);
-        ctx.strokeRect(rx, ry, rw, rh);
-        ctx.fillStyle = "rgba(56, 189, 248, 0.06)";
-        ctx.fillRect(rx, ry, rw, rh);
-        ctx.fillStyle = "#38bdf8";
-        ctx.font = "bold 16px monospace";
-        ctx.fillText(`ROI [${rx},${ry},${rw},${rh}]`, rx + 8, Math.max(20, ry + 20));
-        ctx.restore();
-      }
+      ctx.save();
+      ctx.fillStyle = "rgba(2, 132, 199, 0.06)";
+      ctx.strokeStyle = "rgba(2, 132, 199, 0.45)";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([10, 6]);
+      ctx.fillRect(rx + 4, ry + 4, rw - 8, rh - 8);
+      ctx.strokeRect(rx + 4, ry + 4, rw - 8, rh - 8);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#0284c7";
+      ctx.font = "bold 19px -apple-system, sans-serif";
+      ctx.fillText(`🔍 ${meta.roiCn}`, rx + 16, Math.max(32, ry + 30));
+      ctx.restore();
     }
 
-    // 3. Raw Recognition Lines
-    const lines = snap.lines || [];
-    if (showLines) {
-      lines.forEach((line, idx) => {
-        if (!Array.isArray(line.box) || line.box.length < 4) return;
-        const [bx, by, bw, bh] = line.box;
-        const isSelected = idx === state.selectedLineIndex;
-        const isHovered = idx === state.hoveredLineIndex;
-
-        let color = "#22c55e"; // hierarchy
-        if (line.source === "ocr" || line.source === "ocr-region") color = "#f59e0b";
-        else if (line.source === "template") color = "#a855f7";
-        if (line.ocrText) color = "#06b6d4"; // hierarchy corrected by OCR
-
-        ctx.save();
-        ctx.strokeStyle = isSelected ? "#ffffff" : isHovered ? "#2dd4bf" : color;
-        ctx.lineWidth = isSelected ? 4 : isHovered ? 3 : 1.8;
-        ctx.fillStyle = isSelected
-          ? "rgba(20, 184, 166, 0.28)"
-          : isHovered
-          ? "rgba(45, 212, 191, 0.22)"
-          : !state.activeFrameImg
-          ? "rgba(30, 41, 59, 0.55)"
-          : "rgba(15, 23, 42, 0.12)";
-        ctx.fillRect(bx, by, bw, bh);
-        ctx.strokeRect(bx, by, bw, bh);
-
-        if (showText && line.text) {
-          ctx.fillStyle = isSelected ? "#ffffff" : color;
-          const fontSize = Math.min(20, Math.max(12, Math.round(bh * 0.65)));
-          ctx.font = `${fontSize}px -apple-system, sans-serif`;
-          const labelTxt = line.text.replace(/\s+/g, " ").slice(0, 28);
-          ctx.fillText(labelTxt, bx + 3, by + Math.min(bh - 3, fontSize));
+    // Build set of highlighted boxes (data extracted in this step)
+    const highlightBoxes = meta.highlightBoxes || [];
+    const CIRCLED_NUMS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+    function matchHighlight(box) {
+      const [bx, by] = box;
+      for (let i = 0; i < highlightBoxes.length; i++) {
+        const hb = highlightBoxes[i];
+        if (!Array.isArray(hb.box)) continue;
+        const [hx, hy] = hb.box;
+        if (Math.abs(bx - hx) <= 16 && Math.abs(by - hy) <= 16) {
+          const bIdx = (hb.badgeIndex || i + 1) - 1;
+          return {
+            label: hb.label || "已采集",
+            numTag: CIRCLED_NUMS[bIdx] || `#${bIdx + 1}`,
+          };
         }
-        ctx.restore();
-      });
-    }
-
-    // 4. Semantic Parser Regions (work_region, comment name/body/like, search cards, field evidence)
-    if (showSemantic && snap.replay?.semanticBoxes) {
-      for (const sbox of snap.replay.semanticBoxes) {
-        if (!Array.isArray(sbox.box) || sbox.box.length < 4) continue;
-        const [sx, sy, sw, sh] = sbox.box;
-        ctx.save();
-        ctx.strokeStyle = sbox.color || "#ec4899";
-        ctx.lineWidth = 2.5;
-        ctx.setLineDash([5, 3]);
-        ctx.strokeRect(sx - 2, sy - 2, sw + 4, sh + 4);
-        if (showText && sbox.label) {
-          ctx.fillStyle = sbox.color || "#ec4899";
-          ctx.font = "bold 13px sans-serif";
-          ctx.fillText(sbox.label.slice(0, 26), sx, Math.max(14, sy - 4));
-        }
-        ctx.restore();
       }
+      return null;
     }
 
-    // 5. Click Targets (Crosshairs, e.g. x+16 safe nickname click)
-    if (showClicks && snap.replay?.clickTargets) {
-      for (const pt of snap.replay.clickTargets) {
-        ctx.save();
-        const cx = pt.x;
-        const cy = pt.y;
-        ctx.strokeStyle = pt.color || "#f43f5e";
-        ctx.fillStyle = pt.color || "#f43f5e";
-        ctx.lineWidth = 2.5;
+    // 3. Draw Clean De-duplicated UI Elements (`visualLines`)
+    const vLines = snap.visualLines || snap.lines || [];
+    const badgeBadgesToDraw = [];
 
-        ctx.beginPath();
-        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
-        ctx.stroke();
+    vLines.forEach((line, idx) => {
+      if (!Array.isArray(line.box) || line.box.length < 4) return;
+      const [bx, by, bw, bh] = line.box;
+      const text = String(line.text || "").trim();
+      if (!text) return;
 
-        ctx.beginPath();
-        ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+      const hl = matchHighlight(line.box);
+      const isHovered = idx === state.hoveredLineIndex;
+      const isSelected = idx === state.selectedLineIndex;
+      const isDarkBg =
+        theme === "dark-video" || (theme === "comment-drawer" && by < logicalH * 0.26);
+
+      ctx.save();
+      const cardH = Math.max(bh, 32);
+      if (!state.activeFrameImg) {
+        if (hl) {
+          ctx.fillStyle = isDarkBg ? "rgba(22, 163, 74, 0.35)" : "#dcfce7";
+          ctx.strokeStyle = "#16a34a";
+          ctx.lineWidth = 3.5;
+        } else if (isSelected || isHovered) {
+          ctx.fillStyle = isDarkBg ? "rgba(13, 148, 136, 0.4)" : "#ccfbf1";
+          ctx.strokeStyle = "#0d9488";
+          ctx.lineWidth = 3;
+        } else {
+          ctx.fillStyle = isDarkBg ? "rgba(255, 255, 255, 0.12)" : "#ffffff";
+          ctx.strokeStyle = isDarkBg ? "rgba(255, 255, 255, 0.24)" : "#cbd5e1";
+          ctx.lineWidth = 1.5;
+        }
+        drawRoundedRect(ctx, bx, by, bw, cardH, 8);
         ctx.fill();
-
-        ctx.beginPath();
-        ctx.moveTo(cx - 15, cy);
-        ctx.lineTo(cx + 15, cy);
-        ctx.moveTo(cx, cy - 15);
-        ctx.lineTo(cx, cy + 15);
         ctx.stroke();
 
-        if (showText && pt.label) {
-          ctx.font = "bold 13px sans-serif";
-          ctx.fillText(`🎯 ${pt.label} (${cx},${cy})`, cx + 12, cy + 4);
+        // Draw readable Chinese text inside card, stepping down font size if needed so short labels never truncate
+        ctx.fillStyle = hl
+          ? isDarkBg
+            ? "#4ade80"
+            : "#14532d"
+          : isDarkBg
+          ? "#f8fafc"
+          : "#1e293b";
+        const cleanSingleLine = text.replace(/\s+/g, " ");
+        let fontSize = Math.min(22, Math.max(15, Math.round(bh * 0.58)));
+        const weight = hl ? "bold " : "";
+        ctx.font = `${weight}${fontSize}px -apple-system, "PingFang SC", sans-serif`;
+        while (fontSize > 12 && ctx.measureText(cleanSingleLine).width > bw - 12) {
+          fontSize -= 1;
+          ctx.font = `${weight}${fontSize}px -apple-system, "PingFang SC", sans-serif`;
         }
-        ctx.restore();
+        let displayTxt = cleanSingleLine;
+        if (ctx.measureText(displayTxt).width > bw - 10) {
+          while (displayTxt.length > 2 && ctx.measureText(displayTxt + "…").width > bw - 10) {
+            displayTxt = displayTxt.slice(0, -1);
+          }
+          displayTxt += "…";
+        }
+        ctx.fillText(displayTxt, bx + 6, by + Math.round((cardH + fontSize * 0.76) / 2));
+      } else {
+        ctx.strokeStyle = hl ? "#16a34a" : isSelected || isHovered ? "#0d9488" : "rgba(148,163,184,0.55)";
+        ctx.lineWidth = hl ? 4 : 2;
+        ctx.strokeRect(bx, by, bw, bh);
       }
+
+      if (hl) {
+        badgeBadgesToDraw.push({ x: bx, y: by, numTag: hl.numTag });
+      }
+      ctx.restore();
+    });
+
+    // Draw compact numbered badges (① ② ③) at top-left corner of highlighted boxes
+    for (const b of badgeBadgesToDraw) {
+      ctx.save();
+      const cx = Math.max(16, b.x - 4);
+      const cy = Math.max(16, b.y + 4);
+      ctx.fillStyle = "#16a34a";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 16px -apple-system, sans-serif";
+      const tw = ctx.measureText(b.numTag).width;
+      ctx.fillText(b.numTag, cx - tw / 2, cy + 6);
+      ctx.restore();
+    }
+
+    // 4. Draw Prominent Red Click Target Bullseye & Callout Bubble (`clickTarget`)
+    const clickTarget = meta.clickTarget;
+    if (clickTarget && typeof clickTarget.x === "number" && typeof clickTarget.y === "number") {
+      const cx = clickTarget.x;
+      const cy = clickTarget.y;
+      ctx.save();
+
+      // Outer halo
+      ctx.fillStyle = "rgba(225, 29, 72, 0.22)";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 32, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Target circle
+      ctx.strokeStyle = "#e11d48";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Center dot
+      ctx.fillStyle = "#e11d48";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Callout pill label positioned above (or below if near top) so it never covers the clicked row text
+      const calloutTxt = `👆 ${clickTarget.label || "本步点击位置"}`;
+      ctx.font = "bold 18px -apple-system, sans-serif";
+      const pillW = Math.min(460, ctx.measureText(calloutTxt).width + 24);
+      const pillH = 32;
+      const pillX = Math.max(12, Math.min(logicalW - pillW - 12, cx - pillW / 2));
+      const placeAbove = cy > 140;
+      const pillY = placeAbove ? cy - pillH - 24 : cy + 24;
+
+      // Connector line from pill to target circle
+      ctx.strokeStyle = "#e11d48";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, placeAbove ? pillY + pillH : pillY);
+      ctx.lineTo(cx, placeAbove ? cy - 18 : cy + 18);
+      ctx.stroke();
+
+      ctx.fillStyle = "#e11d48";
+      drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 9);
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(calloutTxt, pillX + 12, pillY + 22);
+      ctx.restore();
     }
 
     ctx.restore();
   }
 
-  // --- Right Column: Snapshot Summary & Lines Table ---
-  function renderSnapshotInspector(snap) {
-    const rep = snap.replay?.parsers || {};
-    const pState = rep.pageState?.label || rep.pageState?.state || "-";
-    const mPage = rep.modePage?.modePage || "-";
-    const abn = rep.abnormalState || {};
-    const attemptsHtml = (snap.attempts || [])
-      .map(
-        (a) =>
-          `<span class="badge badge-${a.source}">${escapeHtml(a.source)}: ${formatMs(a.durationMs)}${
-            a.reason ? ` (${escapeHtml(a.reason)})` : ""
-          }</span>`
-      )
-      .join(" ");
-
-    $("stepSummaryContent").innerHTML = `
-      <div class="kv-grid">
-        <span class="kv-key">快照文件:</span><span class="kv-val">${escapeHtml(snap.filename)}</span>
-        <span class="kv-key">画面尺寸:</span><span class="kv-val">${snap.width} × ${snap.height}</span>
-        <span class="kv-key">最终来源:</span><span class="kv-val"><span class="badge badge-${snap.source}">${escapeHtml(snap.source)}</span></span>
-        <span class="kv-key">识别尝试:</span><span class="kv-val">${attemptsHtml || "-"}</span>
-        <span class="kv-key">页面状态:</span><span class="kv-val" style="color:var(--accent);font-weight:600;">${escapeHtml(pState)}</span>
-        <span class="kv-key">模式页判定:</span><span class="kv-val">${escapeHtml(mPage)} (Tab: ${escapeHtml(rep.modePage?.activeTopTab || "-")})</span>
-        <span class="kv-key">异常状态:</span><span class="kv-val" style="color:${
-          abn.kind && !["none", "unknown"].includes(abn.kind) ? "var(--red)" : "var(--green)"
-        };">${escapeHtml(abn.kind || "none")} (${escapeHtml(abn.reason || "normal")})</span>
-      </div>
-    `;
-
-    renderLinesTable();
-  }
-
-  function renderLinesTable() {
+  function renderRawLinesTable() {
     const snap = state.activeSnapshot;
+    const vLines = snap?.visualLines || [];
+    $("rawLinesCount").textContent = String(vLines.length);
     const tbody = $("linesTableBody");
-    const lines = snap?.lines || [];
-    $("linesCountBadge").textContent = String(lines.length);
-
-    const filterQ = ($("lineFilterInput").value || "").trim().toLowerCase();
+    const q = ($("lineFilterInput").value || "").trim().toLowerCase();
     tbody.innerHTML = "";
 
-    lines.forEach((line, idx) => {
-      const txt = line.text || "";
-      const resId = line.selector?.resource || "";
-      if (filterQ && !`${txt} ${resId} ${line.source}`.toLowerCase().includes(filterQ)) {
-        return;
-      }
+    vLines.forEach((line, idx) => {
+      if (q && !String(line.text || "").toLowerCase().includes(q)) return;
       const tr = document.createElement("tr");
-      if (idx === state.selectedLineIndex) tr.classList.add("selected");
-      const boxStr = Array.isArray(line.box) ? `[${line.box.join(",")}]` : "-";
       tr.innerHTML = `
-        <td style="font-family:var(--font-mono);color:var(--text-muted);">${idx}</td>
-        <td>
-          <div style="font-weight:500;">${escapeHtml(txt || "(空容器/图标)")}</div>
-          ${line.ocrText ? `<div style="font-size:10px;color:#06b6d4;">OCR修正: ${escapeHtml(line.ocrText)}</div>` : ""}
-          ${resId ? `<div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);">${escapeHtml(resId)}</div>` : ""}
-        </td>
-        <td style="font-family:var(--font-mono);font-size:10.5px;">${escapeHtml(boxStr)}</td>
-        <td><span class="badge badge-${line.source}">${escapeHtml(line.source)}</span></td>
+        <td>${idx + 1}</td>
+        <td><b>${escapeHtml(line.text)}</b></td>
+        <td style="font-family:var(--font-mono);font-size:11px;">[${(line.box || []).join(", ")}]</td>
+        <td>${escapeHtml(line.source)}</td>
       `;
       tr.addEventListener("mouseenter", () => {
         state.hoveredLineIndex = idx;
@@ -777,316 +916,23 @@
         drawCanvas();
       });
       tr.addEventListener("click", () => {
-        selectLineBox(idx);
+        state.selectedLineIndex = idx;
+        $("selectedBoxDetail").textContent = `已选中 #${idx + 1}: "${line.text}" 坐标=[${(line.box || []).join(", ")}]`;
+        drawCanvas();
       });
       tbody.appendChild(tr);
     });
   }
 
-  function selectLineBox(idx) {
-    const snap = state.activeSnapshot;
-    if (!snap || !snap.lines || idx < 0 || idx >= snap.lines.length) return;
-    state.selectedLineIndex = idx;
-    const line = snap.lines[idx];
-    const [x, y, w, h] = line.box || [0, 0, 0, 0];
-    const centerPt = `[${x + Math.floor(w / 2)}, ${y + Math.floor(h / 2)}]`;
-    const leftNickPt = `[${x + Math.floor(Math.min(w, 32) / 2)}, ${y + Math.floor(h / 2)}]`;
-
-    $("btnCopyBoxAssert").style.display = "inline-flex";
-    $("btnCopyBoxAssert").onclick = () => {
-      const snippet = JSON.stringify({ text: line.text, box: line.box, source: line.source });
-      navigator.clipboard.writeText(snippet);
-      showToast("已复制该识别框 JSON 到剪贴板！");
-    };
-
-    $("selectedBoxContent").innerHTML = `
-      <div class="kv-grid">
-        <span class="kv-key">序号 / 来源:</span><span class="kv-val">#${idx} (${escapeHtml(line.source)}, score=${line.score ?? 1})</span>
-        <span class="kv-key">文本 (text):</span><span class="kv-val" style="color:#fff;font-weight:600;">${escapeHtml(line.text)}</span>
-        <span class="kv-key">框 [x,y,w,h]:</span><span class="kv-val">[${x}, ${y}, ${w}, ${h}] (右下: ${x + w}, ${y + h})</span>
-        <span class="kv-key">中心点 / 左端:</span><span class="kv-val">中心 ${centerPt} · 昵称安全左端 ${leftNickPt}</span>
-        ${
-          line.selector
-            ? `<span class="kv-key">控件 Selector:</span><span class="kv-val">${escapeHtml(
-                `${line.selector.class || ""} (${line.selector.resource || line.selector.attribute || ""})`
-              )}</span>`
-            : ""
-        }
-      </div>
-    `;
-    renderLinesTable();
-    drawCanvas();
-  }
-
-  // --- Tab 2: Parser Replay & Hot-Reload Lab ---
-  function renderReplayLab(snap) {
-    const p = snap?.replay?.parsers || {};
-    $("replayPageStatePre").textContent = JSON.stringify(
-      {
-        replayDurationMs: snap?.replay?.durationMs,
-        hotReloaded: snap?.replay?.hotReloaded,
-        pageState: p.pageState,
-        modePage: p.modePage,
-        abnormalState: p.abnormalState,
-        feedAuthor: p.feedAuthor,
-        commentControl: p.commentControl,
-        workRegion: p.workRegion,
-      },
-      null,
-      2
-    );
-    $("replayVideoPre").textContent = JSON.stringify(p.parseVideo || {}, null, 2);
-    $("replayAuthorPre").textContent = JSON.stringify(
-      {
-        authorProfile: p.parseAuthorProfile,
-        basicInfo: p.parseBasicInfo,
-      },
-      null,
-      2
-    );
-    $("replayCommentsPre").textContent = JSON.stringify(p.parseCommentDrawer || {}, null, 2);
-    $("replaySearchCardsPre").textContent = JSON.stringify(p.parseSearchCards || {}, null, 2);
-    $("customLinesTextarea").value = JSON.stringify(snap?.lines || [], null, 2);
-  }
-
-  async function runHotReloadReplay() {
-    if (!state.activeSnapshot || state.activeSnapshotIndex < 0) {
-      showToast("请先选择一个快照步骤");
-      return;
-    }
-    await selectSnapshotByIndex(state.activeSnapshotIndex, true);
-    showToast("🔥 已热重载本地 Python Collector 代码并完成重跑解析！");
-  }
-
-  async function runCustomLinesReplay() {
-    try {
-      const raw = $("customLinesTextarea").value;
-      const customLines = JSON.parse(raw);
-      if (!Array.isArray(customLines)) throw new Error("JSON 必须是 lines 数组");
-      const res = await apiPost("/api/runs/replay", {
-        lines: customLines,
-        height: state.activeSnapshot?.height || 1605,
-        width: state.activeSnapshot?.width || 720,
-        label: state.activeSnapshot?.label || "custom-sandbox",
-        authorHint: $("replayAuthorInput").value.trim() || null,
-        keywordHint: $("replayKeywordInput").value.trim() || null,
-        hotReload: true,
-      });
-      if (state.activeSnapshot) {
-        state.activeSnapshot.lines = customLines;
-        state.activeSnapshot.replay = res.replay;
-        renderSnapshotInspector(state.activeSnapshot);
-        renderReplayLab(state.activeSnapshot);
-        drawCanvas();
-      }
-      showToast(`沙盒重跑完成 (${res.replay.durationMs}ms)！画布与右侧面板已同步更新。`);
-    } catch (err) {
-      showToast(`自定义 Lines 解析失败: ${err.message}`, 4500);
-    }
-  }
-
-  function exportSnapshotUnitTest() {
-    const snap = state.activeSnapshot;
-    if (!snap) {
-      showToast("请先选择一个快照");
-      return;
-    }
-    const compactLines = (snap.lines || []).map((l) => ({
-      text: l.text,
-      box: l.box,
-      source: l.source || "ocr",
-      ...(l.selector ? { selector: l.selector } : {}),
-    }));
-    const pState = snap.replay?.parsers?.pageState?.state || "unknown";
-    const code = `def test_snapshot_${snap.label.replace(/[^a-zA-Z0-9_]/g, "_")}(self):
-    lines = ${JSON.stringify(compactLines, null, 4)}
-    height = ${snap.height || 1605}
-    self.assertEqual(classify_page_state(lines, height), "${pState}")
-`;
-    navigator.clipboard.writeText(code);
-    showToast("📋 已复制 Python 单元测试函数到剪贴板！");
-  }
-
-  // --- Tab 3: SQLite & Upload Batches Inspector ---
-  function renderSqliteAndUploadsTab(run) {
-    const sq = run.sqliteAndUploads || {};
-    const banner = $("sqliteAcceptanceBanner");
-    const treeEl = $("sqliteHierarchyContainer");
-    const batchesEl = $("uploadBatchesContainer");
-    const payloadsEl = $("payloadFilesContainer");
-
-    if (!sq.hasDatabase) {
-      banner.innerHTML = `<span style="color:var(--text-muted);">未在该运行目录或上级目录检测到 <code>videos.sqlite3</code> 数据库文件。</span>`;
-      treeEl.innerHTML = `<div style="color:var(--text-muted);">无本地 SQLite 记录</div>`;
-    } else if (sq.error) {
-      banner.innerHTML = `<span style="color:var(--red);">读取 SQLite 失败: ${escapeHtml(sq.error)}</span>`;
-      treeEl.innerHTML = "";
-    } else {
-      const acc = sq.acceptance || {};
-      const passBadge = acc.passed
-        ? `<span class="badge badge-succeeded">✅ acceptance.sql &amp; 外键完整性校验通过</span>`
-        : `<span class="badge badge-failed">❌ 数据完整性校验发现异常</span>`;
-      banner.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-          <div>
-            <strong>🗄️ SQLite 数据库:</strong> <code>${escapeHtml(sq.dbPath)}</code>
-            (Device ID: <code>${escapeHtml(sq.deviceId || "-")}</code>)
-          </div>
-          ${passBadge}
-        </div>
-        <div style="margin-top:6px;font-size:11.5px;color:var(--text-muted);">
-          VIDEO 草稿: <b>${sq.counts?.videos || 0}</b> ·
-          COMMENT 草稿: <b>${sq.counts?.comments || 0}</b> ·
-          USER 草稿: <b>${sq.counts?.users || 0}</b> ·
-          待发送队列(Pending): <b>${sq.counts?.pendingUploads || 0}</b> ·
-          已确认(ACK): <b style="color:var(--green);">${sq.counts?.acknowledgedUploads || 0}</b>
-          ${
-            !acc.passed
-              ? `<div style="color:var(--red);margin-top:4px;">异常项: 重复VideoKey=${acc.duplicateVideoKeys?.length}, 非法Video=${acc.invalidVideoDraftIds?.length}, 孤儿Comment=${acc.orphanCommentIds?.length}, 孤儿User=${acc.orphanUserIds?.length}</div>`
-              : ""
-          }
-        </div>
-      `;
-
-      const tree = sq.hierarchyTree || [];
-      if (tree.length === 0) {
-        treeEl.innerHTML = `<div style="color:var(--text-muted);">video_drafts 表为空</div>`;
-      } else {
-        treeEl.innerHTML = "";
-        for (const v of tree) {
-          const vp = v.event?.payload || {};
-          const vCard = document.createElement("div");
-          vCard.className = "entity-card";
-          const upBadge =
-            v.uploadState === "acknowledged"
-              ? `<span class="badge badge-succeeded">ACK 已确认</span>`
-              : v.uploadState === "pending"
-              ? `<span class="badge badge-warning">PENDING 待上传</span>`
-              : `<span class="badge">LOCAL_ONLY</span>`;
-
-          const commentsHtml = (v.comments || [])
-            .map((c) => {
-              const cp = c.event?.payload || {};
-              const usersHtml = (c.users || [])
-                .map((u) => {
-                  const up = u.event?.payload || {};
-                  return `
-                    <div class="user-branch">
-                      <div><strong>👤 评论者主页 (USER):</strong> ${escapeHtml(up.nickname || "-")} · 视频号ID: <code>${escapeHtml(
-                    up.wechat_channels_id || up.wechatChannelsId || "未公开"
-                  )}</code></div>
-                      <div style="font-size:11px;color:var(--text-muted);">
-                        地区: ${escapeHtml(up.location || "-")} · IP: ${escapeHtml(up.ipLocation || "-")} · 简介: ${escapeHtml(
-                    up.signature || "-"
-                  )}
-                      </div>
-                    </div>
-                  `;
-                })
-                .join("");
-
-              return `
-                <div class="comment-branch">
-                  <div style="display:flex;justify-content:space-between;gap:6px;">
-                    <span>💬 <strong>${escapeHtml(cp.nickname)}</strong> ${
-                cp.replyToNickname ? `回复 <b>@${escapeHtml(cp.replyToNickname)}</b>` : ""
-              }: ${escapeHtml(cp.content)}</span>
-                    <span class="badge badge-${c.uploadState === "acknowledged" ? "succeeded" : "unknown"}">${escapeHtml(
-                c.uploadState
-              )}</span>
-                  </div>
-                  <div style="font-size:11px;color:var(--text-muted);">
-                    时间: ${escapeHtml(cp.commentTime)} · IP: ${escapeHtml(cp.ipLocation || "-")} · 赞: ${
-                cp.likeCount ?? 0
-              } · 作者视频号ID: <code>${escapeHtml(cp.authorDouyinId || cp.authorWechatChannelsId || "-")}</code>
-                  </div>
-                  ${usersHtml}
-                </div>
-              `;
-            })
-            .join("");
-
-          vCard.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-              <strong>🎬 @${escapeHtml(vp.authorNickname || "-")}</strong>
-              <div style="display:flex;gap:6px;align-items:center;">
-                <span class="badge badge-blue">${escapeHtml(v.event?.source_mode || "-")}</span>
-                ${upBadge}
-              </div>
-            </div>
-            <div style="margin:6px 0;font-size:12px;">${escapeHtml(vp.description || "")}</div>
-            <div style="font-size:11px;color:var(--text-muted);display:flex;flex-wrap:wrap;gap:10px;">
-              <span>视频号ID: <code>${escapeHtml(vp.author_wechat_channels_id || vp.authorWechatChannelsId || "-")}</code></span>
-              <span>短链: <code>${escapeHtml(vp.videoUrl || "-")}</code></span>
-              <span>发布: ${escapeHtml(vp.publishTimeText || "-")} (${escapeHtml(vp.publishLocation || "-")})</span>
-              <span>归位核验: <b>${String(vp.returnVerified)}</b></span>
-              <span>缺失字段: <code>${escapeHtml((vp.missingFields || []).join(",") || "无")}</code></span>
-            </div>
-            <div style="margin-top:8px;font-size:11.5px;color:var(--accent);">
-              关联评论 (${v.commentCount}) · 关联评论者主页 (${v.userCount})
-            </div>
-            ${commentsHtml}
-          `;
-          treeEl.appendChild(vCard);
-        }
-      }
-    }
-
-    // Upload batches
-    const batches = sq.uploadBatches || [];
-    if (batches.length === 0) {
-      batchesEl.innerHTML = `<div class="inspector-card" style="color:var(--text-muted);">无 uploads/*-request.json 批次文件</div>`;
-    } else {
-      batchesEl.innerHTML = batches
-        .map(
-          (b) => `
-          <div class="inspector-card">
-            <h4>
-              <span>Batch <code>${escapeHtml(b.batchId.slice(0, 12))}</code> (${escapeHtml(b.eventTypes.join(", "))})</span>
-              <span class="badge ${b.uploaded ? "badge-succeeded" : "badge-warning"}">
-                Sent ${b.sentCount} / ACK ${b.acknowledgedCount}
-              </span>
-            </h4>
-            <details>
-              <summary style="cursor:pointer;font-size:11.5px;color:var(--text-muted);">展开查看上报 Payload 与 ACK 回执</summary>
-              <pre class="code-block" style="margin-top:6px;">${escapeHtml(
-                JSON.stringify({ events: b.events, ack: b.ack }, null, 2)
-              )}</pre>
-            </details>
-          </div>
-        `
-        )
-        .join("");
-    }
-
-    // Payload files & ledgers
-    const allFiles = { ...(run.payloadFiles || {}), ...(sq.auxLedgers || {}) };
-    const fnames = Object.keys(allFiles);
-    if (fnames.length === 0) {
-      payloadsEl.innerHTML = `<div class="inspector-card" style="color:var(--text-muted);">无输出 JSON 文件</div>`;
-    } else {
-      payloadsEl.innerHTML = fnames
-        .map(
-          (fn) => `
-          <div class="inspector-card">
-            <h4>📄 ${escapeHtml(fn)}</h4>
-            <pre class="code-block">${escapeHtml(JSON.stringify(allFiles[fn], null, 2))}</pre>
-          </div>
-        `
-        )
-        .join("");
-    }
-  }
-
-  // --- Live Probe, Code Push & Task Runner (Tab 4) ---
+  // --- 5. Live Probe, Code Push & Developer Modal ---
   async function handleLiveProbe() {
     if (!state.selectedSerial) {
-      showToast("请先连接并选择一台 ADB 手机设备");
+      showToast("请先连接一台手机设备");
       return;
     }
     const btn = $("btnLiveProbe");
     btn.disabled = true;
-    btn.textContent = "⏳ 正在抓屏与导出控件树...";
+    btn.textContent = "⏳ 正在抓屏...";
     try {
       const res = await apiPost("/api/device/probe", {
         serial: state.selectedSerial,
@@ -1095,38 +941,30 @@
       state.activeRunRef = res.probe.runRef;
       state.activeRun = res.run;
       onRunLoaded(res.run);
-      // Select the newly added last snapshot
       const lastIdx = (res.run.snapshots || []).length - 1;
-      if (lastIdx >= 0) {
-        await selectSnapshotByIndex(lastIdx);
-      }
-      // Switch to Tab 1
-      switchTab("tab-workflow");
-      showToast(`📸 已抓取手机 ${state.selectedSerial} 实时画面 (${res.probe.lineCount} 行控件)！`);
+      if (lastIdx >= 0) await selectSnapshotByIndex(lastIdx);
+      showToast(`📸 已抓取手机当前屏幕 (${res.probe.lineCount} 项控件)！`);
       loadRuns();
     } catch (err) {
-      showToast(`实时探测失败: ${err.message}`, 4500);
+      showToast(`抓屏失败: ${err.message}`, 4500);
     } finally {
       btn.disabled = false;
-      btn.textContent = "📸 抓取手机当前画面与控件";
+      btn.textContent = "📸 抓取当前手机屏幕";
     }
   }
 
   async function handlePushCode() {
     if (!state.selectedSerial) {
-      showToast("请先选择一台 ADB 手机设备");
+      showToast("请先选择一台手机设备");
       return;
     }
     const btn = $("btnPushCode");
     btn.disabled = true;
     try {
-      showToast(`正在推送 collector/*.py 到 ${state.selectedSerial}...`);
+      showToast(`正在推送最新代码到手机 ${state.selectedSerial}...`);
       const res = await apiPost("/api/device/push-code", { serial: state.selectedSerial });
       const appCount = (res.result.appRuntimesSynced || []).length;
-      showToast(
-        `✅ 已推送 ${res.result.pushedCount} 个文件到 CLI 目录及 ${appCount} 个 App 运行时 (含正式版与Debug版)`,
-        4000
-      );
+      showToast(`✅ 已同步 ${res.result.pushedCount} 个文件（同时更新正式版与 Debug 版共 ${appCount} 个运行时）`);
     } catch (err) {
       showToast(`推送失败: ${err.message}`, 4500);
     } finally {
@@ -1136,7 +974,7 @@
 
   async function startDeviceTask() {
     if (!state.selectedSerial) {
-      showToast("请先连接并选择一台 ADB 手机设备");
+      showToast("请先选择一台手机设备");
       return;
     }
     let cfg = {};
@@ -1144,7 +982,7 @@
       const txt = $("runnerConfigTextarea").value.trim();
       cfg = txt ? JSON.parse(txt) : {};
     } catch (err) {
-      showToast(`任务 JSON 配置格式有误: ${err.message}`);
+      showToast(`JSON 参数格式错误: ${err.message}`);
       return;
     }
     try {
@@ -1156,11 +994,12 @@
         syncCodeFirst: $("runnerSyncCode").checked,
         noLaunch: $("runnerNoLaunch").checked,
       });
-      showToast(`🚀 任务 #${res.task.taskId} 已在手机 ${state.selectedSerial} 启动！`);
+      showToast(`🚀 任务 #${res.task.taskId} 已在手机启动！`);
       loadDeviceTasks();
-      startTaskPolling();
+      if (state.taskPollingTimer) clearInterval(state.taskPollingTimer);
+      state.taskPollingTimer = setInterval(loadDeviceTasks, 2000);
     } catch (err) {
-      showToast(`启动任务失败: ${err.message}`, 4500);
+      showToast(`启动失败: ${err.message}`, 4500);
     }
   }
 
@@ -1173,92 +1012,48 @@
         container.innerHTML = `<div style="color:var(--text-muted);">暂无通过调试台启动的任务进程。</div>`;
         return;
       }
-      container.innerHTML = "";
-      for (const t of tasks) {
-        const card = document.createElement("div");
-        card.className = "entity-card";
-        const badgeClass =
-          t.status === "succeeded"
-            ? "badge-succeeded"
-            : t.status === "failed"
-            ? "badge-failed"
-            : "badge-warning";
-
-        card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <strong>#${escapeHtml(t.taskId)} · ${escapeHtml(t.taskMode)} (${escapeHtml(t.serial)})</strong>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <span class="badge ${badgeClass}">${escapeHtml(t.status.toUpperCase())}</span>
-              ${
-                t.status === "running"
-                  ? `<button class="btn btn-sm btn-danger btn-stop-task" data-tid="${escapeHtml(t.taskId)}">⏹ 停止</button>`
-                  : ""
-              }
-              ${
-                t.detectedRunId
-                  ? `<button class="btn btn-sm btn-primary btn-open-detected" data-serial="${escapeHtml(
-                      t.serial
-                    )}" data-runid="${escapeHtml(t.detectedRunId)}">🔍 拉取并调试该 Run</button>`
-                  : ""
-              }
+      container.innerHTML = tasks
+        .map(
+          (t) => `
+          <div style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong>#${escapeHtml(t.taskId)} · ${escapeHtml(t.taskMode)}</strong>
+              <span class="badge ${t.status === "succeeded" ? "badge-succeeded" : t.status === "failed" ? "badge-failed" : "badge-warning"}">${escapeHtml(
+            t.status
+          )}</span>
             </div>
+            <pre class="code-block" style="margin-top:6px;max-height:180px;">${escapeHtml(
+              (t.logs || []).join("\n") || "正在执行..."
+            )}</pre>
           </div>
-          <div style="font-size:11px;color:var(--text-muted);margin:4px 0;font-family:var(--font-mono);">
-            $ ${escapeHtml(t.command)}
-          </div>
-          <pre class="code-block" style="max-height:220px;margin-top:6px;">${escapeHtml(
-            (t.logs || []).join("\n") || "等待输出..."
-          )}</pre>
-        `;
-        card.querySelector(".btn-stop-task")?.addEventListener("click", async () => {
-          await apiPost("/api/device/tasks/stop", { taskId: t.taskId });
-          loadDeviceTasks();
-        });
-        card.querySelector(".btn-open-detected")?.addEventListener("click", async () => {
-          await pullAndOpenAdbRun({
-            serial: t.serial,
-            scopePath: "/data/local/tmp/wechat-channels-dev/data",
-            runId: t.detectedRunId,
-          });
-          switchTab("tab-workflow");
-        });
-        container.appendChild(card);
-      }
-
-      if (!tasks.some((t) => t.status === "running") && state.taskPollingTimer) {
-        clearInterval(state.taskPollingTimer);
-        state.taskPollingTimer = null;
-      }
-    } catch (err) {
-      // ignore transient poll errors
-    }
+        `
+        )
+        .join("");
+    } catch (_) {}
   }
 
-  function startTaskPolling() {
-    if (state.taskPollingTimer) clearInterval(state.taskPollingTimer);
-    state.taskPollingTimer = setInterval(loadDeviceTasks, 2000);
-  }
-
-  // --- Navigation & Event Listeners ---
-  function switchTab(tabId) {
-    document.querySelectorAll("#mainNavTabs .nav-tab").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.tab === tabId);
-    });
-    document.querySelectorAll(".tab-pane").forEach((pane) => {
-      pane.classList.toggle("active", pane.id === tabId);
-    });
-    if (tabId === "tab-runner") {
-      loadDeviceTasks();
+  function exportSnapshotUnitTest() {
+    const snap = state.activeSnapshot;
+    if (!snap) {
+      showToast("请先选择一个步骤");
+      return;
     }
+    const compactLines = (snap.lines || []).map((l) => ({
+      text: l.text,
+      box: l.box,
+      source: l.source || "ocr",
+    }));
+    const pState = snap.replay?.parsers?.pageState?.state || "unknown";
+    const code = `def test_snapshot_${snap.label.replace(/[^a-zA-Z0-9_]/g, "_")}(self):\n    lines = ${JSON.stringify(
+      compactLines,
+      null,
+      4
+    )}\n    self.assertEqual(classify_page_state(lines, ${snap.height || 1605}), "${pState}")\n`;
+    navigator.clipboard.writeText(code);
+    showToast("📋 已复制单元测试代码到剪贴板！");
   }
 
   function bindEvents() {
-    // Main nav tabs
-    document.querySelectorAll("#mainNavTabs .nav-tab").forEach((btn) => {
-      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-
-    // Source filter tabs
     document.querySelectorAll("#sourceFilterTabs .seg-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
         document.querySelectorAll("#sourceFilterTabs .seg-tab").forEach((b) => b.classList.remove("active"));
@@ -1292,13 +1087,12 @@
     $("btnRefreshAll").addEventListener("click", async () => {
       await loadDevices();
       await loadRuns();
-      showToast("已刷新设备与任务列表");
+      showToast("已刷新列表");
     });
 
     $("btnLiveProbe").addEventListener("click", handleLiveProbe);
     $("btnPushCode").addEventListener("click", handlePushCode);
 
-    // Step navigation
     $("btnPrevStep").addEventListener("click", () => {
       if (state.activeSnapshotIndex > 0) selectSnapshotByIndex(state.activeSnapshotIndex - 1);
     });
@@ -1323,64 +1117,85 @@
       }
     });
 
-    // Canvas layer checkboxes & zoom
-    for (const id of ["chkLayerLines", "chkLayerSemantic", "chkLayerClicks", "chkLayerRoi", "chkLayerText", "canvasZoomSelect"]) {
-      $(id).addEventListener("change", drawCanvas);
-    }
-
-    // Canvas mouse hover & click to inspect bounding boxes
+    // Canvas click to inspect element
     const canvas = $("screenCanvas");
+    window.addEventListener("resize", () => drawCanvas());
     canvas.addEventListener("mousemove", (e) => {
       const rect = canvas.getBoundingClientRect();
-      const zoom = parseFloat($("canvasZoomSelect").value || "0.55");
-      const lx = Math.round((e.clientX - rect.left) / zoom);
-      const ly = Math.round((e.clientY - rect.top) / zoom);
-      $("cursorCoordLabel").textContent = `X: ${lx} , Y: ${ly}`;
-
-      const lines = state.activeSnapshot?.lines || [];
-      let foundIdx = -1;
-      // Prefer smallest matching box under cursor
+      const scale = state.currentCanvasScale || 0.4;
+      const lx = Math.round((e.clientX - rect.left) / scale);
+      const ly = Math.round((e.clientY - rect.top) / scale);
+      const vLines = state.activeSnapshot?.visualLines || [];
+      let found = -1;
       let bestArea = Infinity;
-      lines.forEach((line, idx) => {
-        if (!Array.isArray(line.box) || line.box.length < 4) return;
-        const [bx, by, bw, bh] = line.box;
-        if (lx >= bx && lx <= bx + bw && ly >= by && ly <= by + bh) {
+      vLines.forEach((line, idx) => {
+        const [bx, by, bw, bh] = line.box || [0, 0, 0, 0];
+        if (lx >= bx && lx <= bx + bw && ly >= by && ly <= by + Math.max(bh, 32)) {
           const area = bw * bh;
           if (area < bestArea) {
             bestArea = area;
-            foundIdx = idx;
+            found = idx;
           }
         }
       });
-      if (foundIdx !== state.hoveredLineIndex) {
-        state.hoveredLineIndex = foundIdx;
+      if (found !== state.hoveredLineIndex) {
+        state.hoveredLineIndex = found;
         drawCanvas();
       }
     });
 
     canvas.addEventListener("click", () => {
       if (state.hoveredLineIndex >= 0) {
-        selectLineBox(state.hoveredLineIndex);
+        state.selectedLineIndex = state.hoveredLineIndex;
+        const line = (state.activeSnapshot?.visualLines || [])[state.selectedLineIndex];
+        if (line) {
+          $("selectedBoxDetail").textContent = `选中元素: "${line.text}" (坐标: [${line.box.join(", ")}])`;
+        }
+        drawCanvas();
       }
     });
 
-    $("lineFilterInput").addEventListener("input", renderLinesTable);
-    $("btnQuickHotReplay").addEventListener("click", runHotReloadReplay);
-    $("btnRunHotReplay").addEventListener("click", runHotReloadReplay);
-    $("btnReplayCustomLines").addEventListener("click", runCustomLinesReplay);
-    $("btnExportUnitTest").addEventListener("click", exportSnapshotUnitTest);
+    $("lineFilterInput").addEventListener("input", renderRawLinesTable);
+    $("btnQuickHotReplay").addEventListener("click", async () => {
+      if (state.activeSnapshotIndex >= 0) {
+        await selectSnapshotByIndex(state.activeSnapshotIndex, true);
+        showToast("🔥 已热重载解析器并更新当前步！");
+      }
+    });
 
-    // Task runner mode template switching
+    // Developer modal
+    $("btnOpenDevModal").addEventListener("click", () => {
+      $("devModalBackdrop").classList.add("open");
+      loadDeviceTasks();
+    });
+    $("btnCloseDevModal").addEventListener("click", () => {
+      $("devModalBackdrop").classList.remove("open");
+    });
     $("runnerTaskMode").addEventListener("change", (e) => {
-      const tpl = TASK_TEMPLATES[e.target.value] ?? {};
-      $("runnerConfigTextarea").value = JSON.stringify(tpl, null, 2);
+      $("runnerConfigTextarea").value = JSON.stringify(TASK_TEMPLATES[e.target.value] ?? {}, null, 2);
     });
     $("btnStartDeviceTask").addEventListener("click", startDeviceTask);
-    $("btnRefreshTasks").addEventListener("click", loadDeviceTasks);
+    $("btnExportUnitTest").addEventListener("click", exportSnapshotUnitTest);
   }
 
   async function init() {
     bindEvents();
+    // 1. Immediately render local cached runs in <100ms so the user never waits on ADB
+    try {
+      const fastData = await apiGet("/api/runs?source=local&limit=50");
+      if (fastData.runs?.length) {
+        state.runs = fastData.runs;
+        renderRunList();
+        const bestInitial =
+          state.runs.find((r) => r.synced && r.snapshotCount > 5) ||
+          state.runs[0];
+        if (bestInitial) {
+          selectRun(bestInitial);
+        }
+      }
+    } catch (_) {}
+
+    // 2. Then load connected ADB devices and merge phone runs in the background
     await loadDevices();
     await loadRuns();
   }
