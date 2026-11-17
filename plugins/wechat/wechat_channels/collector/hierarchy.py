@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 
 from collection import author_in_feed, find, parse_author, parse_basic_info, parse_video, profile_bio_expand
-from layout import LABELS, label_values, reading_rows, work_region
+from layout import LABELS, is_comment_drawer_heading, label_values, reading_rows, work_region
 
 PACKAGE = "com.tencent.mm"
 
@@ -78,6 +78,32 @@ def _scaled(box, width):
             max(1, round((right - left) * scale)), max(1, round((bottom - top) * scale))]
 
 
+def _drawer_scroll_forward(root, hidden, width, height):
+    """Whether the visible comment drawer's RecyclerView can still scroll down, or None if unknown."""
+    for layer in root.iter("node"):
+        if id(layer) in hidden or _resource(layer) != DRAWER_LAYER:
+            continue
+        scroll_flags = []
+        loading = False
+        for node in layer.iter("node"):
+            if id(node) in hidden:
+                continue
+            if (node.get("package") != PACKAGE or node.get("enabled") == "false"
+                    or node.get("visible-to-user") == "false"):
+                continue
+            box = _bounds(node)
+            if not box or not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
+                continue
+            if node.get("class") == "android.widget.ProgressBar":
+                loading = True
+            elif (node.get("class") == "androidx.recyclerview.widget.RecyclerView"
+                    and node.get("scroll-forward") in ("true", "false")):
+                scroll_flags.append(node.get("scroll-forward") == "true")
+        if scroll_flags:
+            return any(scroll_flags) or loading
+    return None
+
+
 def text_lines(xml, width, height, containers=False):
     """Visible WeChat controls as OCR-like lines; with containers, also empty text containers.
 
@@ -94,6 +120,8 @@ def text_lines(xml, width, height, containers=False):
         raise HierarchyUnavailable("Incomplete hierarchy document") from error
     lines, holes = [], []
     hidden = {id(node) for layer in covered_layers(root, width, height) for node in layer.iter("node")}
+    drawer_scroll_forward = _drawer_scroll_forward(root, hidden, width, height)
+    scaled_height = round(height * 720 / width)
     for node in root.iter("node"):
         if id(node) in hidden:
             continue
@@ -142,6 +170,8 @@ def text_lines(xml, width, height, containers=False):
         line = {"text": text, "box": scaled, "score": 1.0, "selector": selector, "source": "hierarchy"}
         if node.get("selected") in ("true", "false"):
             line["selected"] = node.get("selected") == "true"
+        if drawer_scroll_forward is not None and is_comment_drawer_heading(line, scaled_height):
+            line["canScrollForward"] = drawer_scroll_forward
         if _resource(node) == "bkl":
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = _scaled(box, width)
@@ -312,10 +342,15 @@ def correct_ocr(recognized, semantic):
             else:
                 for offset in range(i1, i2):
                     output[owner[offset]].append(ocr_chars[offset])
+        scroll_flag = next((node["canScrollForward"] for node in nodes if "canScrollForward" in node), None)
         for line, chars in zip(lines, output):
             text = "".join(chars)
+            updated = corrected[id(line)]
             if text and key(text) != key(re.sub(r"\s+", "", line["text"])):
-                corrected[id(line)] = {**line, "text": text, "ocrText": line["text"], "source": "hierarchy"}
+                updated = {**updated, "text": text, "ocrText": line["text"], "source": "hierarchy"}
+            if scroll_flag is not None and is_comment_drawer_heading(updated):
+                updated = {**updated, "canScrollForward": scroll_flag}
+            corrected[id(line)] = updated
     return [corrected[id(line)] for line in recognized]
 
 

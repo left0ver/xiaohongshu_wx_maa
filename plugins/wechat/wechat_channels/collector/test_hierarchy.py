@@ -439,6 +439,23 @@ class HierarchyTests(unittest.TestCase):
         ]
         self.assertEqual(missing, [], f"Snapshot labels missing from CONTROL_PAGES: {missing}")
 
+    def test_drawer_heading_carries_recyclerview_scroll_forward_state(self):
+        feed_seek = ({"class": "android.widget.SeekBar", "resource-id": "com.tencent.mm:id/qm_",
+                      "bounds": "[16,2800][1424,2810]", "scroll-forward": "true"}, [])
+        feed = layer("nsv", label("推荐流文案", "o45", "[98,2600][1384,2700]"), feed_seek)
+        for rv_fwd, with_spinner, expected in (("true", False, True), ("false", False, False), ("false", True, True)):
+            children = [
+                label("评论 9", "d4v", "[151,964][300,1020]"),
+                ({"class": "androidx.recyclerview.widget.RecyclerView", "bounds": "[0,1100][1440,2800]",
+                  "scrollable": "true", "scroll-forward": rv_fwd}, []),
+            ]
+            if with_spinner:
+                children.append(({"class": "android.widget.ProgressBar", "bounds": "[680,2700][760,2780]"}, []))
+            xml = tree(screen(feed, layer("ean", sheet(*children))))
+            lines = text_lines(xml, 1440, 3116)
+            heading = next(item for item in lines if item["text"] == "评论 9")
+            self.assertEqual(heading.get("canScrollForward"), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1056,6 +1056,50 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertTrue(result["returnedToTask"])
         self.assertEqual(ui.typed, ["收到啦，谢谢！"])
 
+    def test_locate_target_comment_stops_at_recyclerview_bottom_without_footer(self):
+        def page(names, can_scroll_forward):
+            lines = [{"text": "评论 9", "box": [100, 440, 90, 32], "canScrollForward": can_scroll_forward}]
+            for idx, name in enumerate(names):
+                y = 560 + idx * 130
+                lines += [
+                    {"text": f"{name} 广东 1小时前", "box": [98, y, 220, 28]},
+                    {"text": f"{name}的评论", "box": [98, y + 38, 200, 28]},
+                    {"text": "1凸", "box": [645, y, 40, 28]},
+                ]
+            return lines + [{"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]}]
+
+        # Short 2-page drawer without "没有更多评论": page 1 scrolls once, page 2 confirms bottom and stops.
+        ui = FakeUi([
+            page(["星河长明", "远山如黛"], can_scroll_forward=False),
+            page(["星河长明", "远山如黛"], can_scroll_forward=False),
+        ])
+        with mock.patch("interactions.time.sleep"):
+            missing = locate_target_comment(
+                ui,
+                target_spec={"nickname": "不存在的评论者"},
+                max_pages=300,
+                lines=page(["林间微风", "星河长明"], can_scroll_forward=True),
+            )
+        self.assertFalse(missing["found"])
+        self.assertEqual(missing["pagesSearched"], 2)
+        self.assertEqual(ui.comment_scrolls, 1)
+
+        # Transient canScrollForward=False while a paginated batch finishes loading continues scrolling.
+        ui_lazy = FakeUi([
+            page(["林间微风", "星河长明"], can_scroll_forward=True),
+            page(["星河长明", "目标评论者"], can_scroll_forward=False),
+        ])
+        with mock.patch("interactions.time.sleep"):
+            found = locate_target_comment(
+                ui_lazy,
+                target_spec={"nickname": "目标评论者"},
+                max_pages=300,
+                lines=page(["林间微风", "星河长明"], can_scroll_forward=False),
+            )
+        self.assertTrue(found["found"])
+        self.assertEqual(found["comment"]["nickname"], "目标评论者")
+        self.assertEqual(ui_lazy.comment_scrolls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

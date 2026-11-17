@@ -584,6 +584,35 @@ class CommentPagingTests(unittest.TestCase):
             self.assertIn("USER", {e["event_type"] for e in published})
             self.assertEqual({e["payload"]["nickname"] for e in result["events"]}, {"你是我的罗尼哟", "林玲8641"})
 
+    def test_short_drawer_without_footer_stops_on_can_scroll_forward_false(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()), \
+                unittest.mock.patch("comments.time.sleep"):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "短评论作者",
+                "description": "短评论作品",
+                "authorDouyinId": "sphShort9",
+            })
+            feed = [line("9", 1555, 622, 42, 23)]
+            bottom_drawer = [
+                {**line("评论 9", 440, 100, 90, 34), "canScrollForward": False},
+                line("读者甲广东1小时前", 560, 98, 260, 27),
+                line("写得很好", 600, 98, 120, 27),
+            ]
+            ui = PagingCommentUi([feed, bottom_drawer, bottom_drawer])
+            result = collect_visible_comments(
+                ui,
+                path,
+                video_event,
+                Timings(Path(directory) / "t.jsonl", "run"),
+                max_pages=10,
+                max_reply_expansions=0,
+                max_profiles=0,
+            )
+            self.assertTrue(result["complete"])
+            self.assertEqual(result["endReason"], "end_of_list")
+            self.assertEqual(ui.scrolls, 0)
+
 
 class PagingCommentUi(FakeCommentUi):
     def __init__(self, snapshots):

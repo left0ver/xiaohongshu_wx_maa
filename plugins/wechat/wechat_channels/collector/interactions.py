@@ -830,42 +830,52 @@ def locate_target_comment(
     """Locate a target comment in the comment drawer across up to max_pages."""
     drawer_lines, _ = _open_comment_drawer_if_needed(ui, lines)
     detected_self = self_nickname or ""
+    pages_searched = 0
+    prev_header_sig = None
+    stalled_pages = 0
+
+    def _match(current_drawer, current_lines):
+        candidates = [
+            c for c in current_drawer["comments"] if _comment_matches_spec(c, target_spec)
+        ]
+        if not candidates:
+            return None
+        non_self = [
+            c
+            for c in candidates
+            if not is_self_comment(c, detected_self, quota_store=quota_store, work_key=work_key)
+        ]
+        if exclude_self and not non_self:
+            return {
+                "found": False,
+                "rejectedSelf": True,
+                "comment": candidates[0],
+                "lines": current_lines,
+                "drawer": current_drawer,
+                "selfNickname": detected_self,
+                "pagesSearched": pages_searched,
+            }
+        chosen = non_self[0] if exclude_self else candidates[0]
+        return {
+            "found": True,
+            "rejectedSelf": False,
+            "comment": chosen,
+            "lines": current_lines,
+            "drawer": current_drawer,
+            "selfNickname": detected_self,
+            "pagesSearched": pages_searched,
+        }
 
     for page_index in range(max(1, max_pages)):
         check_stopped(ui)
+        pages_searched = page_index + 1
         drawer = parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key)
         if drawer.get("selfNickname"):
             detected_self = drawer["selfNickname"]
 
-        candidates = [
-            c for c in drawer["comments"] if _comment_matches_spec(c, target_spec)
-        ]
-        if candidates:
-            non_self = [
-                c
-                for c in candidates
-                if not is_self_comment(c, detected_self, quota_store=quota_store, work_key=work_key)
-            ]
-            if exclude_self and not non_self:
-                return {
-                    "found": False,
-                    "rejectedSelf": True,
-                    "comment": candidates[0],
-                    "lines": drawer_lines,
-                    "drawer": drawer,
-                    "selfNickname": detected_self,
-                    "pagesSearched": page_index + 1,
-                }
-            chosen = non_self[0] if exclude_self else candidates[0]
-            return {
-                "found": True,
-                "rejectedSelf": False,
-                "comment": chosen,
-                "lines": drawer_lines,
-                "drawer": drawer,
-                "selfNickname": detected_self,
-                "pagesSearched": page_index + 1,
-            }
+        matched = _match(drawer, drawer_lines)
+        if matched is not None:
+            return matched
 
         if (
             page_index + 1 >= max_pages
@@ -874,6 +884,29 @@ def locate_target_comment(
             or not hasattr(ui, "scroll_comments")
         ):
             break
+
+        if drawer.get("canScrollForward") is False:
+            check_stopped(ui)
+            time.sleep(0.8)
+            drawer_lines = ui.snapshot(f"comments-locate-bottom-{page_index + 1}")
+            drawer = parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key)
+            if drawer.get("selfNickname"):
+                detected_self = drawer["selfNickname"]
+            matched = _match(drawer, drawer_lines)
+            if matched is not None:
+                return matched
+            if drawer.get("canScrollForward") is False or drawer.get("footerReached") or drawer.get("empty"):
+                break
+
+        header_sig = tuple((h["nickname"], h["date"], h["level"]) for h in drawer.get("headers", []))
+        if drawer.get("canScrollForward") is None and header_sig and header_sig == prev_header_sig:
+            stalled_pages += 1
+            if stalled_pages >= 2:
+                break
+        else:
+            stalled_pages = 0
+        prev_header_sig = header_sig
+
         check_stopped(ui)
         ui.scroll_comments(drawer_lines)
         drawer_lines = ui.snapshot(f"comments-locate-{page_index + 2}")
@@ -886,7 +919,7 @@ def locate_target_comment(
         "lines": drawer_lines,
         "drawer": parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key),
         "selfNickname": detected_self,
-        "pagesSearched": max_pages,
+        "pagesSearched": pages_searched,
     }
 
 

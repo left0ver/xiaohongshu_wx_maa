@@ -180,6 +180,10 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
     declared_total = int(count_match[1]) if count_match else None
     empty = bool(find(lines, EMPTY_COMMENTS_RE)) or declared_total == 0
     footer_reached = bool(find(lines, FOOTER_END_RE))
+    can_scroll_forward = next(
+        (item["canScrollForward"] for item in heading["items"] if "canScrollForward" in item),
+        None,
+    )
 
     input_bar = find(
         lines,
@@ -305,6 +309,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         reply_expand_box = None
         has_expand_control = False
         bounded = position + 1 < len(headers)
+        cut_at_bottom = False
         body_box = None
 
         for r in rows[index + 1 : end]:
@@ -330,6 +335,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
                 bounded = True
                 break
             if r["top"] >= height - 80:
+                cut_at_bottom = True
                 break
             if re.fullmatch(TAG_ONLY_RE, comp):
                 bounded = True
@@ -371,6 +377,8 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         )
         # Ellipses can be literal punctuation in a complete comment. The next
         # header/footer establishes its boundary; actual folding has a control.
+        if not bounded and can_scroll_forward is False and not cut_at_bottom:
+            bounded = True
         if not bounded or not content or is_truncated:
             if level == 1:
                 current_parent = {
@@ -457,6 +465,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         "declaredTotal": declared_total,
         "empty": empty,
         "footerReached": footer_reached,
+        "canScrollForward": can_scroll_forward,
         "selfNickname": self_nickname,
         "inputBar": input_bar,
         "comments": comments,
@@ -1213,6 +1222,17 @@ def collect_visible_comments(
                     end_reason = "all_declared_collected"
                     complete = True
                     break
+                if drawer.get("canScrollForward") is False:
+                    time.sleep(0.8)
+                    lines = ui.snapshot(f"comments-page-bottom-{page_index + 1}")
+                    drawer = parse(lines)
+                    absorb(drawer)
+                    for key in list(collected):
+                        publish_comment(key)
+                    if drawer.get("canScrollForward") is False or drawer["footerReached"]:
+                        end_reason = "end_of_list"
+                        complete = True
+                        break
                 if (max_pages is not None and page_index + 1 >= max_pages) or not hasattr(ui, "scroll_comments"):
                     end_reason = "page_limit" if hasattr(ui, "scroll_comments") else "single_page_only"
                     complete = False

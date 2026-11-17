@@ -298,10 +298,15 @@ public final class UiDump {
             xml.attribute("", "class", text(node.getClassName()));
             xml.attribute("", "package", text(node.getPackageName()));
             xml.attribute("", "bounds", "[" + box.left + "," + box.top + "][" + box.right + "," + box.bottom + "]");
+            List<AccessibilityNodeInfo.AccessibilityAction> actions = node.getActionList();
             xml.attribute("", "clickable", Boolean.toString(node.isClickable()));
             xml.attribute("", "enabled", Boolean.toString(node.isEnabled()));
             xml.attribute("", "selected", Boolean.toString(node.isSelected()));
             xml.attribute("", "scrollable", Boolean.toString(node.isScrollable()));
+            xml.attribute("", "scroll-forward", Boolean.toString(
+                actions.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)));
+            xml.attribute("", "scroll-backward", Boolean.toString(
+                actions.contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)));
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
