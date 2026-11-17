@@ -111,6 +111,8 @@ class MaaUi:
         self.controls_exposed = controls_exposed
         self.controller = tasker.controller
         self.context = context
+        if context is None and hasattr(Tasker, "set_reco_image_cache_limit"):
+            Tasker.set_reco_image_cache_limit(16)
         self.evidence_dir = Path(evidence_dir)
         self.evidence_dir.mkdir(parents=True, exist_ok=True)
         self.sequence = 0
