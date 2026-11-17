@@ -579,8 +579,8 @@ CONTROL_PAGES = {
                      "recommend-feed-", "friends-feed-", "follow-feed-", "city-feed-",
                      "recommend-recovered-", "friends-recovered-", "follow-recovered-", "city-recovered-"),
                     _feed_ready),
-    **dict.fromkeys(("video-details", "expanded-description", "comments-preemptive-work-header",
-                     "comments-preemptive-work-expanded"), _drawer_ready),
+    **dict.fromkeys(("video-details", "expanded-description", "comments-details",
+                     "comments-preemptive-work-header", "comments-preemptive-work-expanded"), _drawer_ready),
     **dict.fromkeys(("comments", "comments-check", "comments-expanded", "comments-replies", "comments-return",
                      "comments-after-skip", "comments-recover", "comments-after-like", "comments-after-post",
                      "comments-after-reply", "comments-after-profile-touch", "comments-after-profile-touch-retry",
@@ -642,7 +642,7 @@ _FOLLOW_PROFILE_LABELS = (
     "profile-follow-check", "profile-after-follow", "profile-touch", "profile-grid",
 )
 _REPLY_EXPAND_DRAWER_LABELS = (
-    "comments", "comments-page-", "comments-replies", "comments-expanded",
+    "comments", "comments-details", "comments-page-", "comments-replies", "comments-expanded",
     "comments-return", "comments-after-skip", "comments-recover",
 )
 _BODY_ONLY_DRAWER_LABELS = (
@@ -732,7 +732,7 @@ def choose_snapshot(label, height, author, hierarchy, templates, ocr, regional_o
 def field_evidence(lines, label, author=None):
     """Record this snapshot's observations, without claiming cross-page identity verification."""
     try:
-        if label in ("video-details", "expanded-description") and author:
+        if label in ("video-details", "expanded-description", "comments-details", "comments-expanded") and author:
             values = parse_video(lines, author)
             region = work_region(lines)
         elif label.startswith("author-basic-info"):

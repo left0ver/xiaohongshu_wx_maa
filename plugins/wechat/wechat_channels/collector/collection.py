@@ -617,13 +617,39 @@ def ensure_feed(ui, launch=True):
     raise ValueError("Could not reach recommendations")
 
 
-def video_details(ui, lines, author):
-    # The comment count is part of the visible comment control, located by OCR.
+def open_video_details_drawer(ui, lines, author, *, for_comments=False):
+    # The comment count is part of the visible comment control, located by controls or OCR.
     comment = comment_control_in_feed(lines, ui.height, ui)
     if not comment:
         raise ValueError("Comment control was not recognized")
-    ui.click(comment)
-    details = ui.snapshot("video-details", author=author)
+    if comment.get("selector") and hasattr(ui, "hierarchy"):
+        def _resolve_feed_comment(controls):
+            visible = [line for line in controls if not line.get("icon") and not line.get("container")]
+            if find(visible, r"^正在观看$|^私信$|^客服$|^基础信息$") or any(
+                line["box"][1] > ui.height - 42 for line in visible
+            ):
+                return None
+            return comment_control_in_feed(visible, ui.height)
+
+        clicked = ui.click(comment, resolve=_resolve_feed_comment)
+        if not clicked:
+            feed = ui.snapshot("feed")
+            for _ in range(2):
+                if not find(feed, r"^正在观看$|^私信$|^客服$|^基础信息$") and not any(
+                    line["box"][1] > ui.height - 42 for line in feed
+                ):
+                    break
+                ui.back()
+                feed = ui.snapshot("feed")
+            retry_comment = comment_control_in_feed(feed, ui.height, ui)
+            if not retry_comment:
+                raise ValueError("Comment control was not recognized")
+            ui.click(retry_comment)
+    else:
+        ui.click(comment)
+    detail_label = "comments-details" if for_comments else "video-details"
+    expand_label = "comments-expanded" if for_comments else "expanded-description"
+    details = ui.snapshot(detail_label, author=author)
     for _ in range(3):
         try:
             work_region(details)
@@ -632,22 +658,27 @@ def video_details(ui, lines, author):
             if not hasattr(ui, "restore_work_header"):
                 raise
             ui.restore_work_header(details)
-            details = ui.snapshot("video-details", author=author)
+            details = ui.snapshot(detail_label, author=author)
     for _ in range(2):
         # Comments load after the drawer opens; until then nothing marks where the description ends.
         region = work_region(details)
         if region["boundary"] or region["expand"]:
             break
         time.sleep(1.0)
-        details = ui.snapshot("video-details", author=author)
+        details = ui.snapshot(detail_label, author=author)
     for _ in range(2):
         region = work_region(details)
         expand = region["expand"]
         if not expand:
             break
         ui.click(expand)
-        details = ui.snapshot("expanded-description", author=author)
-    return parse_video(details, author)
+        details = ui.snapshot(expand_label, author=author)
+    return parse_video(details, author), details
+
+
+def video_details(ui, lines, author):
+    video, _ = open_video_details_drawer(ui, lines, author, for_comments=False)
+    return video
 
 
 def collect_current_video(ui, store, timings, lines, source_mode="RECOMMEND"):

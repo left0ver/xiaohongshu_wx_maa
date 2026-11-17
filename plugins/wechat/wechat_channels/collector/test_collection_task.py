@@ -275,17 +275,14 @@ class CollectionTaskTests(unittest.TestCase):
             ui = FakeModeUi(
                 [
                     FEED_RECOMMEND,  # switch_channels_top_tab resume
-                    DETAILS_ONE,     # video 1 details
-                    FEED_RECOMMEND,  # video 1 before-author
                     broken_profile,  # video 1 author-profile -> missing controls -> ValueError
                     PROFILE_ONE,     # recover-check-0 -> user_profile -> back()
                     FEED_RECOMMEND,  # recover-check-1 -> recommend_feed recovered
                     FEED_SECOND,     # recommend-feed-1 after scroll_feed_next()
-                    DETAILS_TWO,     # video 2 details
-                    FEED_SECOND,     # video 2 before-author
                     PROFILE_TWO,     # video 2 author-profile
                     [line("更多信息", 280, 1400)],
                     INFO_TWO,        # video 2 basic-info
+                    DETAILS_TWO,     # video 2 details
                 ]
             )
             with patch("modes.time.sleep"), patch("collection.time.sleep"):
@@ -326,11 +323,10 @@ class CollectionTaskTests(unittest.TestCase):
                     SEARCH_VIDEO_TAB_LINES,  # recover-check-1 -> back on search_results!
                     SEARCH_VIDEO_TAB_LINES,  # idx=1 search-grid-2 -> skips card 0, selects card 1
                     FEED_SECOND,             # card 1 opened
-                    DETAILS_TWO,             # card 1 details
-                    FEED_SECOND,             # card 1 before-author
                     PROFILE_TWO,             # card 1 author-profile
                     [line("更多信息", 280, 1400)],
                     INFO_TWO,                # card 1 basic-info
+                    DETAILS_TWO,             # card 1 details
                     SEARCH_VIDEO_TAB_LINES,  # card 1 search-return-2
                 ]
             )
@@ -432,19 +428,14 @@ class CollectionTaskTests(unittest.TestCase):
             ui = FakeModeUi(
                 [
                     FEED_RECOMMEND,  # resume
-                    DETAILS_ONE,     # video 1 details
-                    FEED_RECOMMEND,  # video 1 copy_share_link snapshot("feed")
-                    FEED_RECOMMEND,  # video 1 before-author
                     broken_profile,  # video 1 author-profile -> raises ValueError after link was copied!
                     FEED_RECOMMEND,  # recover-check-0 -> already on recommend_feed
                     FEED_SECOND,     # video 2 after swipe
-                    DETAILS_TWO,     # video 2 details
-                    FEED_SECOND,     # video 2 copy_share_link snapshot("feed")
                     FEED_SECOND,     # video 2 share-recover back_to_video
-                    FEED_SECOND,     # video 2 before-author
                     PROFILE_TWO,     # video 2 author-profile
                     [line("更多信息", 280, 1400)],
                     INFO_TWO,        # video 2 basic-info
+                    DETAILS_TWO,     # video 2 details
                 ]
             )
 
@@ -470,20 +461,20 @@ class CollectionTaskTests(unittest.TestCase):
             self.assertIn("videoUrl", report["videos"][0]["videoEvent"]["payload"]["missingFields"])
 
     def test_transient_upload_failure_defers_to_sqlite_and_flushes_on_recovery(self):
-        comment_drawer_one = [
-            line("评论1", 27, 482, 110, 32),
-            line("路人甲广东1天前", 99, 620, 260, 28),
-            line("太真实了哈哈", 99, 660, 220, 28),
-            line("12", 650, 620, 36, 28),
-            line("已显示全部评论", 260, 820, 180, 28),
+        drawer_one = [
+            *DETAILS_ONE[:4],
+            line("路人甲广东1天前", 99, 730, 260, 28),
+            line("太真实了哈哈", 99, 770, 220, 28),
+            line("12", 650, 730, 36, 28),
+            line("已显示全部评论", 260, 860, 180, 28),
             line("发表评论", 101, 1537, 200, 34),
         ]
-        comment_drawer_two = [
-            line("评论1", 27, 482, 110, 32),
-            line("吃货乙北京2小时前", 99, 620, 260, 28),
-            line("看着很有食欲", 99, 660, 220, 28),
-            line("5", 650, 620, 36, 28),
-            line("已显示全部评论", 260, 820, 180, 28),
+        drawer_two = [
+            *DETAILS_TWO[:4],
+            line("吃货乙北京2小时前", 99, 730, 260, 28),
+            line("看着很有食欲", 99, 770, 220, 28),
+            line("5", 650, 730, 36, 28),
+            line("已显示全部评论", 260, 860, 180, 28),
             line("发表评论", 101, 1537, 200, 34),
         ]
         identity_cfg = {"scope": "a" * 64, "machine": "device-001"}
@@ -501,24 +492,16 @@ class CollectionTaskTests(unittest.TestCase):
             timings = Timings(Path(root) / "runs/r1/timings.jsonl", "r1")
             ui = FakeModeUi(
                 [
-                    FEED_RECOMMEND,      # switch_channels_top_tab
-                    DETAILS_ONE,         # video 1 details
-                    FEED_RECOMMEND,      # video 1 copy link feed
-                    FEED_RECOMMEND,      # video 1 before-author
-                    PROFILE_ONE,         # video 1 author-profile
+                    FEED_RECOMMEND,  # switch_channels_top_tab
+                    PROFILE_ONE,     # video 1 author-profile
                     [line("更多信息", 280, 1400)],
-                    INFO_ONE,            # video 1 basic-info
-                    FEED_RECOMMEND,      # video 1 comments feed check
-                    comment_drawer_one,  # video 1 comments page 1
-                    FEED_SECOND,         # video 2 recommend-feed-1
-                    DETAILS_TWO,         # video 2 details
-                    FEED_SECOND,         # video 2 copy link feed
-                    FEED_SECOND,         # video 2 before-author
-                    PROFILE_TWO,         # video 2 author-profile
+                    INFO_ONE,        # video 1 basic-info
+                    drawer_one,      # video 1 single-open drawer (details + comments page 1)
+                    FEED_SECOND,     # video 2 recommend-feed-1
+                    PROFILE_TWO,     # video 2 author-profile
                     [line("更多信息", 280, 1400)],
-                    INFO_TWO,            # video 2 basic-info
-                    FEED_SECOND,         # video 2 comments feed check
-                    comment_drawer_two,  # video 2 comments page 1
+                    INFO_TWO,        # video 2 basic-info
+                    drawer_two,      # video 2 single-open drawer (details + comments page 1)
                 ]
             )
             link_seq = iter(["https://weixin.qq.com/sph/LinkOne01", "https://weixin.qq.com/sph/LinkTwo02"])
@@ -547,12 +530,10 @@ class CollectionTaskTests(unittest.TestCase):
             ui = FakeModeUi(
                 [
                     FEED_RECOMMEND,
-                    DETAILS_ONE,
-                    FEED_RECOMMEND,
-                    FEED_RECOMMEND,
                     PROFILE_ONE,
                     [line("更多信息", 280, 1400)],
                     INFO_ONE,
+                    DETAILS_ONE,
                 ]
             )
             with patch("modes.time.sleep"), patch("collection.time.sleep"), patch(
@@ -568,6 +549,8 @@ class CollectionTaskTests(unittest.TestCase):
                             PermissionError("授权码或绑定设备验证失败")
                         ),
                     )
+            # Open drawer was closed before propagating PermissionError.
+            self.assertEqual(ui.backs, 3)
 
     def test_composer_clear_command_failure_raises_fatal_error_and_stops_run(self):
         drawer = [
@@ -584,8 +567,6 @@ class CollectionTaskTests(unittest.TestCase):
                 ui = ShareUi(
                     [
                         FEED_SECOND,  # switch_channels_top_tab
-                        DETAILS_TWO,  # video details
-                        FEED_SECOND,  # copy_share_link feed snapshot
                         sheet,        # share-sheet
                         FEED_SECOND,  # share-closed
                         FEED_SECOND,  # share-feed (no search button -> composer)
@@ -617,12 +598,10 @@ class CollectionTaskTests(unittest.TestCase):
                 ui = FakeModeUi(
                     [
                         FEED_RECOMMEND,
-                        DETAILS_ONE,
-                        FEED_RECOMMEND,
-                        FEED_RECOMMEND,
                         PROFILE_ONE,
                         [line("更多信息", 280, 1400)],
                         INFO_ONE,
+                        DETAILS_ONE,
                         FEED_SECOND,
                     ]
                 )
@@ -660,12 +639,10 @@ class CollectionTaskTests(unittest.TestCase):
             ui = FakeModeUi(
                 [
                     FEED_RECOMMEND,
-                    DETAILS_ONE,
-                    FEED_RECOMMEND,
-                    FEED_RECOMMEND,
                     PROFILE_ONE,
                     [line("更多信息", 280, 1400)],
                     INFO_ONE,
+                    DETAILS_ONE,
                     FEED_SECOND,
                 ]
             )
@@ -690,12 +667,10 @@ class CollectionTaskTests(unittest.TestCase):
             ui = FakeModeUi(
                 [
                     FEED_RECOMMEND,
-                    DETAILS_ONE,
-                    FEED_RECOMMEND,
-                    FEED_RECOMMEND,
                     PROFILE_ONE,
                     [line("更多信息", 280, 1400)],
                     INFO_ONE,
+                    DETAILS_ONE,
                     FEED_SECOND,
                 ]
             )
@@ -716,6 +691,85 @@ class CollectionTaskTests(unittest.TestCase):
                     )
             self.assertEqual(disk_ctx.exception.errno, errno.ENOSPC)
             self.assertEqual(ui.swipes_next, 0)
+
+    def test_single_drawer_uploads_video_first_then_streams_comments_one_by_one(self):
+        drawer = [
+            *DETAILS_ONE[:4],
+            line("小王同学广东1天前", 99, 730, 260, 28),
+            line("这段脱口秀太好笑了", 99, 770, 240, 28),
+            line("12", 650, 730, 36, 28),
+            line("美食阿强浙江2小时前", 99, 830, 260, 28),
+            line("转发给朋友一起看", 99, 870, 240, 28),
+            line("3", 650, 830, 36, 28),
+            line("已显示全部评论", 260, 960, 180, 28),
+            line("发表评论", 101, 1537, 200, 34),
+        ]
+        card_a = [
+            line("小王同学", 180, 1180, 140, 32),
+            line("地区：广东 深圳", 180, 1230, 220, 28),
+            line("设置", 610, 1080, 56, 32),
+        ]
+        card_b = [
+            line("美食阿强", 180, 1180, 140, 32),
+            line("地区：浙江 杭州", 180, 1230, 220, 28),
+            line("设置", 610, 1080, 56, 32),
+        ]
+        sheet = [line("投诉", 18, 1365, 36, 49), line("复制链接", 611, 1365, 72, 49)]
+        uploaded_batches = []
+
+        def record_transport(events, **_):
+            uploaded_batches.append([(e["event_type"], e["payload"]) for e in events])
+            return {
+                "discoveryAckIds": [e["event_id"] for e in events],
+                "pendingEventIds": [],
+                "uploaded": True,
+            }
+
+        with tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):
+            ui = ShareUi(
+                [
+                    FEED_RECOMMEND,  # initial bare feed snapshot (ONLY feed snapshot!)
+                    sheet,           # share-sheet
+                    FEED_RECOMMEND,  # share-closed
+                    PROFILE_ONE,     # author-profile
+                    [line("更多信息", 280, 1400)],
+                    INFO_ONE,        # author-basic-info-ready
+                    drawer,          # comments-details (drawer opened ONCE!)
+                    card_a,          # commenter 1 user card
+                    drawer,          # comments-return after commenter 1
+                    card_b,          # commenter 2 user card
+                    drawer,          # comments-return after commenter 2
+                ]
+            )
+            ui.read_clipboard = lambda: {"text": LINK, "timestamp": 9_999_999_999_999}
+            with patch("modes.time.sleep"), patch("collection.time.sleep"):
+                result = run_collection_task(
+                    ui,
+                    Path(root),
+                    {
+                        "entry": "recommend",
+                        "count": 1,
+                        "commentOptions": {"visitProfiles": True, "maxProfiles": 2, "maxPages": 1},
+                    },
+                    publisher_identity={"scope": "d" * 64, "machine": "device-004"},
+                    upload_transport=record_transport,
+                )
+
+            self.assertEqual(result["processedCount"], 1)
+            # Strict event upload order: VIDEO first, then each (COMMENT + USER) one by one!
+            self.assertEqual(
+                [[kind for kind, _ in batch] for batch in uploaded_batches],
+                [["VIDEO"], ["COMMENT", "USER"], ["COMMENT", "USER"]],
+            )
+            self.assertEqual(uploaded_batches[0][0][1]["videoUrl"], LINK)
+            self.assertEqual(uploaded_batches[0][0][1]["authorWechatChannelsId"], "sphComedyKing01")
+            self.assertEqual(uploaded_batches[0][0][1]["description"], "凭什么脂肪伸缩自如，毛囊却自动退休？#脱口秀")
+            self.assertEqual(uploaded_batches[1][0][1]["content"], "这段脱口秀太好笑了")
+            self.assertEqual(uploaded_batches[2][0][1]["content"], "转发给朋友一起看")
+            # Comment button ("288") was clicked ONLY ONCE; zero redundant "before-author" or "comments" open!
+            self.assertEqual([c.get("text") for c in ui.clicks].count("288"), 1)
+            self.assertNotIn("before-author", ui.labels)
+            self.assertNotIn("comments", ui.labels)
 
 
 if __name__ == "__main__":

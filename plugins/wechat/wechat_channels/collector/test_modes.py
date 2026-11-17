@@ -574,11 +574,10 @@ class ModesUnitTests(unittest.TestCase):
                     FEED_RECOMMEND,  # resume-check (already seen -> swipe 1)
                     live_card,       # swipe 1 lands on live preview -> swipe 2
                     FEED_SECOND,     # swipe 2 lands on unseen video 2
-                    DETAILS_TWO,     # video-details
-                    FEED_SECOND,     # before-author
                     PROFILE_TWO,     # author-profile
                     [line("更多信息", 280, 1400)],
                     INFO_TWO,        # author-basic-info-ready
+                    DETAILS_TWO,     # video-details
                 ]
             )
             with patch("modes.time.sleep"):

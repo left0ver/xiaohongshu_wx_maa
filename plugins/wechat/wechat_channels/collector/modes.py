@@ -34,6 +34,7 @@ from collection import (
     identity,
     matched_words,
     open_basic_info,
+    open_video_details_drawer,
     parse_author,
     parse_basic_info,
     profile_bio_expand,
@@ -52,7 +53,7 @@ from interactions import (
     interact_work_and_comments,
     validate_interaction_config,
 )
-from layout import DATE, compact, line_height, profile_name, reading_rows
+from layout import DATE, compact, find_comment_drawer_heading, line_height, profile_name, reading_rows
 from publisher import PartialAckError, WechatPublisher
 
 SORT_ALIASES = {
@@ -1722,14 +1723,16 @@ def collect_video_in_mode(
     copy_link: bool = False,
     previous_link: str | None = None,
     on_link_copied=None,
+    keep_drawer_open: bool = False,
+    drawer_state: dict | None = None,
 ) -> dict | None:
     """Collect the currently open video into `LocalStore` (`videos.sqlite3`) with `source_mode`.
 
     With filter words, a video whose full description contains none of them is
     left unsaved and None is returned. With copy_link, the share link is copied
     and saved as videoUrl; a link that cannot be read is listed in missingFields.
-    If a personal account does not expose a public `视频号 ID` in `基础信息`,
-    falls back to `wechat-author-fallback` when `allow_fallback_identity=True`."""
+    When `keep_drawer_open=True`, opens the comment drawer once after reading the
+    share link and author profile so downstream comment collection reuses the open drawer."""
     phase = timings.phase if timings is not None else (lambda _name: nullcontext())
     emit = timings.emit if timings is not None else (lambda _row: None)
     words = list(video_filter_words or ())
@@ -1737,40 +1740,65 @@ def collect_video_in_mode(
     with phase("collect_video_total"):
         with phase("collect_author_nickname"):
             author = author_in_feed(lines, ui.height)["text"].strip()
-        with phase("collect_description_time_location"):
-            try:
-                video = video_details(ui, lines, author)
-                ui.back()
-            except Exception:
-                # Fallback if work header in drawer is non-standard on a newly posted clip
-                if classify_page_state(ui.snapshot("drawer-recover"), ui.height) == "comment_drawer":
-                    ui.back()
-                preview = feed_video_preview(lines, ui.height)
-                video = {
-                    "authorNickname": author,
-                    "description": preview["captionPreview"] or author,
-                    "publishTimeText": None,
-                    "publishLocation": None,
-                }
-        matched = matched_words(video["description"], words)
-        if words and not matched:
-            emit({"kind": "videoFiltered", "author": author, "filterWords": words})
-            return None
+        preview = feed_video_preview(lines, ui.height)
+        needs_early_filter = bool(words) and not matched_words(preview["captionPreview"], words)
+
+        def _read_description_time_location(*, leave_open: bool):
+            with phase("collect_description_time_location"):
+                try:
+                    info, drawer_lines = open_video_details_drawer(
+                        ui, lines, author, for_comments=leave_open
+                    )
+                    if leave_open and drawer_state is not None:
+                        drawer_state["lines"] = drawer_lines
+                    else:
+                        ui.back()
+                    return info
+                except Exception:
+                    # Fallback if work header in drawer is non-standard on a newly posted clip
+                    recovered = ui.snapshot("drawer-recover")
+                    if classify_page_state(recovered, ui.height) == "comment_drawer":
+                        if (
+                            leave_open
+                            and drawer_state is not None
+                            and find_comment_drawer_heading(recovered, ui.height)
+                        ):
+                            drawer_state["lines"] = recovered
+                        else:
+                            ui.back()
+                    return {
+                        "authorNickname": author,
+                        "description": preview["captionPreview"] or author,
+                        "publishTimeText": None,
+                        "publishLocation": None,
+                    }
+
+        video = None
+        matched = []
+        if needs_early_filter:
+            video = _read_description_time_location(leave_open=False)
+            matched = matched_words(video["description"], words)
+            if not matched:
+                emit({"kind": "videoFiltered", "author": author, "filterWords": words})
+                return None
+
         video_url = None
         if copy_link:
             with phase("copy_share_link"):
                 try:
-                    video_url = copy_share_link(ui, ui.snapshot("feed"), previous_link=previous_link)
+                    video_url = copy_share_link(ui, lines, previous_link=previous_link)
                     if callable(on_link_copied) and video_url:
                         on_link_copied(video_url)
                 except ValueError as error:
                     emit({"kind": "shareLinkMissing", "author": author, "error": str(error)})
-                    back_to_video(ui, author, "share-recover")
+                    lines = back_to_video(ui, author, "share-recover")
         with phase("collect_author_profile"):
-            feed = ui.snapshot("before-author")
-            target = author_in_feed(feed, ui.height)
+            target = author_in_feed(lines, ui.height)
             ui.click(target)
             author_lines = ui.snapshot("author-profile", author=author)
+            if classify_page_state(author_lines, ui.height) == "channels_feed":
+                ui.click(author_in_feed(author_lines, ui.height))
+                author_lines = ui.snapshot("author-profile", author=author)
             profile = parse_author(author_lines, author)
             expand = profile_bio_expand(author_lines, author)
             if expand:
@@ -1809,6 +1837,16 @@ def collect_video_in_mode(
                 for key in ("authorCertification", "authorIpLocation", "authorBio")
                 if profile.get(key) is None
             ]
+
+        if video is None:
+            video = _read_description_time_location(leave_open=keep_drawer_open)
+            matched = matched_words(video["description"], words)
+            if words and not matched:
+                if drawer_state is not None and drawer_state.pop("lines", None) is not None:
+                    ui.back()
+                emit({"kind": "videoFiltered", "author": author, "filterWords": words})
+                return None
+
         with phase("persist_video_draft"):
             payload = {**profile, **video, "returnVerified": True}
             payload["missingFields"] += [
@@ -1856,6 +1894,7 @@ def _process_open_video_item(
     preview = feed_video_preview(lines, ui.height)
     video_event = None
     options = collect_options if isinstance(collect_options, dict) else {}
+    drawer_state: dict = {}
     if collect_video:
         video_event = call_with_captcha_pause(
             ui,
@@ -1872,13 +1911,20 @@ def _process_open_video_item(
             on_link_copied=(lambda url: options.__setitem__("previousLink", url))
             if isinstance(collect_options, dict)
             else None,
+            keep_drawer_open=bool(inspect_comments),
+            drawer_state=drawer_state,
         )
         if video_event is None:
             return {"filtered": True, "completedPurposes": [], "failedActions": [],
                     "author": preview["author"], "previewKey": preview["previewKey"],
                     "authorKey": preview["authorKey"], "sourceMode": source_mode}
-        if options.get("publishEvents") is not None:
-            options["publishEvents"]([video_event])
+        try:
+            if options.get("publishEvents") is not None:
+                options["publishEvents"]([video_event])
+        except BaseException:
+            if drawer_state.pop("lines", None) is not None:
+                ui.back()
+            raise
     else:
         work_key = compute_work_key(author=preview["author"], title=preview["captionPreview"] or preview["author"])
         video_event = {
@@ -1894,6 +1940,7 @@ def _process_open_video_item(
 
     comments_report = None
     if inspect_comments:
+        open_drawer_lines = drawer_state.pop("lines", None)
         comments_report = call_with_captcha_pause(
             ui,
             collect_visible_comments,
@@ -1904,6 +1951,7 @@ def _process_open_video_item(
             **mode_comment_limits(comment_options),
             comment_filter_words=options.get("commentFilterWords") or (),
             publish_events=options.get("publishEvents"),
+            initial_drawer_lines=open_drawer_lines,
         )
 
     interaction_report = None

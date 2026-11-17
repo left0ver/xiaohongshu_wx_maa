@@ -6,7 +6,7 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, nullcontext
 from difflib import SequenceMatcher
 
 from collection import (
@@ -993,6 +993,7 @@ def collect_visible_comments(
     max_profiles=2,
     comment_filter_words=(),
     publish_events=None,
+    initial_drawer_lines=None,
 ):
     """Read the comment drawer page by page.
 
@@ -1000,24 +1001,34 @@ def collect_visible_comments(
     counts commenter visits, whether or not the visit yields a profile.
     With filter words, only comments whose text contains one are saved.
     """
-    with timings.phase("collect_visible_comments"):
-        feed = ui.snapshot("feed")
-        for _ in range(2):
-            if not find(feed, r"^正在观看$|^私信$|^客服$|^基础信息$") and not any(
-                line["box"][1] > ui.height - 42 for line in feed
-            ):
-                break
-            ui.back()
-            feed = ui.snapshot("feed")
-        drawer_already_open = bool(find_comment_drawer_heading(feed, ui.height))
+    phase = timings.phase if timings is not None else (lambda _name: nullcontext())
+    with phase("collect_visible_comments"):
+        reuse_open_drawer = (
+            initial_drawer_lines is not None
+            and bool(find_comment_drawer_heading(initial_drawer_lines, ui.height))
+        )
         target = None
-        if not drawer_already_open:
-            target = comment_control_in_feed(feed, ui.height, ui)
-            if target is None:
-                raise ValueError("Comment control is missing")
-            ui.click(target)
+        drawer_already_open = reuse_open_drawer
+        if not reuse_open_drawer:
+            feed = ui.snapshot("feed")
+            for _ in range(2):
+                if not find(feed, r"^正在观看$|^私信$|^客服$|^基础信息$") and not any(
+                    line["box"][1] > ui.height - 42 for line in feed
+                ):
+                    break
+                ui.back()
+                feed = ui.snapshot("feed")
+            drawer_already_open = bool(find_comment_drawer_heading(feed, ui.height))
+            if not drawer_already_open:
+                target = comment_control_in_feed(feed, ui.height, ui)
+                if target is None:
+                    raise ValueError("Comment control is missing")
+                ui.click(target)
         try:
-            lines = feed if drawer_already_open else ui.snapshot("comments")
+            if reuse_open_drawer:
+                lines = initial_drawer_lines
+            else:
+                lines = feed if drawer_already_open else ui.snapshot("comments")
             parent_id = video_event["event_id"]
             collected = {}
             aliases = {}
@@ -1179,7 +1190,7 @@ def collect_visible_comments(
                             )
                             continue
                         try:
-                            with timings.phase("collect_commenter_profile"):
+                            with phase("collect_commenter_profile"):
                                 prof = inspect_commenter_profile(ui, live_match)
                                 lines = ui.snapshot("comments-return")
                                 if user_card_open(lines, ui.height) or not find_comment_drawer_heading(lines, ui.height) and (
@@ -1282,7 +1293,7 @@ def collect_visible_comments(
             resolve_reply_targets(ordered_comments, profiles)
             read_count = len(ordered_comments)
             ordered_comments = filter_comments(ordered_comments, comment_filter_words, complete)
-            with timings.phase("persist_comment_drafts"):
+            with phase("persist_comment_drafts"):
                 events = save_comments(path, video_event, ordered_comments)
                 user_events = save_users(path, events, profiles)
 

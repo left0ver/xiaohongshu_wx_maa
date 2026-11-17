@@ -445,10 +445,18 @@ def classify_page_state(lines, height=1605):
     except ValueError:
         pass
 
+    bottom_actions = [
+        l
+        for l in lines
+        if l["box"][1] > height - 130
+        and l["box"][0] >= 320
+        and re.fullmatch(r"(?:转发|赞|喜欢|收藏|推荐|评论|\d+(?:\.\d+)?[万wW]?)", l["text"].strip())
+    ]
     if (
-        find(lines, r"^推荐$", lambda l: l["box"][1] < 220)
-        and find(lines, r"^关注$", lambda l: l["box"][1] < 220)
-    ) or find(lines, r"^(?:转发|赞|收藏)$", lambda l: l["box"][1] > height - 120):
+        (find(lines, r"^推荐$", lambda l: l["box"][1] < 220) and find(lines, r"^关注$", lambda l: l["box"][1] < 220))
+        or find(lines, r"^(?:转发|赞|收藏)$", lambda l: l["box"][1] > height - 120)
+        or len(bottom_actions) >= 3
+    ):
         return "channels_feed"
 
     grid_counts = [
