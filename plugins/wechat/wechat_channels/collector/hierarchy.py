@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 
 from collection import author_in_feed, find, parse_author, parse_basic_info, parse_video, profile_bio_expand
-from layout import LABELS, is_comment_drawer_heading, label_values, reading_rows, work_region
+from layout import LABELS, WorkHeaderMissing, find_comment_drawer_heading, is_comment_drawer_heading, label_values, reading_rows, work_region
 
 PACKAGE = "com.tencent.mm"
 
@@ -19,12 +19,18 @@ class HierarchyUnavailable(ValueError):
 # the tree above the feed, and the order of these siblings differs between
 # devices, so the visible layer is chosen by kind: feed < drawer < other sheet.
 FEED_LAYER, FEED_PAGER, DRAWER_LAYER = "nsv", "jlt", "ean"
-# Containers WeChat draws without exposing their text. Their bounds limit OCR
-# to the field; observed in WeChat 8.0.79/8.0.80 (2026-11-11).
+# Controls whose resource-id carries known drawn text directly without OCR.
+DIRECT_TEXT_CONTROLS = {
+    "kr": "广告",
+    "lz3": "回复",
+}
+# Containers WeChat draws without exposing their text in AccessibilityNodeInfo.
+# Containers that expose text children (e.g. c6d -> c1_) use pure controls first
+# and only fall back to container OCR when no text child is present.
 TEXT_CONTAINERS = {
-    "c6d": "comment-body", "kp7": "reply-expander", "kr": "ad-label", "dzo": "feed-author",
-    "fzm": "profile-name", "fxa": "certification", "fy7": "bio", "fy8": "bio",
-    "fyk": "follow-button", "mld": "message-button", "lz3": "reply-button",
+    "c6d": "comment-body", "mvg": "reply-expander", "i0q": "reply-expander",
+    "dzo": "feed-author", "fzm": "profile-name", "fxa": "certification",
+    "fy7": "bio", "fy8": "bio", "fyk": "follow-button", "mld": "message-button",
 }
 # Descriptions that name an icon rather than repeat drawn text. OCR never sees
 # them, so they are kept for locating controls but not offered as page text.
@@ -120,6 +126,7 @@ def text_lines(xml, width, height, containers=False):
         raise HierarchyUnavailable("Incomplete hierarchy document") from error
     lines, holes = [], []
     hidden = {id(node) for layer in covered_layers(root, width, height) for node in layer.iter("node")}
+    parent_map = {child: parent for parent in root.iter("node") for child in parent}
     drawer_scroll_forward = _drawer_scroll_forward(root, hidden, width, height)
     scaled_height = round(height * 720 / width)
     for node in root.iter("node"):
@@ -138,11 +145,16 @@ def text_lines(xml, width, height, containers=False):
                                        "resource": resource, "class": node.get("class")}})
             continue
         descendants = [child for child in node.iter("node") if child is not node]
-        kind = TEXT_CONTAINERS.get(_resource(node))
-        # A bio control can hold only its first lines, so it is always read
-        # with OCR as well; fill_containers keeps the more complete reading.
+        res_id = _resource(node)
+        mld_direct = res_id == "mld" and node.get("content-desc", "").strip() == "私信按钮"
+        kind = None if mld_direct else TEXT_CONTAINERS.get(res_id)
+        # A bio control can hold only its first lines, so it is read with OCR on
+        # full profile reads as well; fill_containers keeps the more complete reading.
         if kind and (kind == "bio" or not any(child.get("text", "").strip() for child in descendants)):
-            holes.append({"text": "", "container": kind, "box": _scaled(box, width), "source": "hierarchy"})
+            hole_box = _scaled(box, width)
+            if kind == "reply-expander" and hole_box[0] < 88 and hole_box[2] > 400:
+                hole_box = [88, hole_box[1], 320, hole_box[3]]
+            holes.append({"text": "", "container": kind, "box": hole_box, "source": "hierarchy"})
         text = node.get("text", "").strip()
         if text and descendants:
             child_text = "".join(child.get("text", "").strip() for child in descendants)
@@ -151,11 +163,19 @@ def text_lines(xml, width, height, containers=False):
         # Container descriptions can summarize children and duplicate whole
         # pages; only a container without labelled descendants speaks for itself.
         attribute = "text"
-        if not text and not any(child.get("text", "").strip()
-                                or child.get("content-desc", "").strip() not in ("", *ICON_DESCRIPTIONS)
-                                for child in descendants):
+        if mld_direct and not text:
             attribute = "content-desc"
-            text = node.get(attribute, "").strip()
+            text = "私信"
+        elif not text and not any(child.get("text", "").strip()
+                                  or child.get("content-desc", "").strip() not in ("", *ICON_DESCRIPTIONS)
+                                  for child in descendants):
+            desc_text = node.get("content-desc", "").strip()
+            if desc_text:
+                attribute = "content-desc"
+                text = desc_text
+            elif res_id in DIRECT_TEXT_CONTROLS:
+                attribute = "resource-id"
+                text = DIRECT_TEXT_CONTROLS[res_id]
         if not text:
             continue
         if re.search(r"请完成.*验证|拖动滑块|安全验证|验证码", text):
@@ -172,10 +192,19 @@ def text_lines(xml, width, height, containers=False):
             line["selected"] = node.get("selected") == "true"
         if drawer_scroll_forward is not None and is_comment_drawer_heading(line, scaled_height):
             line["canScrollForward"] = drawer_scroll_forward
-        if _resource(node) == "bkl":
+        if res_id == "bkl":
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = _scaled(box, width)
-        if attribute == "content-desc" and text in ICON_DESCRIPTIONS:
+        if res_id == "kbf":
+            parent = parent_map.get(node)
+            if parent is not None and any(
+                (_resource(sib) == "ehq" or sib.get("content-desc", "").strip() == "视频号logo")
+                and sib.get("visible-to-user") != "false"
+                and (sb := _bounds(sib)) and sb[0] < sb[2] and sb[1] < sb[3]
+                for sib in parent if sib.tag == "node"
+            ):
+                line["hasChannelsBadge"] = True
+        if (attribute == "content-desc" and text in ICON_DESCRIPTIONS) or res_id == "a50":
             line["icon"] = True
         lines.append(line)
     if not lines:
@@ -386,12 +415,21 @@ def _feed_ready(lines, height, author):
 
 
 def _drawer_ready(lines, height, author):
-    work_region(lines)
-    return True
+    try:
+        work_region(lines)
+        return True
+    except WorkHeaderMissing:
+        return bool(find_comment_drawer_heading(lines, height)) and len(lines) >= 4
 
 
 def _profile_ready(lines, height, author):
     parse_author(lines, author or "")
+    return True
+
+
+def _profile_follow_ready(lines, height, author):
+    from interactions import profile_follow_state
+    profile_follow_state(lines)
     return True
 
 
@@ -493,20 +531,51 @@ def _chat_search_ready(lines, height, author):
 
 
 def _chat_ready(lines, height, author):
-    return bool(_edit_box(lines) or find(lines, r"^发送$|可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息"))
+    return bool(
+        _edit_box(lines)
+        or find(
+            lines,
+            r"^发送$|可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息"
+            r"|设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息"
+            r"|无法发送私信|暂无法接收私信|频繁发送私信|私信.{0,8}频繁|请明天再试|私信.{0,8}达到.{0,8}上限",
+        )
+    )
 
 
-# Pages read from controls, with OCR limited to empty text containers. Each
-# check is the parser the flow applies next; a page that fails it, or a label
-# not listed here, is read with full-screen OCR as before.
+def _link_video_ready(lines, height, author):
+    if _chat_ready(lines, height, author):
+        return True
+    try:
+        author_in_feed(lines, height)
+        return True
+    except ValueError:
+        from interactions import classify_page_state
+        if classify_page_state(lines, height) != "channels_feed" and find(
+            lines, r"^(?:返回|关闭|更多|正在加载.*|复制链接|在默认浏览器中打开)$"
+        ):
+            return True
+        return False
+
+
+def _composer_or_drawer_ready(lines, height, author):
+    from interactions import classify_page_state
+    if classify_page_state(lines, height) == "composer_overlay" or _edit_box(lines):
+        return True
+    return _comments_ready(lines, height, author)
+
+
+# Pages read from controls, with OCR limited to empty text containers that the
+# label actually consumes. Each check is the parser the flow applies next; a
+# page that fails it, or a label not listed here, falls back to full-screen OCR.
 CONTROL_PAGES = {
     "navigation-bottom": _navigation_ready, "navigation-top": _navigation_ready,
     **dict.fromkeys(("tab-check-", "tab-after-loc-", "tab-switched-", "tab-switched-loc-",
-                     "verify-stage-recommend", "verify-stage-friends", "verify-stage-follow", "verify-stage-city"),
-                    _page_state("channels_feed")),
-    **dict.fromkeys(("feed", "before-author", "feed-after-collect", "feed-after-like", "feed-after-author-touch",
+                     "verify-stage-recommend", "verify-stage-friends", "verify-stage-follow", "verify-stage-city",
+                     "feed-after-collect", "feed-after-like", "feed-after-author-touch",
                      "feed-after-author-touch-retry", "feed-before-personal", "profile-first-work",
-                     "profile-first-work-retry", "search-opened-video-", "preemptive-feed-",
+                     "profile-first-work-retry", "share-feed"),
+                    _page_state("channels_feed")),
+    **dict.fromkeys(("feed", "before-author", "search-opened-video-", "preemptive-feed-",
                      "recommend-feed-", "friends-feed-", "follow-feed-", "city-feed-",
                      "recommend-recovered-", "friends-recovered-", "follow-recovered-", "city-recovered-"),
                     _feed_ready),
@@ -515,20 +584,24 @@ CONTROL_PAGES = {
     **dict.fromkeys(("comments", "comments-check", "comments-expanded", "comments-replies", "comments-return",
                      "comments-after-skip", "comments-recover", "comments-after-like", "comments-after-post",
                      "comments-after-reply", "comments-after-profile-touch", "comments-after-profile-touch-retry",
-                     "comments-after-user-card", "comments-preemptive-start", "comments-composer", "comments-typed",
-                     "comments-reply-composer", "comments-reply-typed", "drawer-recover", "comments-locate-",
+                     "comments-after-user-card", "comments-preemptive-start", "drawer-recover", "comments-locate-",
                      # Scrolled pages (comments-page-N, comments-page-N-back) must be read like the
                      # return check reads them, or the two readings of one comment cannot match.
                      "comments-page-"), _comments_ready),
-    **dict.fromkeys(("author-profile", "author-profile-touch", "author-profile-touch-retry", "profile-touch",
-                     "profile-follow-check", "profile-after-follow", "profile-grid", "profile-after-first-work",
-                     "profile-after-first-work-retry", "commenter-profile-before-more"), _profile_ready),
+    **dict.fromkeys(("comments-composer", "comments-typed", "comments-reply-composer", "comments-reply-typed"),
+                    _composer_or_drawer_ready),
+    **dict.fromkeys(("author-profile", "author-profile-touch", "author-profile-touch-retry",
+                     "commenter-profile-before-more"), _profile_ready),
+    **dict.fromkeys(("profile-touch", "profile-follow-check", "profile-after-follow", "profile-grid"),
+                    _profile_follow_ready),
+    **dict.fromkeys(("profile-after-first-work", "profile-after-first-work-retry"),
+                    _page_state("user_profile")),
     "commenter-profile": _profile_or_card_ready,
     "profile-menu": _menu_ready, "commenter-profile-menu": _menu_ready,
     **dict.fromkeys(("author-basic-info", "author-basic-info-retry", "author-basic-info-ready"), _basic_info_ready),
     **dict.fromkeys(("interact-start", "resume-check", "resume-clean-", "messages-start", "messages-return-check",
                      "messages-return-", "preemptive-restore-check", "recover-check-", "recover-after-captcha-",
-                     "recover-"), _known_page),
+                     "recover-", "share-return-", "share-recover-"), _known_page),
     "personal-page": _page_state("personal_page"),
     **dict.fromkeys(("messages-center", "messages-comments", "messages-after-like", "messages-after-reply"),
                     _page_state("channels_message_center")),
@@ -541,19 +614,67 @@ CONTROL_PAGES = {
     **dict.fromkeys(("search-filter-panel", "search-filter-panel-reopen", "search-filter-after-"), _search_filter_ready),
     **dict.fromkeys(("search-duration-sheet", "search-scope-sheet"), _search_sheet_ready),
     **dict.fromkeys(("share-sheet", "share-sheet-scrolled"), _share_sheet_ready),
-    "share-closed": _known_page, "share-link-paste": _search_box_ready, "share-feed": _feed_ready,
+    "share-closed": _known_page, "share-link-paste": _search_box_ready,
     "share-paste-drawer": _comments_ready, "share-link-paste-composer": _chat_ready, "share-link-cleared": _chat_ready,
-    **dict.fromkeys(("share-return-", "share-recover-"), _feed_or_search_ready),
     "link-after-dm-": _known_page,
     **dict.fromkeys(("link-home", "link-home-"), _home_ready),
     **dict.fromkeys(("link-search", "link-search-typed"), _chat_search_ready),
     **dict.fromkeys(("link-chat", "link-chat-typed", "link-chat-sent", "dm-chat", "dm-chat-typed", "dm-chat-sent",
                      "dm-chat-after-notice", "link-chat-after-notice"), _chat_ready),
-    **dict.fromkeys(("link-video", "link-video-"), _feed_ready),
+    "link-video": _feed_ready,
+    "link-video-": _link_video_ready,
 }
 
 # Labels that intentionally inspect visual overlays or system dialogs via full-screen OCR.
 OCR_ONLY_LABELS = ("captcha-poll-", "location-modal-check", "probe")
+
+_FEED_AUTHOR_LABELS = (
+    "feed", "before-author", "search-opened-video-", "preemptive-feed-",
+    "recommend-feed-", "friends-feed-", "follow-feed-", "city-feed-",
+    "recommend-recovered-", "friends-recovered-", "follow-recovered-", "city-recovered-",
+    "link-video", "link-video-", "resume-check",
+)
+_FULL_PROFILE_LABELS = (
+    "author-profile", "author-profile-touch", "author-profile-touch-retry",
+    "commenter-profile", "commenter-profile-before-more",
+)
+_FOLLOW_PROFILE_LABELS = (
+    "profile-follow-check", "profile-after-follow", "profile-touch", "profile-grid",
+)
+_REPLY_EXPAND_DRAWER_LABELS = (
+    "comments", "comments-page-", "comments-replies", "comments-expanded",
+    "comments-return", "comments-after-skip", "comments-recover",
+)
+_BODY_ONLY_DRAWER_LABELS = (
+    "video-details", "expanded-description", "comments-preemptive-work-header",
+    "comments-preemptive-work-expanded", "comments-check", "comments-after-like",
+    "comments-after-post", "comments-after-reply", "comments-after-profile-touch",
+    "comments-after-profile-touch-retry", "comments-after-user-card",
+    "comments-preemptive-start", "comments-locate-", "drawer-recover", "share-paste-drawer",
+)
+
+
+def _matches_any(label, entries):
+    return any(label == entry or (entry.endswith("-") and label.startswith(entry)) for entry in entries)
+
+
+def _needed_containers(label, lines, height):
+    """Return the custom-drawn container kinds required by `label`, skipping unneeded OCR."""
+    if _matches_any(label, _FEED_AUTHOR_LABELS):
+        return {"feed-author"}
+    if _matches_any(label, _FULL_PROFILE_LABELS):
+        if label == "commenter-profile":
+            from comments import user_card_open
+            if user_card_open(page_lines(lines), height):
+                return set()
+        return {"profile-name", "certification", "bio", "follow-button", "message-button"}
+    if _matches_any(label, _FOLLOW_PROFILE_LABELS):
+        return {"follow-button", "message-button"}
+    if _matches_any(label, _REPLY_EXPAND_DRAWER_LABELS):
+        return {"comment-body", "reply-expander"}
+    if _matches_any(label, _BODY_ONLY_DRAWER_LABELS):
+        return {"comment-body"}
+    return set()
 
 
 def page_check(label):
@@ -576,17 +697,25 @@ def complete_for(lines, label, height, author=None):
 
 
 def choose_snapshot(label, height, author, hierarchy, templates, ocr, regional_ocr=None):
-    """Controls first, OCR only inside their empty text containers, full OCR as the fallback."""
+    """Controls first, OCR only inside needed empty text containers, full OCR as fallback."""
     try:
         lines = hierarchy()
     except HierarchyUnavailable:
         lines = []
     if lines and page_check(label):
-        roi = container_roi(lines, height) if regional_ocr else None
-        filled = fill_containers(lines, regional_ocr(roi)) if roi else lines
+        needed = _needed_containers(label, lines, height)
+        scoped = [line for line in lines if not line.get("container") or line["container"] in needed]
+        roi = container_roi(scoped, height) if regional_ocr else None
+        filled = fill_containers(scoped, regional_ocr(roi)) if roi else scoped
         if complete_for(filled, label, height, author):
             source = "mixed" if any(line.get("filledContainer") for line in filled) else "hierarchy"
             return page_lines(filled), source
+        extra_roi = container_roi(lines, height) if regional_ocr and scoped != lines else None
+        if extra_roi and extra_roi != roi:
+            extra_filled = fill_containers(lines, regional_ocr(extra_roi))
+            if complete_for(extra_filled, label, height, author):
+                source = "mixed" if any(line.get("filledContainer") for line in extra_filled) else "hierarchy"
+                return page_lines(extra_filled), source
     # Keep this lazy: a successful semantic lookup must not take a screenshot.
     if label.startswith("navigation-"):
         matched = templates()

@@ -55,11 +55,13 @@ def main():
     if "--mode" in sys.argv:
         config = _load_flag_config(sys.argv, "--mode")
         try:
-            ui = phone_ui(root, run_dir)
-            if config.get("ensureFeed"):
-                ensure_feed(ui, launch=launch)
-            with timings.phase("run_mode"):
-                result = run_mode(ui, root, config, timings=timings)
+            with ExitStack() as stack:
+                exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
+                ui = phone_ui(root, run_dir, controls_exposed=exposed)
+                if config.get("ensureFeed"):
+                    ensure_feed(ui, launch=launch)
+                with timings.phase("run_mode"):
+                    result = run_mode(ui, root, config, timings=timings)
             (run_dir / "mode.json").write_text(
                 json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -81,15 +83,15 @@ def main():
             raise
     if "--collect" in sys.argv or "--link" in sys.argv:
         # The two App tasks of 2026-11-11, with controls exposed as the App does.
-        collect = "--collect" in sys.argv
-        config = _load_flag_config(sys.argv, "--collect" if collect else "--link")
-        if collect:
+        is_collect_flag = "--collect" in sys.argv
+        config = _load_flag_config(sys.argv, "--collect" if is_collect_flag else "--link")
+        if is_collect_flag:
             configure_upload(root / "data")
         try:
             with ExitStack() as stack:
                 exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
                 ui = phone_ui(root, run_dir, controls_exposed=exposed)
-                if collect:
+                if is_collect_flag:
                     ensure_feed(ui, launch=True)
                     result = run_collection_task(ui, root, config, timings=timings)
                     name, kind = "collection.json", "collectionCompleted"
@@ -102,7 +104,7 @@ def main():
                           "endReason": result.get("endReason")})
             return
         except Exception as error:
-            timings.emit({"kind": "collectionCompleted" if collect else "linkTaskCompleted",
+            timings.emit({"kind": "collectionCompleted" if is_collect_flag else "linkTaskCompleted",
                           "outcome": "failed", "error": str(error)})
             raise
     if "--interact" in sys.argv:
@@ -127,21 +129,23 @@ def main():
             timings.emit({"kind": "interactionsCompleted", "outcome": "failed", "error": str(error)})
             raise
     try:
-        ui = phone_ui(root, run_dir)
-        event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
-        (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
-        if "--comments" in sys.argv:
-            # Optional JSON after --comments uses the task-option keys, e.g. {"maxPages": "20"} or {"unlimited": true}.
-            limits = comment_limits(_load_flag_config(sys.argv, "--comments"))
-            timings.emit({"kind": "commentLimits", **limits})
-            comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings, **limits)
-            (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
-            timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
-                          "userCount": len(comments.get("userEvents", [])),
-                          "profilesVisited": len(comments.get("profiles", [])),
-                          "skippedProfiles": len(comments.get("skippedProfiles", [])),
-                          "coverage": comments["coverage"], "complete": comments["complete"],
-                          "pagesRead": comments["pagesRead"], "endReason": comments.get("endReason")})
+        with ExitStack() as stack:
+            exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
+            ui = phone_ui(root, run_dir, controls_exposed=exposed)
+            event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
+            (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
+            if "--comments" in sys.argv:
+                # Optional JSON after --comments uses the task-option keys, e.g. {"maxPages": "20"} or {"unlimited": true}.
+                limits = comment_limits(_load_flag_config(sys.argv, "--comments"))
+                timings.emit({"kind": "commentLimits", **limits})
+                comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings, **limits)
+                (run_dir / "comments.json").write_text(json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+                timings.emit({"kind": "commentsCollected", "count": len(comments["events"]),
+                              "userCount": len(comments.get("userEvents", [])),
+                              "profilesVisited": len(comments.get("profiles", [])),
+                              "skippedProfiles": len(comments.get("skippedProfiles", [])),
+                              "coverage": comments["coverage"], "complete": comments["complete"],
+                              "pagesRead": comments["pagesRead"], "endReason": comments.get("endReason")})
         timings.emit({"kind": "runCompleted", "outcome": "succeeded", "eventId": event["event_id"]})
     except Exception as error:
         timings.emit({"kind": "runCompleted", "outcome": "failed", "error": str(error)})

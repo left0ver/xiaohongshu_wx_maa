@@ -81,16 +81,26 @@ public final class UiDump {
                 xml.startDocument("UTF-8", true);
                 xml.startTag("", "hierarchy");
                 root.refresh();
-                write(xml, root, 0);
-                // Some devices first expose an empty active-root placeholder.
-                // Try only active windows, never a background app's tree.
-                if (emitted == 0) {
+                write(xml, root, 0, false);
+                String rootPkg = text(root.getPackageName());
+                boolean hasTargetApp = "com.tencent.mm".equals(rootPkg) || "com.xingin.xhs".equals(rootPkg);
+                // Some devices first expose an empty active-root placeholder, or focus an
+                // IME window while WeChat/Xiaohongshu remains the visible application window.
+                if (emitted == 0 || !hasTargetApp) {
                     for (AccessibilityWindowInfo window : automation.getWindows()) {
                         try {
-                            if (!window.isActive()) continue;
+                            boolean includeActive = emitted == 0 && window.isActive();
+                            boolean includeAppBehindIme = !hasTargetApp
+                                && window.getType() == AccessibilityWindowInfo.TYPE_APPLICATION;
+                            if (!includeActive && !includeAppBehindIme) continue;
                             AccessibilityNodeInfo windowRoot = window.getRoot();
                             if (windowRoot != null) {
-                                try { write(xml, windowRoot, 0); } finally { windowRoot.recycle(); }
+                                try {
+                                    String winPkg = text(windowRoot.getPackageName());
+                                    if (includeActive || "com.tencent.mm".equals(winPkg) || "com.xingin.xhs".equals(winPkg)) {
+                                        write(xml, windowRoot, 0, false);
+                                    }
+                                } finally { windowRoot.recycle(); }
                             }
                         } finally { window.recycle(); }
                     }
@@ -153,7 +163,7 @@ public final class UiDump {
                 if (edits.isEmpty()) {
                     for (AccessibilityWindowInfo window : automation.getWindows()) {
                         try {
-                            if (!window.isActive()) continue;
+                            if (!window.isActive() && window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) continue;
                             AccessibilityNodeInfo windowRoot = window.getRoot();
                             if (windowRoot != null) {
                                 try { collectEdits(windowRoot, edits, 0); } finally { windowRoot.recycle(); }
@@ -281,20 +291,25 @@ public final class UiDump {
         return value == null ? "" : value.toString();
     }
 
-    private static void write(XmlSerializer xml, AccessibilityNodeInfo node, int depth) throws Exception {
+    private static void write(XmlSerializer xml, AccessibilityNodeInfo node, int depth, boolean insideVisibleCommentBody) throws Exception {
         if (depth > 80 || ++count > 10000) throw new IllegalStateException("Hierarchy limit exceeded");
         Rect box = new Rect();
         node.getBoundsInScreen(box);
+        String resourceId = text(node.getViewIdResourceName());
         // Some vendor containers are invisible/empty while their descendants
-        // are visible. Filter the container itself, never prune its subtree.
-        boolean visible = node.isVisibleToUser() && !box.isEmpty();
+        // are visible. WeChat also keeps full comment text in c1_ (marked
+        // visibleToUser=false) inside a visible c6d comment-body container.
+        boolean visible = !box.isEmpty() && (node.isVisibleToUser()
+            || (insideVisibleCommentBody && "com.tencent.mm:id/c1_".equals(resourceId)));
+        boolean childInsideCommentBody = insideVisibleCommentBody
+            || (visible && "com.tencent.mm:id/c6d".equals(resourceId));
         if (visible) {
             emitted++;
             xml.startTag("", "node");
             xml.attribute("", "text", node.isPassword() ? "" : text(node.getText()));
             xml.attribute("", "hint", node.isPassword() ? "" : text(node.getHintText()));
             xml.attribute("", "content-desc", node.isPassword() ? "" : text(node.getContentDescription()));
-            xml.attribute("", "resource-id", text(node.getViewIdResourceName()));
+            xml.attribute("", "resource-id", resourceId);
             xml.attribute("", "class", text(node.getClassName()));
             xml.attribute("", "package", text(node.getPackageName()));
             xml.attribute("", "bounds", "[" + box.left + "," + box.top + "][" + box.right + "," + box.bottom + "]");
@@ -311,7 +326,7 @@ public final class UiDump {
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child == null) continue;
-            try { write(xml, child, depth + 1); } finally { child.recycle(); }
+            try { write(xml, child, depth + 1, childInsideCommentBody); } finally { child.recycle(); }
         }
         if (visible) xml.endTag("", "node");
     }

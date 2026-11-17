@@ -423,6 +423,11 @@ def classify_page_state(lines, height=1605):
 
     if find(lines, r"^(?:[√✓]?)\s*(?:已关注|互相关注|申请关注|关注)$") and find(lines, r"^(?:私信|客服)$"):
         return "user_profile"
+    if find(lines, r"^(?:私信|客服)$") and (
+        find(lines, r"^\d+(?:\.\d+)?[万wW]?\s*条原创内容$")
+        or find(lines, r"^主页$")
+    ):
+        return "user_profile"
 
     if find(lines, r"^设置$", lambda l: l["box"][0] > 520 and l["box"][1] > height * 0.55):
         return "user_card_overlay"

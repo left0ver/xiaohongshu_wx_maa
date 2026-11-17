@@ -143,9 +143,11 @@ def _is_ad_row(row):
 
 
 def _header_name_box(row, nickname):
-    """Construct a safe click target over the first character of the commenter's nickname."""
+    """Construct a safe click target over the commenter's nickname."""
     left_items = [item for item in row["items"] if item["box"][0] < 450]
     first = left_items[0] if left_items else row["items"][0]
+    if first.get("selector", {}).get("resource", "").endswith("/kbf"):
+        return list(first["box"])
     x, y, w, h = first["box"]
     return [x, y, min(w, 32), h]
 
@@ -253,6 +255,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         if not raw_nick:
             continue
         nickname, has_badge = clean_comment_nickname(raw_nick)
+        has_badge = has_badge or any(item.get("hasChannelsBadge") for item in pieces)
         if not nickname:
             continue
         level = 1 if left <= 140 else 2

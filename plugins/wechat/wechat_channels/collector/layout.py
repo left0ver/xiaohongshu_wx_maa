@@ -123,9 +123,11 @@ def comment_row(row, previous, following, height):
     region = re.search(f"(?:{REGION})$", prefix)
     # A timestamp alone (often part of the work's prose) is insufficient.
     author_and_region = bool(region and prefix[:region.start()])
-    actions = any(item["box"][0] > 570
-                  and re.fullmatch(r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+", item["text"].strip())
-                  for item in row["items"])
+    actions = any(
+        (item["box"][0] > 570 and re.fullmatch(r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+", item["text"].strip()))
+        or item.get("selector", {}).get("resource", "").endswith("/c85")
+        for item in row["items"]
+    )
     return author_and_region and actions and row["top"] - previous["bottom"] >= height * 0.5
 
 

@@ -133,8 +133,8 @@ class MaaUi:
         path = Path(__file__).resolve().parents[1] / "resource/base/pipeline/collect-video.json"
         self.nodes = json.loads(path.read_text(encoding="utf-8"))
 
-    # vivo V2131A needs 1.5-3.1 s for a dump and sometimes over 4 s on profiles.
-    def hierarchy(self, timeout=6, force=False):
+    # vivo V2131A needs 1.5-3.1 s for a dump and ~4-5.8 s on large drawers/profiles.
+    def hierarchy(self, timeout=8, force=False):
         if self.tasker.stopping:
             raise InterruptedError("Collection was stopped")
         if self.hierarchy_unavailable and not force:
@@ -160,7 +160,7 @@ class MaaUi:
         if self.tasker.stopping:
             raise InterruptedError("Collection was stopped")
         try:
-            foreground(timeout=max(0.01, deadline - time.monotonic()))
+            foreground(timeout=max(min(1.0, timeout), deadline - time.monotonic()))
         except subprocess.TimeoutExpired as error:
             raise HierarchyUnavailable("Hierarchy foreground confirmation timed out") from error
         try:
@@ -266,18 +266,26 @@ class MaaUi:
                 attempt["durationMs"] = (time.monotonic_ns() - started) // 1_000_000
                 attempts.append(attempt)
 
+        def read_hierarchy():
+            raw = measured("hierarchy", self.hierarchy)
+            tabs = self.message_tabs(label, raw, measured)
+            return [*raw, *self.annotate(tabs, "template")] if tabs else raw
+
         lines, source = choose_snapshot(label, self.height, author,
-            lambda: measured("hierarchy", self.hierarchy),
+            read_hierarchy,
             lambda: measured("template", lambda: self.template_navigation(label)),
             lambda: measured("ocr", lambda: self.ocr_snapshot(label)),
             regional_ocr=lambda roi: measured("ocr-region", lambda: self.ocr_snapshot(label, roi)))
+        if source == "hierarchy" and any(line.get("templateNode") for line in lines):
+            source = "mixed"
         corrected = sum(1 for line in lines if "ocrText" in line)
         if corrected:
             attempts.append({"source": "hierarchy-correction", "correctedLines": corrected})
-        tabs = self.message_tabs(label, lines, measured)
-        if tabs:
-            lines = [*lines, *self.annotate(tabs, "template")]
-            source = "mixed"
+        if source != "hierarchy":
+            tabs = self.message_tabs(label, lines, measured)
+            if tabs:
+                lines = [*lines, *self.annotate(tabs, "template")]
+                source = "mixed"
         self.record_snapshot(label, lines, source, attempts, author)
         return lines
 

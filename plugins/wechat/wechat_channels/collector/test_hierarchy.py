@@ -218,11 +218,97 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual([c["key"] for c in readings["comments-page-12"]],
                          [c["key"] for c in readings["comments-return"]])
 
-    def test_reply_button_is_an_ocr_container(self):
-        holes = [item for item in text_lines(tree(screen(label("狼王", "kbq", "[308,321][602,498]"),
-                                                         box("lz3", "[308,736][523,915]"))), 1620, 3612, containers=True)
-                 if item.get("container")]
-        self.assertEqual([hole["container"] for hole in holes], ["reply-button"])
+    def test_reply_ad_and_message_buttons_are_read_directly_from_controls(self):
+        xml = tree(screen(
+            label("狼王", "kbq", "[308,321][602,498]"),
+            box("lz3", "[308,736][523,915]"),
+            box("kr", "[1200,736][1380,810]"),
+            box("mld", "[800,1189][1400,1307]", **{"content-desc": "私信按钮"}),
+        ))
+        items = text_lines(xml, 1620, 3612, containers=True)
+        holes = [item for item in items if item.get("container")]
+        self.assertEqual(holes, [])
+        self.assertEqual(sorted(item["text"] for item in page_lines(items)), ["回复", "广告", "狼王", "私信"])
+        # Fallback: mld without content-desc still exposes message-button container for OCR.
+        fallback_items = text_lines(tree(screen(label("狼王", "kbq", "[308,321][602,498]"),
+                                                box("mld", "[800,1189][1400,1307]"))), 1620, 3612, containers=True)
+        self.assertEqual([h["container"] for h in fallback_items if h.get("container")], ["message-button"])
+
+    def test_comment_body_with_c1_child_uses_pure_controls_without_ocr(self):
+        from comments import parse_comment_drawer
+        xml = tree(screen(
+            layer("ean", sheet(
+                label("评论 12", "d4v", "[151,656][341,711]"),
+                label("楠霖27", "kbf", "[151,1277][271,1392]"),
+                label("", "ehq", "[238,1275][357,1394]", **{"content-desc": "视频号logo", "class": "android.widget.ImageView"}),
+                label("福建", "hgh", "[335,1309][411,1360]"),
+                label("11天前", "c85", "[427,1309][863,1360]"),
+                box("c6d", "[43,1371][1037,1478]",
+                    label("从灶台来看父亲不爱干活[Facepalm]", "c1_", "[151,1371][1037,1478]")),
+                label("6754", "aa0", "[885,1310][976,1361]"),
+                label("AI吕哥说#\xa0发表评论:", "c6v", "[151,2273][838,2391]", **{"class": "android.widget.EditText"}),
+            )),
+        ))
+        controls = text_lines(xml, 1080, 2408, containers=True)
+        regional, full = Mock(), Mock()
+        result, source = choose_snapshot("comments", 1605, None, lambda: controls, Mock(), full, regional_ocr=regional)
+        self.assertEqual(source, "hierarchy")
+        regional.assert_not_called()
+        full.assert_not_called()
+        parsed = parse_comment_drawer(result, 1605, parent_event_id="W1")
+        self.assertEqual(len(parsed["comments"]), 1)
+        self.assertEqual(parsed["comments"][0]["nickname"], "楠霖27")
+        self.assertEqual(parsed["comments"][0]["content"], "从灶台来看父亲不爱干活[Facepalm]")
+        self.assertTrue(parsed["comments"][0]["_hasChannelsBadge"])
+
+    def test_non_author_feed_and_return_labels_skip_container_ocr(self):
+        xml = tree(screen(layer("nsv",
+            label("关注", "tv1", "[260,120][360,200]"),
+            label("推荐", "tv2", "[540,120][640,200]", selected="true"),
+            box("dzo", "[0,2100][500,2260]"),
+            label("3967", "msm", "[782,2200][866,2260]"),
+        )))
+        controls = text_lines(xml, 1080, 2408, containers=True)
+        for snap_label in ("feed-after-like", "feed-after-collect", "tab-check-推荐", "share-return-1"):
+            with self.subTest(label=snap_label):
+                regional, full = Mock(), Mock()
+                _, source = choose_snapshot(snap_label, 1605, None, lambda: controls, Mock(), full, regional_ocr=regional)
+                self.assertEqual(source, "hierarchy")
+                regional.assert_not_called()
+                full.assert_not_called()
+
+    def test_profile_follow_and_return_scope_containers_minimally(self):
+        xml = tree(screen(sheet(
+            box("fzm", "[291,731][800,848]"),
+            label("浙江 杭州 男 ", "ov9", "[291,788][511,908]"),
+            label("13条原创内容", "fzr", "[54,1107][286,1151]"),
+            box("fyk", "[54,1189][529,1307]"),
+            box("mld", "[551,1189][1026,1307]", **{"content-desc": "私信按钮"}),
+        )))
+        controls = text_lines(xml, 1080, 2408, containers=True)
+        # profile-after-first-work succeeds with zero OCR via mld + fzr controls.
+        reg_ret, full_ret = Mock(), Mock()
+        _, src_ret = choose_snapshot("profile-after-first-work", 1605, None, lambda: controls, Mock(), full_ret, regional_ocr=reg_ret)
+        self.assertEqual(src_ret, "hierarchy")
+        reg_ret.assert_not_called()
+        full_ret.assert_not_called()
+        # profile-follow-check only crops the single fyk button, not fzm above it.
+        reg_fol = Mock(return_value=[line("已关注", 160, 815, 80, 34)])
+        full_fol = Mock()
+        _, src_fol = choose_snapshot("profile-follow-check", 1605, None, lambda: controls, Mock(), full_fol, regional_ocr=reg_fol)
+        self.assertEqual(src_fol, "mixed")
+        full_fol.assert_not_called()
+        roi_x, roi_y, roi_w, roi_h = reg_fol.call_args.args[0]
+        self.assertGreater(roi_y, 750)
+
+    def test_link_video_transitional_webview_skips_full_ocr(self):
+        webview = [control("关闭", 40, 90, 60, 34), control("更多", 630, 90, 60, 34)]
+        regional, full = Mock(), Mock()
+        chosen, source = choose_snapshot("link-video-1", 1605, None, lambda: webview, Mock(), full, regional_ocr=regional)
+        self.assertEqual(source, "hierarchy")
+        self.assertEqual(chosen, webview)
+        regional.assert_not_called()
+        full.assert_not_called()
 
     def test_failed_page_check_falls_back_to_full_ocr(self):
         known = [control("评论294", 27, 482, 160, 28)]

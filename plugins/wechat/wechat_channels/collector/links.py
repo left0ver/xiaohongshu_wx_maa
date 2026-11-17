@@ -285,7 +285,7 @@ def open_video_by_link(ui, link):
 
 
 def _profile_contact(ui, lines):
-    found = control(ui.controls_now(), r"^私信按钮$")
+    found = control(ui.controls_now(), r"^私信(?:按钮)?$")
     return found or find(lines, r"^私信$")
 
 
