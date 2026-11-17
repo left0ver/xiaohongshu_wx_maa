@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MAA 全流程任务执行与视觉解析调试台</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Top Navigation & Device Bar -->
+  <header class="topbar">
+    <div class="brand">
+      <span>⚡ MAA 全流程调试台</span>
+      <span class="brand-badge">WeChat Channels &amp; XHS</span>
+    </div>
+
+    <div class="topbar-controls">
+      <label style="color:var(--text-muted);font-size:12px;">设备:</label>
+      <select id="deviceSelect" title="连接的 ADB 手机">
+        <option value="">正在检测 ADB 设备...</option>
+      </select>
+      <div id="installedAppsBadges" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;"></div>
+
+      <label style="color:var(--text-muted);font-size:12px;">数据域:</label>
+      <select id="scopeSelect" title="手机端任务数据目录">
+        <option value="/data/local/tmp/wechat-channels-data">默认数据目录 (wechat-channels-data)</option>
+      </select>
+
+      <button class="btn btn-primary" id="btnLiveProbe" title="实时截取当前手机画面 + 导出控件树 + 运行全部解析器">
+        📸 抓取手机当前画面与控件
+      </button>
+      <button class="btn btn-amber" id="btnPushCode" title="将本地 collector/*.py 推送到手机 /data/local/tmp/wechat-channels-dev">
+        🚀 推送最新代码到手机
+      </button>
+      <button class="btn" id="btnRefreshAll" title="刷新设备与任务运行列表">
+        🔄 刷新
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Split Layout -->
+  <div class="layout">
+    <!-- Left Sidebar: Run Explorer -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="seg-tabs" id="sourceFilterTabs">
+          <button class="seg-tab active" data-source="all">全部来源</button>
+          <button class="seg-tab" data-source="adb">📱 手机端</button>
+          <button class="seg-tab" data-source="local">💻 本地数据</button>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="runSearchInput" placeholder="搜索 Run ID / 任务类型 / 关键词..." style="flex:1;" />
+          <select id="outcomeFilterSelect" style="width:82px;">
+            <option value="all">全部状态</option>
+            <option value="succeeded">✅ 成功</option>
+            <option value="failed">❌ 失败</option>
+          </select>
+        </div>
+      </div>
+      <div class="run-list" id="runListContainer">
+        <div style="padding:16px;color:var(--text-muted);text-align:center;">正在加载任务运行记录...</div>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <main class="workspace">
+      <div class="workspace-tabs">
+        <div class="nav-tabs" id="mainNavTabs">
+          <button class="nav-tab active" data-tab="tab-workflow">🧭 1. 全景流程与画面联调</button>
+          <button class="nav-tab" data-tab="tab-replay">🔬 2. 单步解析重放与热重载</button>
+          <button class="nav-tab" data-tab="tab-sqlite">🗄️ 3. 采集数据 / SQLite / 上报检视</button>
+          <button class="nav-tab" data-tab="tab-runner">🎮 4. 手机任务下发与控制台</button>
+        </div>
+        <div id="activeRunHeaderBadge" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-muted);">
+          未选择任务
+        </div>
+      </div>
+
+      <!-- TAB 1: Workflow Timeline & Visual Screen Inspector -->
+      <section class="tab-pane active" id="tab-workflow">
+        <div class="run-overview-bar" id="runOverviewBar">
+          <div class="run-kpi-row" id="runKpiRow">
+            <span style="color:var(--text-muted);">请从左侧列表选择一条任务运行记录，或点击顶部「📸 抓取手机当前画面与控件」开始调试。</span>
+          </div>
+          <div id="runErrorBanner" style="display:none;"></div>
+          <div class="stage-strip" id="stageWaterfallStrip"></div>
+        </div>
+
+        <div class="workbench">
+          <!-- Col 1: Step-by-Step Snapshot & Timing Timeline -->
+          <div class="wb-col">
+            <div class="col-header">
+              <span>⏱️ 执行步骤时间线 (<span id="stepCountLabel">0</span>)</span>
+              <div style="display:flex;gap:4px;">
+                <button class="btn btn-sm" id="btnPrevStep" title="上一步 (↑)">◀ 上一步</button>
+                <button class="btn btn-sm" id="btnNextStep" title="下一步 (↓)">下一步 ▶</button>
+              </div>
+            </div>
+            <div class="col-body" id="stepTimelineList"></div>
+          </div>
+
+          <!-- Col 2: Interactive 720xH Screen & Box Overlay Canvas -->
+          <div class="wb-col">
+            <div class="canvas-toolbar">
+              <div class="layer-checks">
+                <label><input type="checkbox" id="chkLayerLines" checked /><span>原始框(Lines)</span></label>
+                <label><input type="checkbox" id="chkLayerSemantic" checked /><span>语义解析框</span></label>
+                <label><input type="checkbox" id="chkLayerClicks" checked /><span>点击锚点(x+16)</span></label>
+                <label><input type="checkbox" id="chkLayerRoi" checked /><span>ROI</span></label>
+                <label><input type="checkbox" id="chkLayerText" checked /><span>文字标签</span></label>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span id="cursorCoordLabel" style="font-family:var(--font-mono);color:var(--accent);">X: - , Y: -</span>
+                <select id="canvasZoomSelect" title="画布缩放比例">
+                  <option value="0.45">45%</option>
+                  <option value="0.55" selected>55%</option>
+                  <option value="0.7">70%</option>
+                  <option value="0.85">85%</option>
+                  <option value="1">100%</option>
+                </select>
+              </div>
+            </div>
+            <div class="canvas-stage">
+              <div class="phone-frame-wrap">
+                <canvas id="screenCanvas" width="396" height="880"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Col 3: Step Metadata, Selected Box & Lines Inspector -->
+          <div class="wb-col">
+            <div class="col-header">
+              <span>🔍 步骤与识别框检视器</span>
+              <button class="btn btn-sm btn-primary" id="btnQuickHotReplay" title="热重载本地 Python 解析器并重跑当前步">
+                🔥 热重载重跑
+              </button>
+            </div>
+            <div class="col-body">
+              <div class="inspector-card" id="stepSummaryCard">
+                <h4>📌 当前快照状态判定</h4>
+                <div id="stepSummaryContent" style="color:var(--text-muted);">未选择步骤</div>
+              </div>
+
+              <div class="inspector-card" id="selectedBoxCard">
+                <h4>
+                  <span>🎯 选中识别框 / 控件详情</span>
+                  <button class="btn btn-sm" id="btnCopyBoxAssert" style="display:none;">复制断言</button>
+                </h4>
+                <div id="selectedBoxContent" style="color:var(--text-muted);font-size:11.5px;">
+                  在中间画布点击任意识别框，或在下方表格点击某一行查看详细属性。
+                </div>
+              </div>
+
+              <div class="inspector-card" style="padding:8px;">
+                <h4>
+                  <span>📋 识别行列表 (Lines: <span id="linesCountBadge">0</span>)</span>
+                  <input type="text" id="lineFilterInput" placeholder="过滤文本 / resource-id..." style="width:150px;padding:3px 6px;" />
+                </h4>
+                <div style="max-height:360px;overflow-y:auto;">
+                  <table class="data-table" id="linesTable">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>文本 (Text)</th>
+                        <th>坐标 [x,y,w,h]</th>
+                        <th>来源</th>
+                      </tr>
+                    </thead>
+                    <tbody id="linesTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Single-Step Parser Replay & Hot-Reload Lab -->
+      <section class="tab-pane" id="tab-replay">
+        <div class="pane-scroll">
+          <div class="inspector-card" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <strong>🔬 单步解析器实验室</strong>
+              <label style="color:var(--text-muted);">作者昵称提示 (author):</label>
+              <input type="text" id="replayAuthorInput" placeholder="自动推断或手动输入作者名..." style="width:170px;" />
+              <label style="color:var(--text-muted);">搜索词提示 (keyword):</label>
+              <input type="text" id="replayKeywordInput" placeholder="可选搜索关键词..." style="width:140px;" />
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-primary" id="btnRunHotReplay">
+                🔥 热重载 Collector 代码并重跑解析
+              </button>
+              <button class="btn" id="btnExportUnitTest">
+                📋 复制为 Python 单元测试用例
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-2" id="replayResultsGrid">
+            <div class="inspector-card">
+              <h4>1️⃣ 页面状态与异常检测 (classify_page_state / detect_abnormal_state)</h4>
+              <pre class="code-block" id="replayPageStatePre">选择任意快照后自动展示解析结果...</pre>
+            </div>
+            <div class="inspector-card">
+              <h4>2️⃣ 作品详情与字段证据 (parse_video / field_evidence)</h4>
+              <pre class="code-block" id="replayVideoPre">-</pre>
+            </div>
+            <div class="inspector-card">
+              <h4>3️⃣ 作者主页与基础信息 (parse_author / parse_basic_info)</h4>
+              <pre class="code-block" id="replayAuthorPre">-</pre>
+            </div>
+            <div class="inspector-card">
+              <h4>4️⃣ 评论抽屉解析与安全点击坐标 (parse_comment_drawer)</h4>
+              <pre class="code-block" id="replayCommentsPre">-</pre>
+            </div>
+            <div class="inspector-card">
+              <h4>5️⃣ 搜索结果双列卡片解析 (parse_search_video_cards)</h4>
+              <pre class="code-block" id="replaySearchCardsPre">-</pre>
+            </div>
+            <div class="inspector-card">
+              <h4>
+                <span>6️⃣ 自定义编辑 Lines JSON 在线沙盒验证</span>
+                <button class="btn btn-sm btn-amber" id="btnReplayCustomLines">▶️ 用下方 JSON 重跑解析</button>
+              </h4>
+              <textarea id="customLinesTextarea" rows="12" style="width:100%;font-family:var(--font-mono);font-size:11px;" placeholder="可在此直接修改当前快照的 lines 数组（如模拟 OCR 合并框、特殊字符、折叠文案等），点击右上角按钮立即验证解析逻辑！"></textarea>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: Collected Data, SQLite & Upload Batches Inspector -->
+      <section class="tab-pane" id="tab-sqlite">
+        <div class="pane-scroll">
+          <div id="sqliteAcceptanceBanner" class="inspector-card">
+            正在加载 SQLite 与上报数据...
+          </div>
+
+          <div class="grid-2">
+            <div>
+              <h3 style="margin:6px 0 10px 0;">🌳 本地 SQLite 实体关联树 (VIDEO → COMMENT → USER)</h3>
+              <div id="sqliteHierarchyContainer"></div>
+            </div>
+            <div>
+              <h3 style="margin:6px 0 10px 0;">📡 服务端流式上报批次 (uploads/ &amp; ACK 状态)</h3>
+              <div id="uploadBatchesContainer"></div>
+
+              <h3 style="margin:16px 0 10px 0;">📄 任务结果文件与配额账本 (Result JSONs &amp; Ledgers)</h3>
+              <div id="payloadFilesContainer"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: Live Device Task Runner & Console -->
+      <section class="tab-pane" id="tab-runner">
+        <div class="pane-scroll">
+          <div class="grid-2">
+            <div class="inspector-card">
+              <h4>🚀 在手机端下发执行调试任务 (run-phone.sh)</h4>
+              <div style="display:flex;flex-direction:column;gap:10px;">
+                <div>
+                  <label style="display:block;color:var(--text-muted);margin-bottom:4px;">选择任务模式:</label>
+                  <select id="runnerTaskMode" style="width:100%;">
+                    <option value="collect_channels">1. 综合采集任务 (--collect: 推荐/搜索/同城 + 评论 + 上报)</option>
+                    <option value="collect_comments">2. 单视频 + 评论区采集 (--comments)</option>
+                    <option value="collect_video">3. 单视频与作者资料采集 (默认入口)</option>
+                    <option value="interact">4. 作品与评论互动任务 (--interact)</option>
+                    <option value="link">5. 指定视频链接操作任务 (--link)</option>
+                    <option value="mode">6. 运行模式与筛选调度 (--mode)</option>
+                    <option value="test">7. 运行手机端单元测试套件 (--test)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style="display:block;color:var(--text-muted);margin-bottom:4px;">任务参数配置 (JSON):</label>
+                  <textarea id="runnerConfigTextarea" rows="8" style="width:100%;font-family:var(--font-mono);">{
+  "entry": "recommend",
+  "count": 1,
+  "videoFilter": "",
+  "commentFilter": "",
+  "commentOptions": {
+    "unlimited": false,
+    "visitProfiles": true,
+    "maxPages": 2,
+    "maxReplyExpansions": 1,
+    "maxProfiles": 2
+  }
+}</textarea>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <label><input type="checkbox" id="runnerDumpFrames" checked /> 开启 <code>WECHAT_DUMP_FRAMES=1</code> (每步自动保存 .npy 截图供画布叠加)</label>
+                  <label><input type="checkbox" id="runnerSyncCode" checked /> 启动前自动推送最新 <code>collector/*.py</code> 到手机</label>
+                  <label><input type="checkbox" id="runnerNoLaunch" /> <code>--no-launch</code> (不重置微信入口，直接在当前手机页面执行)</label>
+                </div>
+
+                <div style="display:flex;gap:8px;margin-top:4px;">
+                  <button class="btn btn-primary" id="btnStartDeviceTask">▶️ 立即在手机上启动任务</button>
+                  <button class="btn" id="btnRefreshTasks">🔄 刷新运行状态</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="inspector-card">
+              <h4>📺 手机端任务实时日志与进程监控</h4>
+              <div id="deviceTasksContainer" style="display:flex;flex-direction:column;gap:10px;">
+                <div style="color:var(--text-muted);">暂无通过调试台启动的任务进程。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toastBox"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
