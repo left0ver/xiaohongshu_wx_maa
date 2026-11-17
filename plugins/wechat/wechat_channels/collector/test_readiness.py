@@ -122,6 +122,52 @@ class ReadinessTests(unittest.TestCase):
                 wait_basic_info(Mock(side_effect=error), ocr)
             ocr.assert_not_called()
 
+    def test_semantic_probe_allows_vivo_dump_duration_without_premature_kill(self):
+        seen_timeouts = []
+
+        def vivo_dump(budget):
+            seen_timeouts.append(budget)
+            return INFO
+
+        ocr = Mock()
+        with Clock() as clock:
+            self.assertEqual(wait_basic_info(clock.taking(2.1, vivo_dump), ocr), (INFO, "hierarchy"))
+        self.assertGreaterEqual(seen_timeouts[0], 3.0)
+        ocr.assert_not_called()
+
+    def test_prepare_basic_info_skips_probe_subprocess_when_controls_are_exposed(self):
+        import types
+        import sys
+
+        fake_maa = {
+            "numpy": types.ModuleType("numpy"),
+            "maa": types.ModuleType("maa"),
+            "maa.controller": types.SimpleNamespace(CustomController=object),
+            "maa.library": types.SimpleNamespace(Library=object),
+            "maa.pipeline": types.SimpleNamespace(JAnd=object, JOCR=object, JTemplateMatch=object),
+            "maa.resource": types.SimpleNamespace(Resource=object),
+            "maa.tasker": types.SimpleNamespace(Tasker=object),
+        }
+        with patch.dict(sys.modules, {k: v for k, v in fake_maa.items() if k not in sys.modules}):
+            import android_ui
+
+        dummy = types.SimpleNamespace(
+            controls_exposed=True,
+            hierarchy_unavailable=False,
+            tasker=types.SimpleNamespace(stopping=False),
+            height=1605,
+        )
+        with patch.object(android_ui, "prepared_reader") as prep:
+            with android_ui.MaaUi.prepare_basic_info(dummy) as reader:
+                self.assertIsNone(reader)
+            prep.assert_not_called()
+
+            dummy.controls_exposed = False
+            prep.return_value.__enter__.return_value = "warm-reader"
+            with android_ui.MaaUi.prepare_basic_info(dummy) as reader:
+                self.assertEqual(reader, "warm-reader")
+            prep.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

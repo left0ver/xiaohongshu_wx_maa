@@ -10,6 +10,7 @@ from layout import basic_info_ready
 # needs about 2.7 s and occasionally ran out of the original 5 s.
 BASIC_INFO_TIMEOUT = 8
 SEMANTIC_BUDGET = 4
+SEMANTIC_CALL_TIMEOUT = 3.2
 SEMANTIC_RETRY_DELAY = 0.3
 BASIC_INFO_TIMEOUT_MESSAGE = f"Author basic information was not ready within {BASIC_INFO_TIMEOUT} seconds"
 
@@ -35,7 +36,7 @@ def wait_basic_info(semantic, bounded_ocr, timeout=BASIC_INFO_TIMEOUT):
     semantic_deadline = time.monotonic() + min(SEMANTIC_BUDGET, remaining / 2)
     while True:
         try:
-            lines = semantic(max(0.01, min(1.2, deadline - time.monotonic())))
+            lines = semantic(max(0.01, min(SEMANTIC_CALL_TIMEOUT, deadline - time.monotonic())))
             if time.monotonic() < deadline and basic_info_ready(lines):
                 return lines, "hierarchy"
         except subprocess.TimeoutExpired:

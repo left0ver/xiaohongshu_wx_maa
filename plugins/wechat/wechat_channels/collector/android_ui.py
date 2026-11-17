@@ -19,7 +19,7 @@ from maa.tasker import Tasker
 from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
 from foreground import foreground
-from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, refresh_target, text_lines
+from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, page_lines, refresh_target, text_lines
 from readiness import wait_basic_info
 from layout import find_comment_drawer_heading, line_height
 from probe_reader import prepared_reader
@@ -353,6 +353,9 @@ class MaaUi:
 
     @contextmanager
     def prepare_basic_info(self):
+        if self.controls_exposed and not self.hierarchy_unavailable:
+            yield None
+            return
         started = time.monotonic_ns()
         with prepared_reader(Path(__file__).with_name("probe.py"), stopped=lambda: self.tasker.stopping) as reader:
             print(json.dumps({"kind": "readinessPreparationTiming", "durationMs":
@@ -364,11 +367,17 @@ class MaaUi:
         source, outcome = None, "failed"
 
         def bounded_ocr(remaining):
-            result = reader(remaining)
-            return self.annotate(result["lines"], result["source"])
+            if reader is not None:
+                result = reader(remaining)
+                return self.annotate(result["lines"], result["source"])
+            return self.ocr_snapshot("author-basic-info", [0, self.height // 4, 240, self.height // 2])
 
         try:
-            lines, source = wait_basic_info(lambda remaining: self.hierarchy(timeout=remaining), bounded_ocr, timeout)
+            lines, source = wait_basic_info(
+                lambda remaining: page_lines(self.hierarchy(timeout=remaining)),
+                bounded_ocr,
+                timeout,
+            )
             outcome = "succeeded"
             self.record_snapshot("author-basic-info-ready", lines, source, [
                 {"source": "readiness", "durationMs": (time.monotonic_ns() - started) // 1_000_000}])
