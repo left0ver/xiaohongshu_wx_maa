@@ -65,7 +65,7 @@
 | `link_message_commenter` | `link`、`nickname`、`text` |
 | `inspect_messages` | `like`、`maxMessages`、`replyText` |
 
-采集入口为 `recommend` 或 `search`，搜索需要 `keyword`。`count` 为 1 至 500。`commentOptions` 包含 `unlimited`、`visitProfiles`、`maxPages`、`maxReplyExpansions`、`maxProfiles`。评论和私信文字最多 500 字。
+采集入口为 `recommend` 或 `search`，搜索需要 `keyword`。`count` 为 1 至 500。`commentOptions` 包含 `unlimited`、`visitProfiles`、`maxPages`、`maxReplyExpansions`、`maxProfiles`，以及可选的 `maxComments`（每个视频最多采集的评论数量，范围 1 至 1000）。`unlimited` 开启时不限制评论数量。评论和私信文字最多 500 字。
 
 手机通过 `command_ack` 上报 `commandId`、`success` 和 `message`。任务查询与回调通过 `status` 和 `resultMessage` 说明执行情况。采集明细通过 WebSocket 上报并保存到内容事件表。
 

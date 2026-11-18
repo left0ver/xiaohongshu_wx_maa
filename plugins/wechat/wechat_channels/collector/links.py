@@ -102,7 +102,7 @@ def open_wechat_home(ui, attempts=10):
     """WeChat's 微信 tab; pages an earlier run left open are closed first."""
     if hasattr(ui, "start_wechat_home"):
         ui.start_wechat_home()
-        time.sleep(1.0)
+        time.sleep(0.6)
     else:
         ui.start_wechat()
     for attempt in range(attempts):
@@ -110,6 +110,8 @@ def open_wechat_home(ui, attempts=10):
         lines = ui.snapshot(f"link-home-{attempt + 1}")
         tab = find(lines, r"^微信$", _bottom(ui))
         if tab and find(lines, r"^通讯录$", _bottom(ui)):
+            if tab.get("selected") is True:
+                return lines
             ui.click(tab)
             return ui.snapshot("link-home")
         if not lines:
@@ -127,6 +129,7 @@ def _edit_box(lines):
 # Notices shown instead of the input box when the other side limits messages.
 DM_RESTRICTED = r"设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息|无法发送私信"
 DM_RATE_LIMIT = r"频繁发送私信|私信.{0,8}频繁|请明天再试|私信.{0,8}达到.{0,8}上限"
+DM_THROTTLE_NOTICE = r"操作太频繁[，,]?\s*请稍后再试"
 DM_RECIPIENT_UNAVAILABLE = r"^对方账号因违反视频号平台运营规范[，,]\s*暂无法接收私信[。.!！]?$"
 
 
@@ -136,29 +139,96 @@ def _same_chat_row(first, second):
     return max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
 
 
+def _self_chat_avatars(controls):
+    return [
+        line for line in controls
+        if line.get("selector", {}).get("class") == "android.widget.ImageView"
+        and line["box"][0] >= 360
+        and (
+            line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"
+            or (
+                line.get("selector", {}).get("attribute") == "content-desc"
+                and line.get("text", "").endswith("头像")
+                and line.get("text") != "头像"
+                and line["box"][0] >= 500
+            )
+        )
+    ]
+
+
+def _is_chat_text_view(line):
+    sel = line.get("selector", {})
+    return (
+        line.get("source") == "hierarchy"
+        and sel.get("class") == "android.widget.TextView"
+        and sel.get("attribute") == "text"
+    )
+
+
 def require_private_message_available(lines):
-    restriction = find(lines, DM_RATE_LIMIT)
+    controls = [line for line in lines if line.get("source") == "hierarchy"]
+    avatars = _self_chat_avatars(controls)
+    not_self_bubble = lambda line: not avatars or not any(_same_chat_row(line, avatar) for avatar in avatars)
+    restriction = find(lines, DM_RATE_LIMIT, not_self_bubble)
     if restriction:
         raise RuntimeError("微信限制了私信发送：" + restriction["text"])
-    avatars = [line for line in lines if line.get("source") == "hierarchy"
-               and line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"]
+    if avatars:
+        latest_avatar = max(avatars, key=lambda line: line["box"][1])
+        latest_failed = any(
+            line.get("text") == "重发"
+            and line.get("selector", {}).get("class") == "android.widget.ImageView"
+            and _same_chat_row(line, latest_avatar)
+            for line in controls
+        )
+        throttle = find(
+            lines,
+            DM_THROTTLE_NOTICE,
+            lambda line: not_self_bubble(line) and (latest_failed or line["box"][1] > latest_avatar["box"][1]),
+        )
+        if throttle:
+            raise RuntimeError("微信限制了私信发送：" + throttle["text"])
     # 平台通知不与消息头像同行。
     restriction = find(lines, DM_RECIPIENT_UNAVAILABLE, lambda line:
-        line.get("source") == "hierarchy" and line.get("selector", {}).get("resource") == "com.tencent.mm:id/bkl"
+        _is_chat_text_view(line)
         and not any(_same_chat_row(line, avatar) for avatar in avatars))
     if restriction:
         raise RuntimeError("对方暂无法接收私信：" + restriction["text"])
 
-# A chat read by OCR has no control classes; its input hint and notices identify it.
-CHAT_TEXT = r"可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息|^发送$"
+# A chat read by OCR has no control classes; its input hint, TalkBack labels and notices identify it.
+CHAT_TEXT = (
+    r"可按住\s*转文字|按住\s*说话|切换私信身份|切换到按住说话|切换到键盘|更多功能按钮，已折叠"
+    r"|仅可发\s*1\s*条消息|^发送$"
+)
 
 
 def _is_chat(lines):
     return bool(_edit_box(lines) or find(lines, CHAT_TEXT))
 
 
-def open_file_helper(ui):
-    """微信 tab → 搜索 → 文件传输助手 → its chat."""
+def open_file_helper(ui, home_lines=None):
+    """微信 tab → 文件传输助手 directly when visible on chat list, else 搜索 → 文件传输助手."""
+    if home_lines:
+        row_pred = lambda line: 140 <= line["box"][1] <= ui.height - 200 and line["box"][0] < 380
+        direct = find(home_lines, rf"^{FILE_HELPER}$", row_pred)
+        if direct and getattr(ui, "controls_exposed", False) and hasattr(ui, "hierarchy"):
+            fresh = [c for c in ui.hierarchy(force=True) if not c.get("icon") and not c.get("container")]
+            direct = find(fresh, rf"^{FILE_HELPER}$", row_pred)
+        if direct:
+            ui.click(direct)
+            if getattr(ui, "controls_exposed", False) and hasattr(ui, "hierarchy"):
+                _wait_dm_chat_controls(ui, budget=1.8)
+                visible = [
+                    c for c in (getattr(ui, "controls", None) or [])
+                    if not c.get("icon") and not c.get("container")
+                ]
+                if visible and not _is_chat(visible):
+                    ui.back()
+                    direct = None
+        if direct:
+            chat = ui.snapshot("link-chat")
+            if _is_chat(chat):
+                return chat
+            ui.back()
     found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
     ui.click(found or {"text": "搜索", "box": [550, 70, 80, 80]})
     time.sleep(0.8)
@@ -197,6 +267,13 @@ def validate_pasted_link(lines, expected):
 def send_chat_text(ui, lines, text, label):
     """Type into the open chat and send; returns the lines after sending."""
     box = _edit_box(lines)
+    if box is None:
+        to_keyboard = find(lines, r"^切换到键盘$")
+        if to_keyboard:
+            ui.click(to_keyboard)
+            if hasattr(ui, "controls_now"):
+                lines = [item for item in ui.controls_now() if not item.get("icon") and not item.get("container")] or lines
+            box = _edit_box(lines)
     ui.click(box or {"text": "input", "box": [100, ui.height - 80, 450, 60]})
     _type(ui, text)
     typed = ui.snapshot(f"{label}-typed")
@@ -242,10 +319,47 @@ def _sent_bubble(lines, text):
     return max(bubbles, key=lambda line: line["box"][1], default=None)
 
 
+def _wait_link_video_controls(ui, deadline):
+    """Poll pure hierarchy across blank browser transition frames so link-video-1 skips full OCR."""
+    if not getattr(ui, "controls_exposed", False) or not hasattr(ui, "hierarchy"):
+        return
+    while time.monotonic() < deadline:
+        check_stopped(ui)
+        try:
+            controls = ui.hierarchy(timeout=min(2.5, max(0.4, deadline - time.monotonic())), force=True)
+            visible = [item for item in controls if not item.get("icon") and not item.get("container")]
+            if (
+                _is_chat(visible)
+                or classify_page_state(visible, ui.height) == "channels_feed"
+                or any(item.get("container") == "feed-author" for item in controls)
+            ):
+                return
+        except Exception:
+            pass
+        time.sleep(min(0.35, max(0, deadline - time.monotonic())))
+
+
+def _wait_dm_chat_controls(ui, budget=3.0):
+    """Poll pure hierarchy while the DM chat window opens so dm-chat avoids transitional OCR."""
+    if not getattr(ui, "controls_exposed", False) or not hasattr(ui, "hierarchy"):
+        return
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        check_stopped(ui)
+        try:
+            controls = ui.hierarchy(timeout=min(2.5, max(0.4, deadline - time.monotonic())), force=True)
+            visible = [item for item in controls if not item.get("icon") and not item.get("container")]
+            if _is_chat(visible) or find(visible, DM_RESTRICTED):
+                return
+        except Exception:
+            pass
+        time.sleep(min(0.3, max(0, deadline - time.monotonic())))
+
+
 def open_video_by_link(ui, link):
     """Open a share link through 文件传输助手; returns the video page lines."""
-    open_wechat_home(ui)
-    chat = open_file_helper(ui)
+    home_lines = open_wechat_home(ui)
+    chat = open_file_helper(ui, home_lines=home_lines)
     sent = send_chat_text(ui, chat, link, "link-chat")
     bubble = _sent_bubble(sent, link)
     if not bubble:
@@ -258,12 +372,13 @@ def open_video_by_link(ui, link):
     x, y, w, h = bubble["box"]
     for tap, offset in enumerate((16, -16)):
         ui.click({"text": link, "box": [x + w // 4 - 10, y + h // 2 + offset - 10, 20, 20]})
-        time.sleep(2.0)
+        time.sleep(1.5)
         # The link first loads in WeChat's browser, which then opens the video;
         # on a slow network that took over 10 s (Hebe-BD00, 2026-11-12).
         deadline = time.monotonic() + 15
         attempt = 0
         while True:
+            _wait_link_video_controls(ui, min(deadline, time.monotonic() + 5.0))
             attempt += 1
             lines = ui.snapshot(f"link-video-{tap * 10 + attempt}")
             if _is_chat(lines):
@@ -278,7 +393,7 @@ def open_video_by_link(ui, link):
                 # Give up on this page load: close the browser and tap again.
                 ui.back()
                 break
-            time.sleep(1.5)
+            time.sleep(1.2)
         if hasattr(ui, "hide_keyboard"):
             ui.hide_keyboard()
     raise ValueError("The video did not open from its link")
@@ -291,14 +406,14 @@ def _profile_contact(ui, lines):
 
 def private_message_state(lines, text):
     controls = [line for line in lines if line.get("source") == "hierarchy"]
-    avatars = [line for line in controls
-               if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"
-               and line["box"][0] >= 360]
+    avatars = _self_chat_avatars(controls)
 
-    messages = [line for line in controls
-                if line.get("selector", {}).get("resource") == "com.tencent.mm:id/bkl"
-                and line["selector"].get("value") == text
-                and any(_same_chat_row(line, avatar) for avatar in avatars)]
+    messages = [
+        line for line in controls
+        if _is_chat_text_view(line)
+        and line["selector"].get("value") == text
+        and any(_same_chat_row(line, avatar) and line["box"][0] < avatar["box"][0] for avatar in avatars)
+    ]
     if not messages:
         raise ValueError("无法从控件确认已发送的私信内容")
     message = max(messages, key=lambda line: line["box"][1])
@@ -315,12 +430,15 @@ def private_message_state(lines, text):
 
 
 def resend_confirmation(lines):
-    prompt = find(lines, r"^重发该消息[？?]$", lambda line: line.get("source") == "hierarchy"
-                  and line.get("selector", {}).get("resource") == "com.tencent.mm:id/odb")
+    prompt = find(lines, r"^重发该消息[？?]$", _is_chat_text_view)
     if prompt is None:
         return None
-    buttons = [line for line in lines if line.get("source") == "hierarchy" and line.get("text") == "重发"
-               and line.get("selector", {}).get("resource") == "com.tencent.mm:id/obc"]
+    buttons = [
+        line for line in lines
+        if _is_chat_text_view(line)
+        and line.get("text") == "重发"
+        and line["box"][1] > prompt["box"][1]
+    ]
     if len(buttons) != 1:
         raise ValueError("无法唯一确定重发确认窗口的按钮")
     return buttons[0]
@@ -387,6 +505,7 @@ def send_private_message(ui, profile_lines, text):
     if not button:
         raise ValueError("This profile has no 私信 button")
     ui.click(button)
+    _wait_dm_chat_controls(ui)
     chat = ui.snapshot("dm-chat")
     restriction = find(chat, DM_RESTRICTED)
     if restriction and not _edit_box(chat):
@@ -447,7 +566,8 @@ def run_link_task(ui, quota_store, ledger, config):
 
     if action == "likeVideo":
         report["like"] = like_work(ui, quota_store, work_key, lines=lines)
-        report["collect"] = collect_work_action(ui, quota_store, work_key)
+        after_like_lines = getattr(ui, "last_snapshot_lines", None) or lines
+        report["collect"] = collect_work_action(ui, quota_store, work_key, lines=after_like_lines)
         report["status"] = "done"
     elif action == "followAuthor":
         touched = visit_and_touch_author_profile(ui, quota_store, do_follow=True, do_like_first_work=False,

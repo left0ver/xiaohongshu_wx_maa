@@ -119,6 +119,8 @@ class MaaUi:
         self.observation = 0
         self.hierarchy_unavailable = False
         self.controls = []
+        self.controls_at = 0.0
+        self.last_snapshot_lines = None
         self.navigation_stage = None
         # Debug only: keep the exact frames behind each recognition for box overlays.
         self.dump_frames = os.environ.get("WECHAT_DUMP_FRAMES") == "1"
@@ -132,6 +134,15 @@ class MaaUi:
         self.height = round(self.physical_height * 720 / self.width)
         path = Path(__file__).resolve().parents[1] / "resource/base/pipeline/collect-video.json"
         self.nodes = json.loads(path.read_text(encoding="utf-8"))
+
+    def _invalidate_controls(self):
+        self.controls = []
+        self.controls_at = 0.0
+
+    def _has_fresh_controls(self, max_age=2.5):
+        controls = getattr(self, "controls", None)
+        controls_at = getattr(self, "controls_at", 0.0)
+        return bool(controls and controls_at > 0 and 0 <= time.monotonic() - controls_at <= max_age)
 
     # vivo V2131A needs 1.5-3.1 s for a dump and ~4-5.8 s on large drawers/profiles.
     def hierarchy(self, timeout=8, force=False):
@@ -167,8 +178,10 @@ class MaaUi:
             lines = self.annotate(text_lines(xml, self.width, self.physical_height, containers=True), "hierarchy")
             # Icons and empty containers are not page text, but locate controls.
             self.controls = lines
+            self.controls_at = time.monotonic()
             return lines
         except HierarchyUnavailable:
+            self._invalidate_controls()
             self.hierarchy_unavailable = not self.controls_exposed
             raise
 
@@ -238,6 +251,12 @@ class MaaUi:
             return []
         if not (label.startswith("messages") or has_like or has_comment):
             return []
+        if not (has_like or has_comment) and label not in (
+            "messages-center", "messages-comments", "messages-after-like", "messages-after-reply"
+        ):
+            from interactions import classify_page_state
+            if classify_page_state(page_lines(lines), getattr(self, "height", 1605)) != "unknown":
+                return []
         like = None if has_like else measured("template", lambda: self.match_navigation("BatchMessagesLikeTab"))
         if not (has_like or like):
             return []
@@ -267,7 +286,11 @@ class MaaUi:
                 attempts.append(attempt)
 
         def read_hierarchy():
-            raw = measured("hierarchy", self.hierarchy)
+            if self._has_fresh_controls(max_age=0.6):
+                raw = self.controls
+                attempts.append({"source": "hierarchy", "durationMs": 0, "reused": True})
+            else:
+                raw = measured("hierarchy", self.hierarchy)
             tabs = self.message_tabs(label, raw, measured)
             return [*raw, *self.annotate(tabs, "template")] if tabs else raw
 
@@ -287,6 +310,7 @@ class MaaUi:
                 lines = [*lines, *self.annotate(tabs, "template")]
                 source = "mixed"
         self.record_snapshot(label, lines, source, attempts, author)
+        self.last_snapshot_lines = lines
         return lines
 
     def record_snapshot(self, label, lines, source, attempts, author=None):
@@ -392,10 +416,13 @@ class MaaUi:
         # The menu button is a control described as 设置 beside the name.
         controls = []
         if self.controls_exposed:
-            try:
-                controls = self.hierarchy(force=True)
-            except HierarchyUnavailable:
-                pass
+            if self._has_fresh_controls():
+                controls = self.controls
+            else:
+                try:
+                    controls = self.hierarchy(force=True)
+                except HierarchyUnavailable:
+                    pass
         button = next((line for line in controls if line.get("text") == "设置" and line.get("selector")
                        and line["box"][0] >= roi[0] and roi[1] <= line["box"][1] + line["box"][3] / 2 <= roi[1] + roi[3]),
                       None)
@@ -480,23 +507,38 @@ class MaaUi:
             raise RuntimeError("Collection was stopped")
         navigation = line.get("navigation")
         if resolve is not None:
-            line = resolve(self.hierarchy(force=True))
+            controls = self.controls if self._has_fresh_controls(max_age=2.0) else self.hierarchy(force=True)
+            resolved = resolve(controls)
+            if resolved is None and controls is self.controls:
+                resolved = resolve(self.hierarchy(force=True))
+            line = resolved
             if line is None:
                 return False
-            print(json.dumps({"kind": "resolvedControlClick", "resource": line["selector"]["resource"],
+            print(json.dumps({"kind": "resolvedControlClick", "resource": line.get("selector", {}).get("resource", ""),
                               "box": line["box"]}, ensure_ascii=False), flush=True)
         elif line.get("selector"):
-            controls = None
-            for timeout in (6, 8):
+            reused = False
+            if self._has_fresh_controls():
                 try:
-                    controls = self.hierarchy(timeout=timeout, force=True)
-                    break
-                except HierarchyUnavailable:
-                    time.sleep(0.5)
-            # A control that is gone or ambiguous still sends no input. Only when the
-            # dump itself keeps timing out (vivo) is the position just read used.
-            if controls is not None:
-                line = self._navigation_control(line, controls) if navigation in ("discover", "channels", "recommend") else refresh_target(controls, line)
+                    if navigation in ("discover", "channels", "recommend"):
+                        line = self._navigation_control(line, self.controls)
+                    else:
+                        line = refresh_target(self.controls, line)
+                    reused = True
+                except RuntimeError:
+                    reused = False
+            if not reused:
+                controls = None
+                for timeout in (6, 8):
+                    try:
+                        controls = self.hierarchy(timeout=timeout, force=True)
+                        break
+                    except HierarchyUnavailable:
+                        time.sleep(0.5)
+                # A control that is gone or ambiguous still sends no input. Only when the
+                # dump itself keeps timing out (vivo) is the position just read used.
+                if controls is not None:
+                    line = self._navigation_control(line, controls) if navigation in ("discover", "channels", "recommend") else refresh_target(controls, line)
         elif line.get("templateNode"):
             current = self.match_navigation(line["templateNode"])
             if current:
@@ -509,6 +551,7 @@ class MaaUi:
         x, y, width, height = line["box"]
         if not self.controller.post_click(x + width // 2, y + height // 2).wait().succeeded:
             raise RuntimeError("Click failed")
+        self._invalidate_controls()
         self.navigation_stage = ({"discover": "BatchChannelsEntry", "channels": "BatchRecommended"}.get(navigation)
                                  if navigation else {"发现": "BatchChannelsEntry", "视频号": "BatchRecommended"}.get(line.get("text")))
         time.sleep(0.6)
@@ -520,6 +563,7 @@ class MaaUi:
         foreground()
         if not self.controller.post_click_key(4).wait().succeeded:
             raise RuntimeError("Back failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.95)
 
@@ -530,6 +574,7 @@ class MaaUi:
         foreground()
         if not self.controller.post_swipe(360, end, 360, start, COMMENT_SWIPE_MS).wait().succeeded:
             raise RuntimeError("Details header recovery failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.6)
 
@@ -551,6 +596,7 @@ class MaaUi:
         foreground()
         if not self.controller.post_swipe(360, start, 360, end, COMMENT_SWIPE_MS).wait().succeeded:
             raise RuntimeError("Comment drawer scroll failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.7)
 
@@ -561,6 +607,7 @@ class MaaUi:
         if not self.controller.post_swipe(360, end, 360, end + (start - end) // 2,
                                           COMMENT_SWIPE_MS).wait().succeeded:
             raise RuntimeError("Comment drawer scroll back failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.7)
 
@@ -586,6 +633,7 @@ class MaaUi:
         helper = Path(__file__).with_name("ui-dump.dex")
         if not helper.is_file():
             raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
+        self._invalidate_controls()
         cmd = ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--set-text", str(text)]
         try:
             run(cmd, timeout=timeout, stopped=self.stopped)
@@ -601,6 +649,8 @@ class MaaUi:
         """Fresh controls, icons included; empty when WeChat hides its controls."""
         if not self.controls_exposed:
             return []
+        if self._has_fresh_controls():
+            return self.controls
         try:
             return self.hierarchy(force=True)
         except HierarchyUnavailable:
@@ -615,6 +665,7 @@ class MaaUi:
         helper = Path(__file__).with_name("ui-dump.dex")
         if not helper.is_file():
             raise RuntimeError("缺少 UI 采集组件")
+        self._invalidate_controls()
         run(["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin",
              "xhs.UiDump", "--paste-text", text], timeout=timeout, stopped=self.stopped)
 
@@ -640,6 +691,7 @@ class MaaUi:
         if not re.fullmatch(r"[A-Za-z0-9:/._~?=#-]+", text):
             raise ValueError("type_ascii only types plain link characters")
         foreground()
+        self._invalidate_controls()
         command("input", "text", text)
         time.sleep(0.5)
 
@@ -652,7 +704,7 @@ class MaaUi:
                 self.back()
                 return True
             if check == 0:
-                time.sleep(0.6)
+                time.sleep(0.25)
         return False
 
     def clear_text(self, count=80):
@@ -661,6 +713,7 @@ class MaaUi:
         if self.stopped():
             raise InterruptedError("Collection was stopped")
         foreground()
+        self._invalidate_controls()
         command("input", "keyevent", "123")
         command("input", "keyevent", *["67"] * count, timeout=30)
         time.sleep(0.4)
@@ -672,6 +725,7 @@ class MaaUi:
         if not self.controller.post_click_key(keycode).wait().succeeded:
             # Some controllers only send back; the agent runs as shell and can inject keys itself.
             command("input", "keyevent", str(keycode))
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.3)
 
@@ -681,6 +735,7 @@ class MaaUi:
         foreground()
         if not self.controller.post_swipe(x1, y1, x2, y2, duration).wait().succeeded:
             raise RuntimeError("Swipe failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.8)
 
@@ -692,6 +747,7 @@ class MaaUi:
         end = int(self.height * 0.22)
         if not self.controller.post_swipe(360, start, 360, end, 320).wait().succeeded:
             raise RuntimeError("Feed scroll next failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.9)
 
@@ -703,12 +759,14 @@ class MaaUi:
         end = int(self.height * 0.78)
         if not self.controller.post_swipe(360, start, 360, end, 320).wait().succeeded:
             raise RuntimeError("Feed scroll prev failed")
+        self._invalidate_controls()
         self.navigation_stage = None
         time.sleep(0.9)
 
     def start_wechat_home(self):
         """Open WeChat on its main tabs, closing the pages an earlier run left above them."""
         self.hierarchy_unavailable = False
+        self._invalidate_controls()
         self.navigation_stage = None
         # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP: LauncherUI is brought
         # back and every page opened on top of it is finished.
@@ -726,6 +784,7 @@ class MaaUi:
 
     def start_wechat(self):
         self.hierarchy_unavailable = False
+        self._invalidate_controls()
         self.navigation_stage = None
         if not self.controller.post_start_app("com.tencent.mm").wait().succeeded:
             raise RuntimeError("WeChat could not be opened")

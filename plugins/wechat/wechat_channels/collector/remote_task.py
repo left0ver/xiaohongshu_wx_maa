@@ -109,7 +109,8 @@ def execute_remote(tasker, context, root, config):
                 ui = MaaUi(tasker, run_dir, context, controls_exposed=exposed, progress=bridge.progress)
                 bridge.call("/progress", {"message": "正在执行视频号任务"})
                 if task == "collect_channels":
-                    ensure_feed(ui, launch=True)
+                    entry = str(options.get("entry") or "recommend").strip().lower()
+                    ensure_feed(ui, launch=True, need_author=(entry != "search"))
                     result = run_collection_task(ui, root, options, timings=timings,
                                                  publisher_identity=identity, upload_transport=bridge.upload)
                     videos = result.get("videos", [])
@@ -143,7 +144,7 @@ def execute_remote(tasker, context, root, config):
                             raise RuntimeError(f"{key} 未完成：{result[key].get('status')}")
                     summary.update({"success": True, "operation": result, "message": "视频号操作已完成"})
                 elif task == "inspect_messages":
-                    ensure_feed(ui, launch=True)
+                    ensure_feed(ui, launch=True, need_author=False)
                     result = interact_work_and_comments(ui, DailyQuotaStore(root / "daily_quotas.json"),
                                                        {"inspectMessages": options})
                     failures = failed_interactions(result)

@@ -322,7 +322,7 @@ class ProcessedRecordTests(unittest.TestCase):
         self.assertEqual(mode_comment_limits({"maxReplyExpansions": "3"}),
                          {"max_pages": 2, "max_reply_expansions": 3, "max_profiles": 1})
         self.assertEqual(mode_comment_limits({"unlimited": True}),
-                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None})
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None, "max_comments": None})
         with patch("modes.collect_visible_comments") as collect, patch("modes.check_stopped"), \
                 patch("modes.feed_video_preview", return_value={"author": "A", "captionPreview": "T",
                                                                 "previewKey": "p", "authorKey": "k"}), \
@@ -675,6 +675,60 @@ class ModesUnitTests(unittest.TestCase):
         self.assertEqual(cards[1]["likeCountText"], "1440")
         self.assertEqual(cards[0]["duration"], "00:53")
         self.assertEqual(cards[3]["duration"], "07:41")
+
+    def test_live_search_cards_are_filtered_while_vod_live_avatar_badge_is_kept(self):
+        def desc_card(text, x, y):
+            return {
+                "text": text,
+                "box": [x, y, 338, 560],
+                "score": 1.0,
+                "source": "hierarchy",
+                "selector": {"attribute": "content-desc", "value": text, "resource": "", "class": "android.widget.ImageView"},
+            }
+
+        cards = parse_search_video_cards([
+            desc_card("直播中\n红烧肉直播教学\n美食直播间\n刚刚", 15, 360),
+            desc_card("1.2万\n直播中：今天带大家看农场\n农场主阿强\n1小时前", 367, 360),
+            desc_card("5204\n红烧肉软糯入味的家常做法\n小厨娘阿梅\n3天前", 15, 940),
+        ], height=1605)
+        self.assertEqual([c["author"] for c in cards], ["小厨娘阿梅"])
+
+        # VOD video opened from search whose author happens to be live ("直播中" on avatar at x=36, y=1487)
+        vod_with_live_badge = [
+            line("天文望远镜看月亮#天文望远镜", 27, 1321, 520, 28),
+            line("直播中）", 36, 1487, 62, 24),
+            line("天文大师", 120, 1451, 114, 30),
+            line("1.9万", 356, 1477, 60, 34),
+            line("8869", 449, 1481, 58, 29),
+        ]
+        self.assertFalse(detect_feed_skip_item(vod_with_live_badge, height=1559)["skip"])
+
+    def test_truncated_feed_new_video_notice_and_drawer_full_author_upgrade(self):
+        from collection import author_in_feed, drawer_author_nickname, open_video_details_drawer
+
+        feed = [
+            line("喜剧之…23小时前有新", 119, 1477, 245, 34),
+            {"text": "288", "box": [617, 1421, 91, 89], "score": 1.0, "source": "hierarchy",
+             "feedRole": "comment", "buttonBox": [617, 1421, 91, 89]},
+        ]
+        cleaned = author_in_feed(feed, 1605)
+        self.assertEqual(cleaned["text"], "喜剧之…")
+
+        drawer = [
+            {"text": "精选评论 108", "box": [100, 437, 150, 36], "score": 1.0, "source": "hierarchy"},
+            {"text": "喜剧之王单口季", "box": [101, 534, 190, 34], "score": 1.0, "source": "hierarchy",
+             "workAuthorControl": True,
+             "selector": {"attribute": "text", "value": "喜剧之王单口季", "resource": "", "class": "android.widget.TextView"}},
+            {"text": "作者", "box": [310, 534, 50, 34], "score": 1.0, "source": "hierarchy"},
+            {"text": "上海", "box": [370, 534, 50, 34], "score": 1.0, "source": "hierarchy"},
+            {"text": "11月6日", "box": [430, 534, 90, 34], "score": 1.0, "source": "hierarchy"},
+            {"text": "完整脱口秀作品文案", "box": [101, 600, 420, 34], "score": 1.0, "source": "hierarchy"},
+            {"text": "暂无评论", "box": [280, 740, 120, 34], "score": 1.0, "source": "hierarchy"},
+        ]
+        self.assertEqual(drawer_author_nickname(drawer), "喜剧之王单口季")
+        ui = FakeModeUi([drawer])
+        video, _ = open_video_details_drawer(ui, feed, cleaned["text"], for_comments=True)
+        self.assertEqual(video["authorNickname"], "喜剧之王单口季")
 
 
 if __name__ == "__main__":

@@ -79,6 +79,53 @@ class MessageTabsTest(unittest.TestCase):
         start, end = ui._comment_swipe(drawer)
         self.assertGreater(start, end)
 
+    def test_known_feed_and_personal_pages_skip_message_tab_templates_on_messages_start(self):
+        feed_lines = [
+            {"text": "推荐", "box": [437, 73, 70, 37]},
+            {"text": "关注", "box": [192, 73, 70, 37]},
+            {"text": "朋友", "box": [310, 73, 70, 37]},
+        ]
+        tabs, calls = self.tabs("messages-start", feed_lines, {"BatchMessagesLikeTab": HEART})
+        self.assertEqual((tabs, calls), ([], []))
+
+        personal_lines = [{"text": "视频号消息", "box": [120, 520, 180, 36]}]
+        tabs2, calls2 = self.tabs("messages-return-1", personal_lines, {"BatchMessagesLikeTab": HEART})
+        self.assertEqual((tabs2, calls2), ([], []))
+
+    def test_click_reuses_fresh_controls_once_then_invalidates_after_input(self):
+        import time as _time
+
+        ui = android_ui.MaaUi.__new__(android_ui.MaaUi)
+        ui.tasker = types.SimpleNamespace(stopping=False)
+        ui.height = 1559
+        ui.navigation_stage = None
+        target = {
+            "text": "展开",
+            "box": [620, 660, 48, 34],
+            "source": "hierarchy",
+            "selector": {"attribute": "text", "value": "展开", "resource": "", "class": "android.widget.TextView"},
+        }
+        ui.controls = [target]
+        ui.controls_at = _time.monotonic()
+        dump_calls = []
+        ui.hierarchy = lambda **_kw: (dump_calls.append(1) or [target])
+        clicked = []
+
+        class _Job:
+            succeeded = True
+            def wait(self):
+                return self
+
+        ui.controller = types.SimpleNamespace(post_click=lambda x, y: (clicked.append((x, y)) or _Job()))
+        with mock.patch.object(android_ui, "foreground"), mock.patch.object(android_ui.time, "sleep"):
+            ui.click(target)
+            self.assertEqual(dump_calls, [])
+            self.assertEqual(clicked, [(644, 677)])
+            self.assertEqual(ui.controls, [])
+            # A second click without an intervening snapshot must re-dump hierarchy.
+            ui.click(target)
+            self.assertEqual(len(dump_calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

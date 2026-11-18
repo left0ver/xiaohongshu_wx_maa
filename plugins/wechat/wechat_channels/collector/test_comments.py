@@ -431,7 +431,7 @@ class CommentPagingTests(unittest.TestCase):
         self.assertEqual(comment_limits({"maxPages": "20", "maxReplyExpansions": "20", "maxProfiles": "0"}),
                          {"max_pages": 20, "max_reply_expansions": 20, "max_profiles": 0})
         self.assertEqual(comment_limits({"unlimited": True, "maxPages": "3"}),
-                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None})
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": None, "max_comments": None})
         with self.assertRaises(ValueError):
             comment_limits({"maxPages": "0"})
         with self.assertRaises(ValueError):

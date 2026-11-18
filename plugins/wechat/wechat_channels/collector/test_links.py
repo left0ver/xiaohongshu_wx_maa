@@ -7,7 +7,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from hierarchy import text_lines
-from links import LinkLedger, private_message_state, resend_confirmation, share_link, validate_link_task, validate_pasted_link
+from links import (
+    LinkLedger,
+    private_message_state,
+    require_private_message_available,
+    resend_confirmation,
+    share_link,
+    validate_link_task,
+    validate_pasted_link,
+)
 
 LINK = "https://weixin.qq.com/sph/A7uTTkNHLH"
 FIXTURES = Path(__file__).parent / "testdata"
@@ -104,6 +112,44 @@ class RecordedPrivateMessageTests(unittest.TestCase):
         lines = json.loads((FIXTURES / "dm-sent-vivo.json").read_text())["lines"]
         with self.assertRaisesRegex(ValueError, "无法从控件确认"):
             private_message_state(lines, "另一条内容")
+
+    def test_private_message_and_resend_work_when_all_resource_ids_are_obfuscated_or_empty(self):
+        import re as _re
+
+        def strip_ids(items):
+            stripped = []
+            for item in items:
+                copy = dict(item)
+                if "selector" in copy and copy["selector"]:
+                    sel = dict(copy["selector"])
+                    sel["resource"] = "com.tencent.mm:id/obf_999"
+                    if sel.get("attribute") == "resource-id":
+                        sel["value"] = sel["resource"]
+                    copy["selector"] = sel
+                stripped.append(copy)
+            return stripped
+
+        confirm_lines = strip_ids(json.loads((FIXTURES / "dm-resend-confirm-huawei.json").read_text())["lines"])
+        self.assertEqual(resend_confirmation(confirm_lines)["box"], [329, 1371, 62, 42])
+
+        failed_lines = strip_ids(json.loads((FIXTURES / "dm-failed-huawei.json").read_text())["lines"])
+        message, button, pending = private_message_state(failed_lines, "你好，做的菜看着好香")
+        self.assertEqual(message["box"], [255, 653, 361, 34])
+        self.assertEqual(button["box"], [179, 631, 79, 79])
+        self.assertFalse(pending)
+
+        blocked_lines = strip_ids(json.loads((FIXTURES / "dm-recipient-blocked-huawei.json").read_text())["lines"])
+        with self.assertRaisesRegex(RuntimeError, "对方暂无法接收私信"):
+            require_private_message_available(blocked_lines)
+        with self.assertRaisesRegex(RuntimeError, "微信限制了私信发送"):
+            require_private_message_available(failed_lines)
+
+        raw_xml = _re.sub(r'resource-id="[^"]*"', 'resource-id=""', (FIXTURES / "dm-pending-vivo.xml").read_text())
+        pending_lines = text_lines(raw_xml, 1080, 2408)
+        msg, btn, is_pending = private_message_state(pending_lines, "发送状态检查 1794462591546770899")
+        self.assertTrue(is_pending)
+        self.assertIsNone(btn)
+        self.assertGreater(msg["controlBox"][3], msg["box"][3])
 
 
 if __name__ == "__main__":

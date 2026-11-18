@@ -959,6 +959,29 @@ class WechatInteractionsTests(unittest.TestCase):
         open_personal_messages(ui)
         self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "视频号消息", "评论"])
 
+    def test_browsing_settings_personal_page_is_not_misclassified_as_user_profile(self):
+        from hierarchy import complete_for
+
+        # Huawei Hebe-BD00 WeChat 8.0.80 splits personal menu into 浏览设置 + 赞和收藏
+        # with vertical 关注 (y=456) and 私信 (y=652) rows.
+        personal = [
+            {"text": "浏览设置", "box": [25, 160, 127, 47]},
+            {"text": "最近看过", "box": [38, 251, 146, 57]},
+            {"text": "赞和收藏", "box": [40, 355, 144, 52]},
+            {"text": "关注", "box": [38, 456, 85, 52]},
+            {"text": "消息", "box": [36, 555, 89, 57]},
+            {"text": "私信", "box": [32, 652, 141, 65]},
+            {"text": "隐私", "box": [36, 756, 89, 57]},
+        ]
+        self.assertEqual(classify_page_state(personal, 1559), "personal_page")
+        self.assertTrue(complete_for(personal, "personal-page", 1559))
+        # Even without header labels, vertically stacked 关注 + 私信 menu items are not a user profile.
+        self.assertNotEqual(classify_page_state(personal[3:6], 1559), "user_profile")
+        center = [{"text": "点赞", "box": [259, 70, 137, 79]}, {"text": "评论", "box": [396, 70, 137, 79]}]
+        ui = FakeUi([feed_lines(), personal, center, center])
+        open_personal_messages(ui)
+        self.assertEqual([c["text"] for c in ui.clicks], ["personal_icon", "消息", "评论"])
+
     def test_viewer_messages_with_icon_tabs_opens_comments(self):
         # Huawei Hebe_BD00: the account has no Channels account (暂无账号), so the
         # personal page only offers viewer 消息, whose tabs are a heart and a

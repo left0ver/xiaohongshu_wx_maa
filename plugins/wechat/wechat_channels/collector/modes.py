@@ -27,6 +27,7 @@ from collection import (
     back_to_video,
     collect_current_video,
     comment_control_in_feed,
+    control,
     copy_share_link,
     ensure_feed,
     feed_video_preview,
@@ -731,6 +732,13 @@ def detect_feed_skip_item(lines, height=1605) -> dict:
     for line in lines:
         txt = line.get("text", "").strip()
         if line["box"][1] > 180 and _LIVE_PREVIEW_RE.search(txt):
+            # Ignore the tiny "直播中" badge drawn on a VOD author's bottom-left avatar.
+            if (
+                line["box"][0] < 96
+                and line["box"][1] > height - 165
+                and re.fullmatch(r"直播中[)）]?", txt)
+            ):
+                continue
             return {"skip": True, "kind": "live_preview", "reason": txt}
 
     top_tabs = find_top_tabs(lines)
@@ -1079,7 +1087,8 @@ def switch_channels_top_tab(
             "visibleTabs": sorted(tabs.keys()),
         }
 
-    frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+    has_selection_attr = getattr(ui, "controls_exposed", False) and any("selected" in item for item in tabs.values())
+    frame = None if has_selection_attr else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
     current_active, tab_metrics = active_top_tab(lines, frame=frame, height=ui.height)
     clicked = False
     if current_active != norm_tab or tabs[norm_tab].get("inferred"):
@@ -1094,7 +1103,11 @@ def switch_channels_top_tab(
             if dismiss_location_permission_modal(ui, lines):
                 location_prompted = True
                 continue
-            frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+            switched_tabs = find_top_tabs(lines)
+            skip_switched_frame = getattr(ui, "controls_exposed", False) and any(
+                "selected" in item for item in switched_tabs.values()
+            )
+            frame = None if skip_switched_frame else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
             current_active, tab_metrics = active_top_tab(lines, frame=frame, height=ui.height)
             if current_active == norm_tab:
                 break
@@ -1145,7 +1158,10 @@ def verify_stage_page(
     expected_page = "search_results" if norm_stage == "search" else f"{norm_stage}_feed"
     if lines is None:
         lines = call_with_captcha_pause(ui, ui.snapshot, f"verify-stage-{norm_stage}")
-    frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+    skip_frame = getattr(ui, "controls_exposed", False) and (
+        norm_stage == "search" or any("selected" in item for item in find_top_tabs(lines).values())
+    )
+    frame = None if skip_frame else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
     actual = classify_mode_page(
         lines,
         frame=frame,
@@ -1225,13 +1241,21 @@ def search_keyword(
             or not find_top_tabs(lines)
         ):
             bounded_recover_to_target(ui, target="recommend", max_steps=4)
-        search_icon = {"text": "search_icon", "box": [556, 65, 56, 56]}
+        raw_controls = ui.controls_now() if hasattr(ui, "controls_now") else lines
+        search_icon = control(
+            raw_controls,
+            r"^搜索$",
+            lambda l: l["box"][0] > 480 and l["box"][1] < 200,
+        ) or {"text": "search_icon", "box": [556, 65, 56, 56]}
         check_stopped(ui)
         ui.click(search_icon)
         lines = ui.snapshot("search-input")
 
     # Ensure search input box is focused before set_text
-    input_box = {"text": "search_input_box", "box": [200, 82, 260, 44]}
+    input_box = next(
+        (l for l in lines if l.get("selector", {}).get("class", "").endswith("EditText") and l["box"][1] < 200),
+        None,
+    ) or {"text": "search_input_box", "box": [200, 82, 260, 44]}
     check_stopped(ui)
     ui.click(input_box)
     check_stopped(ui)
@@ -1483,14 +1507,21 @@ def _control_search_cards(lines, height):
     """Cards described by their controls; the description is kept as reported."""
     cards = []
     for line in lines:
-        match = _CONTROL_CARD_RE.match(line.get("text", ""))
+        raw_text = line.get("text", "")
+        if _LIVE_PREVIEW_RE.search(raw_text):
+            continue
+        match = _CONTROL_CARD_RE.match(raw_text)
         if not match or line.get("selector", {}).get("attribute") != "content-desc":
             continue
         x, y, w, h = line["box"]
         if y < 300 or y >= height - 25:
             continue
         like_text, title, author, published = match.groups()
-        if re.fullmatch(r"已关注|关注|广告|推广|赞助", author.strip()) or _AD_CARD_RE.search(title):
+        if (
+            re.fullmatch(r"已关注|关注|广告|推广|赞助|直播中", author.strip())
+            or _AD_CARD_RE.search(title)
+            or _LIVE_PREVIEW_RE.search(title)
+        ):
             continue
         column = 0 if x + w / 2 < 360 else 1
         # Tap the cover, not the title/author footer.
@@ -1605,13 +1636,20 @@ def parse_search_video_cards(lines, height=1605) -> list[dict]:
             title = "".join(l["text"].strip() for l in title_items).strip()
             if not title:
                 continue
-            if _AD_CARD_RE.search(title):
+            if _AD_CARD_RE.search(title) or _LIVE_PREVIEW_RE.search(title):
                 prev_footer_bottom = dy + dh
                 continue
 
-            # Extract optional cover duration and like count
+            # Extract optional cover duration and like count; skip live cards
             cover_band_top = max(prev_footer_bottom, dy - 220)
             cover_band_bottom = title_items[0]["box"][1] - 4
+            if any(
+                cover_band_top <= l["box"][1] <= cover_band_bottom
+                and _LIVE_PREVIEW_RE.search(l.get("text", ""))
+                for l in col_items
+            ):
+                prev_footer_bottom = dy + dh
+                continue
             duration_item = next(
                 (
                     l

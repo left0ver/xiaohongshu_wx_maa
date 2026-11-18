@@ -24,7 +24,7 @@ class WorkHeaderMissing(ValueError):
     pass
 
 
-COMMENT_DRAWER_HEADING_RE = re.compile(r"^评论\s*[\d.万wW+]*$")
+COMMENT_DRAWER_HEADING_RE = re.compile(r"^(?:精选)?评论\s*[\d.万wW+]*$")
 
 
 def is_comment_drawer_heading(line, height=None):
@@ -125,6 +125,7 @@ def comment_row(row, previous, following, height):
     author_and_region = bool(region and prefix[:region.start()])
     actions = any(
         (item["box"][0] > 570 and re.fullmatch(r"[\d.万wW]+[凸👍♡赞]*|[凸👍♡赞]+", item["text"].strip()))
+        or item.get("commentHeaderDate")
         or item.get("selector", {}).get("resource", "").endswith("/c85")
         for item in row["items"]
     )

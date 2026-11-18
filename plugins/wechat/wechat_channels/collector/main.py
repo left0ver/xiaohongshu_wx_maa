@@ -99,7 +99,7 @@ def wechat_in_front():
     return True
 
 
-def start_on_feed(ui):
+def start_on_feed(ui, need_author=True):
     """Open WeChat and enter the Channels feed; a feed already on screen is kept.
 
     Starting from the helper app leaves the helper in front, so WeChat is opened
@@ -111,7 +111,7 @@ def start_on_feed(ui):
     on_feed = (classify_page_state(lines, ui.height) == "channels_feed"
                and find(lines, r"^推荐$", lambda line: line["box"][1] < 250))
     if not on_feed:
-        ensure_feed(ui, launch=True)
+        ensure_feed(ui, launch=True, need_author=need_author)
 
 
 @AgentServer.custom_action("InteractWechatWork")
@@ -136,7 +136,8 @@ class InteractWork(CustomAction):
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
                 if config.get("ensureFeed"):
-                    start_on_feed(ui)
+                    needs_work = any(config.get(key) for key in INTERACTION_ACTIONS if key != "inspectMessages")
+                    start_on_feed(ui, need_author=needs_work)
                 quota_store = DailyQuotaStore(root / "daily_quotas.json", limits=config.get("limits"))
                 result = interact_work_and_comments(ui, quota_store, config)
                 (run_dir / "interactions.json").write_text(
@@ -250,8 +251,8 @@ class CollectChannelsAction(CustomAction):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
-                # Always through 发现 → 视频号 → 推荐, so the entry is the real feed.
-                ensure_feed(ui, launch=True)
+                # Enter Channels top bar; search mode skips clicking into 推荐 feed first.
+                ensure_feed(ui, launch=True, need_author=(settings["entry"] != "search"))
                 result = run_collection_task(ui, root, config, timings=timings)
                 (run_dir / "collection.json").write_text(json.dumps(result, ensure_ascii=False, indent=2),
                                                          encoding="utf-8")

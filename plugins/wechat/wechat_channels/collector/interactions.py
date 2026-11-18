@@ -24,6 +24,7 @@ from collection import (
     MESSAGE_LIKE_TAB,
     author_in_feed,
     comment_control_in_feed,
+    control,
     feed_video_preview,
     find,
     identity,
@@ -418,10 +419,12 @@ def classify_page_state(lines, height=1605):
     ):
         return "channels_message_center"
 
-    if find(lines, r"^(?:视频号消息|赞、收藏和最近看过|我的视频号)$"):
+    if find(lines, r"^(?:视频号消息|赞、收藏和最近看过|赞和收藏|浏览设置|我的视频号)$"):
         return "personal_page"
 
-    if find(lines, r"^(?:[√✓]?)\s*(?:已关注|互相关注|申请关注|关注)$") and find(lines, r"^(?:私信|客服)$"):
+    follow_btn = find(lines, r"^(?:[√✓]?)\s*(?:已关注|互相关注|申请关注|关注)$")
+    contact_btn = find(lines, r"^(?:私信|客服)$")
+    if follow_btn and contact_btn and abs(follow_btn["box"][1] - contact_btn["box"][1]) <= 60:
         return "user_profile"
     if find(lines, r"^(?:私信|客服)$") and (
         find(lines, r"^\d+(?:\.\d+)?[万wW]?\s*条原创内容$")
@@ -448,12 +451,21 @@ def classify_page_state(lines, height=1605):
     bottom_actions = [
         l
         for l in lines
-        if l["box"][1] > height - 130
-        and l["box"][0] >= 320
-        and re.fullmatch(r"(?:转发|赞|喜欢|收藏|推荐|评论|\d+(?:\.\d+)?[万wW]?)", l["text"].strip())
+        if l.get("feedRole")
+        or (
+            l["box"][1] > height - 130
+            and l["box"][0] >= 320
+            and re.fullmatch(r"(?:转发|赞|喜欢|收藏|推荐|评论|\d+(?:\.\d+)?[万wW]?)", l["text"].strip())
+        )
     ]
     if (
-        (find(lines, r"^推荐$", lambda l: l["box"][1] < 220) and find(lines, r"^关注$", lambda l: l["box"][1] < 220))
+        (
+            find(lines, r"^推荐$", lambda l: l["box"][1] < 220)
+            and (
+                find(lines, r"^[<＜《‹«]?\s*关注$", lambda l: l["box"][1] < 220)
+                or find(lines, r"^朋友", lambda l: l["box"][1] < 220)
+            )
+        )
         or find(lines, r"^(?:转发|赞|收藏)$", lambda l: l["box"][1] > height - 120)
         or len(bottom_actions) >= 3
     ):
@@ -503,6 +515,17 @@ def ensure_clean_page_on_resume(ui, max_steps=3):
 
 
 def _feed_like_geometry(lines, height):
+    structural = next((line for line in lines if line.get("feedRole") == "like"), None)
+    if structural:
+        icon_roi = list(structural.get("iconBox") or structural["box"])
+        click_box = list(structural.get("buttonBox") or icon_roi)
+        count_text = structural["text"].strip()
+        return {
+            "iconRoi": icon_roi,
+            "clickBox": click_box,
+            "countText": count_text,
+            "count": parse_metric_number(count_text),
+        }
     count_line = find(
         lines,
         r"^(?:\d+(?:\.\d+)?[万wW]?|赞|喜欢)$",
@@ -526,6 +549,17 @@ def _feed_like_geometry(lines, height):
 
 
 def _feed_collect_geometry(lines, height):
+    structural = next((line for line in lines if line.get("feedRole") == "collect"), None)
+    if structural:
+        icon_roi = list(structural.get("iconBox") or structural["box"])
+        click_box = list(structural.get("buttonBox") or icon_roi)
+        count_text = structural["text"].strip()
+        return {
+            "iconRoi": icon_roi,
+            "clickBox": click_box,
+            "countText": count_text,
+            "count": parse_metric_number(count_text),
+        }
     count_line = find(
         lines,
         r"^(?:\d+(?:\.\d+)?[万wW]?|赞|收藏|推荐)$",
@@ -606,7 +640,9 @@ def like_work(ui, quota_store, work_key, lines=None):
     check_stopped(ui)
     ui.click({"text": "like_work", "box": before["clickBox"]})
     after_lines = ui.snapshot("feed-after-like")
-    after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+    after_geom = _feed_like_geometry(after_lines, ui.height)
+    skip_frame = getattr(ui, "controls_exposed", False) and after_geom["count"] > before["count"]
+    after_frame = None if skip_frame else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
     after = work_like_state(after_lines, after_frame, ui.height)
     verified = bool(after["liked"] or after["count"] > before["count"])
     if not verified:
@@ -649,7 +685,9 @@ def collect_work_action(ui, quota_store, work_key, lines=None):
     check_stopped(ui)
     ui.click({"text": "collect_work", "box": before["clickBox"]})
     after_lines = ui.snapshot("feed-after-collect")
-    after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
+    after_geom = _feed_collect_geometry(after_lines, ui.height)
+    skip_frame = getattr(ui, "controls_exposed", False) and after_geom["count"] > before["count"]
+    after_frame = None if skip_frame else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
     after = work_collect_state(after_lines, after_frame, ui.height)
     verified = bool(after["collected"] or after["count"] > before["count"])
     if not verified:
@@ -1001,9 +1039,9 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
     # A liked comment gains a 推荐 button that moves its count and thumb left,
     # so the state is read where the fresh page puts them, not at the old box.
     updated = None
+    after_frame = None
     for attempt in range(2):
         after_lines = ui.snapshot("comments-after-like")
-        after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
         after_drawer = parse_comment_drawer(after_lines, ui.height, parent_event_id=work_key)
         updated = next(
             (
@@ -1013,6 +1051,15 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
             ),
             None,
         )
+        skip_frame = (
+            getattr(ui, "controls_exposed", False)
+            and updated is not None
+            and (
+                bool(updated.get("_liked"))
+                or parse_metric_number(updated.get("_likeCountText", "")) > before["count"]
+            )
+        )
+        after_frame = None if skip_frame else (ui.capture_frame() if hasattr(ui, "capture_frame") else None)
         if updated is not None:
             break
         time.sleep(0.5)
@@ -1765,7 +1812,12 @@ def open_personal_messages(ui, lines=None):
         state = classify_page_state(lines, ui.height)
 
     if state == "channels_feed":
-        personal_icon = {"text": "personal_icon", "box": [640, 65, 56, 56]}
+        raw_controls = ui.controls_now() if hasattr(ui, "controls_now") else lines
+        personal_icon = control(
+            raw_controls,
+            r"^个人中心$",
+            lambda line: line["box"][0] > 520 and line["box"][1] < 200,
+        ) or {"text": "personal_icon", "box": [640, 65, 56, 56]}
         check_stopped(ui)
         ui.click(personal_icon)
         lines = ui.snapshot("personal-page")
@@ -1815,6 +1867,7 @@ def parse_comment_messages(lines, height=1605, frame=None):
             if 110 <= item["box"][0] <= 220 and item["text"].strip() == "回复"
         )
         rx, ry, rw, rh = reply_item["box"]
+        structural_like = reply_item.get("messageLikeBox")
         like_item = next(
             (
                 item
@@ -1823,7 +1876,11 @@ def parse_comment_messages(lines, height=1605, frame=None):
             ),
             None,
         )
-        like_box = like_item["box"] if like_item else [rx + 96, max(0, ry - 4), 44, max(32, rh + 4)]
+        like_box = (
+            list(structural_like)
+            if structural_like
+            else (like_item["box"] if like_item else [rx + 96, max(0, ry - 4), 44, max(32, rh + 4)])
+        )
 
         block_rows = [
             r
@@ -1915,7 +1972,13 @@ def handle_single_message(
             ui.click({"text": "like_message", "box": message["likeBox"]})
             after_lines = ui.snapshot("messages-after-like")
             after_frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
-            red_after, _ = is_red_active(after_frame, message["likeBox"])
+            after_messages = parse_comment_messages(after_lines, ui.height)
+            refreshed = next(
+                (m for m in after_messages if m["key"] == msg_key or m["nickname"] == message["nickname"]),
+                None,
+            )
+            check_box = refreshed["likeBox"] if refreshed else message["likeBox"]
+            red_after, _ = is_red_active(after_frame, check_box)
             if not red_after and after_frame is not None:
                 raise RuntimeError(f"Message thumb-like did not turn red for {message['nickname']}")
             quota_store.record("like", "comment_like", msg_key)
@@ -2133,7 +2196,14 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
             try:
                 preview = feed_video_preview(lines, ui.height)
             except ValueError:
-                preview = {}
+                if any(config.get(k) for k in (*WORK_SCOPED_ACTIONS, "visitAuthorProfile")):
+                    lines = ui.snapshot("feed")
+                    try:
+                        preview = feed_video_preview(lines, ui.height)
+                    except ValueError:
+                        preview = {}
+                else:
+                    preview = {}
             author = author or preview.get("author", "")
             caption = caption or preview.get("captionPreview", "")
             if author and not caption and any(config.get(k) for k in WORK_SCOPED_ACTIONS):

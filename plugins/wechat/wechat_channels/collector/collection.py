@@ -67,8 +67,10 @@ def author_in_feed(lines, height):
     hot_rows = [line["box"][1] for line in lines if re.search(r"热评|\d+条回复", line["text"])]
     fragments = [
         line for line in lines
-        if line["box"][1] > height - 150 and line["box"][0] > 65
-        and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复", line["text"])
+        if line["text"].strip()
+        and not line.get("feedRole")
+        and line["box"][1] > height - 150 and line["box"][0] > 65
+        and not re.search(r"关注|私信|客服|热评|设置为铃声|发表评论|说点什么|写评论|\d+条回复|^直播中$", line["text"])
         and not any(abs(line["box"][1] - y) <= 20 for y in hot_rows)
         and not re.fullmatch(r"[√✓✔]+", line["text"].strip())
         and not re.fullmatch(r"[\d.万wW]+", line["text"])
@@ -98,8 +100,8 @@ def author_in_feed(lines, height):
     return _without_new_video_notice(candidates[0])
 
 
-# The feed can draw "6小时前有新视频" right after the author's name (V2131A run bff74863).
-NEW_VIDEO_NOTICE = re.compile(r"\s*(?:\d+\s*(?:秒|分钟|小时|天)前)?\s*有新视频$")
+# The feed can draw "6小时前有新视频" (or truncated "23小时前有新") right after the author's name.
+NEW_VIDEO_NOTICE = re.compile(r"\s*(?:\d+\s*(?:秒|分钟|小时|天)前)?\s*有新(?:视频)?(?:\.{2,}|…+)?$")
 
 
 def _without_new_video_notice(line):
@@ -138,6 +140,9 @@ def feed_video_preview(lines, height=1605) -> dict:
 
 
 def comment_control_in_feed(lines, height, ui=None):
+    structural = next((line for line in lines if line.get("feedRole") == "comment"), None)
+    if structural:
+        return {**structural, "box": list(structural.get("buttonBox") or structural["box"])}
     comment = find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?|评论)$",
                    lambda line: line["box"][0] > 590 and line["box"][1] > height - 130)
     if comment:
@@ -377,7 +382,10 @@ def control(lines, pattern, predicate=lambda line: True):
 
 
 def share_geometry(lines, height):
-    """The 转发 button: its count (or label) sits under the icon in the bottom bar."""
+    """The 转发 button: prefer structural SeekBar-anchored slot, else infer from count/label."""
+    structural = next((line for line in lines if line.get("feedRole") == "share"), None)
+    if structural:
+        return {"text": "share", "box": list(structural.get("iconBox") or structural.get("buttonBox") or structural["box"])}
     count = find(lines, r"^(?:\d+(?:\.\d+)?[万wW]?\+?|转发|分享)$",
                  lambda line: 420 <= line["box"][0] + line["box"][2] / 2 <= 510 and line["box"][1] > height - 115)
     if count:
@@ -532,7 +540,33 @@ def copy_share_link(ui, lines, previous_link=None):
     return link
 
 
-def ensure_feed(ui, launch=True):
+def _wait_navigation_controls(ui, budget=2.4):
+    """Wait briefly across window transitions so navigation-top does not fall back to templates/OCR."""
+    if not getattr(ui, "controls_exposed", False) or not hasattr(ui, "hierarchy"):
+        return None
+    from interactions import classify_page_state
+
+    deadline = time.monotonic() + budget
+    last_visible = None
+    while time.monotonic() < deadline:
+        try:
+            controls = ui.hierarchy(timeout=min(2.5, max(0.4, deadline - time.monotonic())), force=True)
+            visible = [item for item in controls if not item.get("icon") and not item.get("container")]
+            last_visible = visible
+            if (
+                find(visible, r"^推荐$|^视频号$|^发现$")
+                or classify_page_state(visible, ui.height) != "unknown"
+                or any(item["box"][1] > ui.height - 42 for item in visible)
+            ):
+                return visible
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return last_visible
+
+
+def ensure_feed(ui, launch=True, need_author=True):
+    feed_label = "feed" if need_author else "feed-ready"
     if launch:
         # Earlier runs can leave several pages (chats, profiles, shared videos)
         # above WeChat's tabs; start from the tabs instead of backing out of them.
@@ -546,7 +580,39 @@ def ensure_feed(ui, launch=True):
     navigation_label = "navigation-bottom"
     pending_navigation = None
     navigation_deadline = 0
+    backed_from_subpage = False
     while navigation_steps < 7:
+        probed = _wait_navigation_controls(ui) if (pending_navigation or backed_from_subpage) else None
+        if probed and (pending_navigation == "recommend" or backed_from_subpage):
+            from interactions import classify_page_state
+
+            has_recommend_tabs = bool(
+                find(probed, r"^推荐$", lambda line: line["box"][1] < 250)
+                and find(probed, r"^[<＜《‹«]?\s*关注$", lambda line: line["box"][1] < 250)
+                and find(probed, r"^朋友", lambda line: line["box"][1] < 250)
+            )
+            in_discover = bool(find(probed, r"^视频号$") and find(probed, r"^发现$", lambda line: line["box"][1] < 250))
+            in_home = bool(
+                find(probed, r"^发现$", lambda line: line["box"][1] > ui.height - 180)
+                and find(probed, r"^通讯录$")
+            )
+            substate = classify_page_state(probed, ui.height)
+            is_grid = any(line["box"][1] > ui.height - 42 for line in probed)
+            if not has_recommend_tabs and not in_discover and not in_home and (
+                substate != "unknown" or is_grid
+            ):
+                # Channels resumed onto a stale profile/personal/message/single-video subpage;
+                # pop it via pure controls without wasting 30s+ on navigation-top templates/OCR.
+                ui.back()
+                pending_navigation = None
+                navigation_label = "navigation-bottom"
+                backed_from_subpage = True
+                waiting_for_start = False
+                navigation_steps += 1
+                continue
+            if backed_from_subpage and (has_recommend_tabs or in_discover):
+                navigation_label = "navigation-top"
+            backed_from_subpage = False
         lines = ui.snapshot(navigation_label)
         is_profile_grid = navigation_label == "navigation-bottom" and any(line["box"][1] > ui.height - 42 for line in lines)
         is_comment_drawer = bool(find_comment_drawer_heading(lines, ui.height))
@@ -574,7 +640,7 @@ def ensure_feed(ui, launch=True):
             target = lines[0]
             ui.click(target)
             if target["navigation"] == "recommend":
-                return ui.snapshot("feed")
+                return ui.snapshot(feed_label)
             navigation_label = "navigation-top"
             pending_navigation = {"discover": "channels", "channels": "recommend"}[target["navigation"]]
             navigation_deadline = time.monotonic() + 10
@@ -582,8 +648,10 @@ def ensure_feed(ui, launch=True):
             navigation_steps += 1
             continue
         if recommendations_ready:
+            if not need_author:
+                return lines
             ui.click({**recommended, "navigation": "recommend"})
-            return ui.snapshot("feed")
+            return ui.snapshot(feed_label)
         discover = find(lines, r"^发现$", lambda line: line["box"][1] > ui.height - 180)
         if channels_ready:
             ui.click({**channels, "navigation": "channels"})
@@ -615,6 +683,40 @@ def ensure_feed(ui, launch=True):
         waiting_for_start = False
         navigation_steps += 1
     raise ValueError("Could not reach recommendations")
+
+
+def drawer_author_nickname(lines):
+    """Extract the full untruncated native TextView author nickname from an open details/comment drawer."""
+    direct = next(
+        (line["text"].strip() for line in lines if line.get("workAuthorControl") and line.get("text", "").strip()),
+        None,
+    )
+    if direct:
+        return direct
+    try:
+        region = work_region(lines)
+    except Exception:
+        return None
+    heading_bottom = region["heading"]["bottom"]
+    header_top = region["header"]["top"]
+    for item in region["header"]["items"]:
+        if item.get("source") == "hierarchy" and item.get("selector", {}).get("attribute") == "text":
+            txt = item["text"].strip()
+            if txt and txt not in ("作者", "已声明原创") and not re.search(r"都在搜", txt) and item["box"][0] < 360:
+                # Only before the "作者" tag on the same row
+                author_tag = next((t for t in region["header"]["items"] if t["text"].strip() == "作者"), None)
+                if author_tag and item["box"][0] < author_tag["box"][0]:
+                    return txt
+    above = [
+        line for line in lines
+        if line.get("source") == "hierarchy"
+        and line.get("selector", {}).get("attribute") == "text"
+        and heading_bottom <= line["box"][1] < header_top
+        and line["box"][0] < 360
+        and line["text"].strip() not in ("作者", "已声明原创")
+        and not re.search(r"都在搜", line["text"])
+    ]
+    return above[0]["text"].strip() if len(above) == 1 else None
 
 
 def open_video_details_drawer(ui, lines, author, *, for_comments=False):
@@ -673,7 +775,8 @@ def open_video_details_drawer(ui, lines, author, *, for_comments=False):
             break
         ui.click(expand)
         details = ui.snapshot(expand_label, author=author)
-    return parse_video(details, author), details
+    resolved_author = drawer_author_nickname(details) or author
+    return parse_video(details, resolved_author), details
 
 
 def video_details(ui, lines, author):

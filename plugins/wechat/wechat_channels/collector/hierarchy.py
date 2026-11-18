@@ -25,10 +25,10 @@ DIRECT_TEXT_CONTROLS = {
     "lz3": "回复",
 }
 # Containers WeChat draws without exposing their text in AccessibilityNodeInfo.
-# Containers that expose text children (e.g. c6d -> c1_) use pure controls first
-# and only fall back to container OCR when no text child is present.
+# Structural topology (_structural_roles) locates these without resource-id;
+# legacy IDs remain only as fast-path hints for minimal synthetic test trees.
 TEXT_CONTAINERS = {
-    "c6d": "comment-body", "mvg": "reply-expander", "i0q": "reply-expander",
+    "c6d": "comment-body",
     "dzo": "feed-author", "fzm": "profile-name", "fxa": "certification",
     "fy7": "bio", "fy8": "bio", "fyk": "follow-button", "mld": "message-button",
 }
@@ -56,13 +56,57 @@ def _has_label(node):
     return any(item.get("text", "").strip() or item.get("content-desc", "").strip() for item in node.iter("node"))
 
 
+def _is_drawer_subtree(layer, width, height):
+    if _resource(layer) == DRAWER_LAYER:
+        return True
+    scaled_height = round(height * 720 / width)
+    has_seek = False
+    has_heading = False
+    for item in layer.iter("node"):
+        if item.get("visible-to-user") == "false":
+            continue
+        if item.get("class") == "android.widget.SeekBar":
+            has_seek = True
+            break
+        text = item.get("text", "").strip()
+        if text and (box := _bounds(item)):
+            if is_comment_drawer_heading({"text": text, "box": _scaled(box, width)}, scaled_height):
+                has_heading = True
+    return has_heading and not has_seek
+
+
+def _is_feed_subtree(layer, width):
+    if _resource(layer) in (FEED_LAYER, FEED_PAGER):
+        return True
+    top_tabs = set()
+    for item in layer.iter("node"):
+        if item.get("visible-to-user") == "false":
+            continue
+        if item.get("class") == "android.widget.SeekBar":
+            return True
+        desc = item.get("content-desc", "").strip()
+        if desc in ("暂停", "播放", "浮窗", "个人中心"):
+            return True
+        label = item.get("text", "").strip() or desc
+        if label in ("推荐", "关注") and (box := _bounds(item)) and _scaled(box, width)[1] < 250:
+            top_tabs.add(label)
+    return len(top_tabs) >= 2
+
+
 def covered_layers(root, width, height):
     """Full-screen sibling subtrees drawn under another one; none when no known layering is found.
 
-    The feed is the bottom layer (the whole Channels page `nsv`, or the video
-    pager `jlt` beside a sheet), the comment drawer is above it, and any other
-    full-screen sheet (profiles) is above the drawer.
+    The feed is the bottom layer (detected semantically via SeekBar/player controls
+    or legacy `nsv`/`jlt`), the comment drawer is above it, and any other
+    full-screen sheet (profiles, menus, basic info) is above the drawer.
     """
+    def rank(layer):
+        if _is_drawer_subtree(layer, width, height):
+            return 1
+        if _is_feed_subtree(layer, width):
+            return 0
+        return 2
+
     covered = []
     for node in root.iter("node"):
         layers = []
@@ -70,7 +114,6 @@ def covered_layers(root, width, height):
             box = _bounds(child) if child.tag == "node" and _has_label(child) else None
             if box and (box[2] - box[0]) * (box[3] - box[1]) >= 0.8 * width * height:
                 layers.append(child)
-        rank = lambda layer: {FEED_LAYER: 0, FEED_PAGER: 0, DRAWER_LAYER: 1}.get(_resource(layer), 2)
         if len(layers) >= 2 and any(rank(layer) < 2 for layer in layers):
             top = max(rank(layer) for layer in layers)
             covered += [layer for layer in layers if rank(layer) < top]
@@ -86,28 +129,397 @@ def _scaled(box, width):
 
 def _drawer_scroll_forward(root, hidden, width, height):
     """Whether the visible comment drawer's RecyclerView can still scroll down, or None if unknown."""
-    for layer in root.iter("node"):
-        if id(layer) in hidden or _resource(layer) != DRAWER_LAYER:
+    scaled_height = round(height * 720 / width)
+    visible_nodes = []
+    heading_top = None
+    for node in root.iter("node"):
+        if id(node) in hidden:
             continue
-        scroll_flags = []
-        loading = False
-        for node in layer.iter("node"):
-            if id(node) in hidden:
-                continue
-            if (node.get("package") != PACKAGE or node.get("enabled") == "false"
-                    or node.get("visible-to-user") == "false"):
-                continue
-            box = _bounds(node)
-            if not box or not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
-                continue
-            if node.get("class") == "android.widget.ProgressBar":
-                loading = True
-            elif (node.get("class") == "androidx.recyclerview.widget.RecyclerView"
-                    and node.get("scroll-forward") in ("true", "false")):
-                scroll_flags.append(node.get("scroll-forward") == "true")
-        if scroll_flags:
-            return any(scroll_flags) or loading
+        if (node.get("package") != PACKAGE or node.get("enabled") == "false"
+                or node.get("visible-to-user") == "false"):
+            continue
+        box = _bounds(node)
+        if not box or not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
+            continue
+        visible_nodes.append((node, box))
+        text = node.get("text", "").strip()
+        if heading_top is None and text:
+            if is_comment_drawer_heading({"text": text, "box": _scaled(box, width)}, scaled_height):
+                heading_top = box[1]
+    if heading_top is None:
+        return None
+    scroll_flags = []
+    loading = False
+    for node, box in visible_nodes:
+        if box[1] < heading_top:
+            continue
+        if node.get("class") == "android.widget.ProgressBar":
+            loading = True
+        elif (node.get("class") == "androidx.recyclerview.widget.RecyclerView"
+                and node.get("scroll-forward") in ("true", "false")):
+            scroll_flags.append(node.get("scroll-forward") == "true")
+    if scroll_flags:
+        return any(scroll_flags) or loading
     return None
+
+
+def _structural_roles(root, hidden, parent_map, width, height):
+    """Infer container kinds, control metadata, and 0-count action slots from invariant anchor topology."""
+    container_kinds = {}
+    node_meta = {}
+    extra_lines = []
+    chat_bubble_ids = set()
+    scaled_height = round(height * 720 / width)
+
+    def valid_visible(node):
+        if node is None or node.tag != "node" or id(node) in hidden:
+            return False
+        if (node.get("package") != PACKAGE or node.get("enabled") == "false"
+                or node.get("visible-to-user") == "false" or node.get("password") == "true"):
+            return False
+        box = _bounds(node)
+        return bool(box and 0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height)
+
+    def visible_children(parent):
+        return [child for child in parent if child.tag == "node" and valid_visible(child)]
+
+    # 1. Feed playback page: anchor on visible SeekBar -> bottom main bar (author + 4 action slots).
+    for node in root.iter("node"):
+        if not valid_visible(node) or node.get("class") != "android.widget.SeekBar":
+            continue
+        sb_box = _bounds(node)
+        branch = node
+        bar = None
+        for _ in range(3):
+            parent = parent_map.get(branch)
+            if parent is None:
+                break
+            candidates = [
+                sib for sib in visible_children(parent)
+                if sib is not branch
+                and (b := _bounds(sib))
+                and b[1] >= sb_box[1] - 24
+                and (b[2] - b[0]) >= int(width * 0.8)
+            ]
+            if candidates:
+                bar = min(candidates, key=lambda sib: _bounds(sib)[1])
+                break
+            branch = parent
+        if bar is None:
+            continue
+        bar_children = visible_children(bar)
+        # Left group: @author custom box (+ optional follow pill).
+        left_group = next((c for c in bar_children if _bounds(c)[0] <= int(width * 0.15)), None)
+        if left_group is not None:
+            author_target = next(
+                (c for c in visible_children(left_group) if c.get("clickable") == "true" and _bounds(c)[0] <= int(width * 0.25)),
+                left_group if left_group.get("clickable") == "true" else None,
+            )
+            if author_target is not None:
+                container_kinds[id(author_target)] = "feed-author"
+        # Right group: 4 clickable action slots sorted left-to-right [like, share, collect, comment].
+        right_group = next((c for c in bar_children if _bounds(c)[0] >= int(width * 0.4)), None)
+        if right_group is not None:
+            slots = sorted(
+                (c for c in visible_children(right_group) if c.get("clickable") == "true"),
+                key=lambda c: _bounds(c)[0],
+            )
+            if len(slots) == 4:
+                for slot, (role, default_label) in zip(
+                    slots,
+                    (("like", "赞"), ("share", "转发"), ("collect", "收藏"), ("comment", "评论")),
+                ):
+                    s_box = _scaled(_bounds(slot), width)
+                    img = next(
+                        (d for d in slot.iter("node") if d is not slot and valid_visible(d)
+                         and d.get("class", "").endswith("ImageView")),
+                        None,
+                    )
+                    if img is not None:
+                        i_box = _scaled(_bounds(img), width)
+                    else:
+                        iw, ih = min(48, s_box[2]), min(48, s_box[3])
+                        i_box = [s_box[0] + (s_box[2] - iw) // 2, s_box[1], iw, ih]
+                    tv = next(
+                        (d for d in slot.iter("node") if d is not slot and valid_visible(d)
+                         and d.get("class", "").endswith("TextView") and d.get("text", "").strip()),
+                        None,
+                    )
+                    if tv is not None:
+                        node_meta.setdefault(id(tv), {}).update(
+                            {"feedRole": role, "buttonBox": s_box, "iconBox": i_box}
+                        )
+                    else:
+                        extra_lines.append({
+                            "text": default_label,
+                            "box": s_box,
+                            "score": 1.0,
+                            "source": "hierarchy",
+                            "feedRole": role,
+                            "buttonBox": s_box,
+                            "iconBox": i_box,
+                        })
+
+    # 2. Comment drawer & Profile: anchor on "作者" tag, ImageView(desc="头像"), "私信按钮", and reply-expander bars.
+    comment_avatar_ancestors = set()
+    profile_top_bottom = None
+    profile_follow_top = None
+
+    for node in root.iter("node"):
+        if not valid_visible(node):
+            continue
+        desc = node.get("content-desc", "").strip()
+        text = node.get("text", "").strip()
+        cls = node.get("class", "")
+
+        # Work header native author TextView left of / above "作者" tag.
+        if cls.endswith("TextView") and text == "作者":
+            branch = node
+            for _ in range(3):
+                parent = parent_map.get(branch)
+                if parent is None or not valid_visible(parent):
+                    break
+                pb = _bounds(parent)
+                if pb[3] - pb[1] > int(width * 0.25):
+                    break
+                for sib in visible_children(parent):
+                    if sib is branch:
+                        break
+                    nick_tv = next(
+                        (d for d in sib.iter("node") if valid_visible(d)
+                         and d.get("class", "").endswith("TextView")
+                         and d.get("clickable") == "true"
+                         and d.get("text", "").strip()
+                         and d.get("text", "").strip() not in ("作者", "已声明原创")),
+                        None,
+                    )
+                    if nick_tv is not None:
+                        node_meta.setdefault(id(nick_tv), {})["workAuthorControl"] = True
+                        break
+                branch = parent
+
+        # Profile message button -> sibling follow button.
+        if desc == "私信按钮":
+            msg_box = _bounds(node)
+            profile_follow_top = min(profile_follow_top or msg_box[1], msg_box[1])
+            btn_bar = parent_map.get(node)
+            if btn_bar is not None:
+                for sib in visible_children(btn_bar):
+                    if sib is node:
+                        continue
+                    sb = _bounds(sib)
+                    if sb[0] < msg_box[0] and abs(sb[1] - msg_box[1]) <= int(width * 0.05):
+                        container_kinds[id(sib)] = "follow-button"
+
+        # Avatar anchor: distinguish Profile top bar (has "设置" on right) vs Comment item (has header + right clickable like).
+        if desc == "头像":
+            av_scaled = _scaled(_bounds(node), width)
+            parent = parent_map.get(node)
+            if parent is None or av_scaled[0] >= 240:
+                continue
+            siblings = [sib for sib in visible_children(parent) if sib is not node]
+            has_settings = any(
+                _scaled(_bounds(sib), width)[0] >= 500
+                and any(d.get("content-desc", "").strip() == "设置" for d in sib.iter("node") if valid_visible(d))
+                for sib in siblings
+            )
+            if has_settings:
+                pb = _bounds(parent)
+                profile_top_bottom = max(profile_top_bottom or pb[3], pb[3])
+                mid = next(
+                    (sib for sib in siblings if 150 <= _scaled(_bounds(sib), width)[0] < 540),
+                    None,
+                )
+                if mid is not None:
+                    mid_children = visible_children(mid)
+                    name_target = mid_children[0] if mid_children else mid
+                    container_kinds[id(name_target)] = "profile-name"
+                    name_bottom = _bounds(name_target)[3]
+                    for extra_child in mid_children[1:]:
+                        eb = _bounds(extra_child)
+                        if eb[1] >= name_bottom - 8 and not any(
+                            d.get("text", "").strip() for d in extra_child.iter("node") if valid_visible(d)
+                        ):
+                            container_kinds[id(extra_child)] = "certification"
+                            break
+                continue
+
+            # Comment item: header group + right-side clickable like container.
+            like_btn = next(
+                (sib for sib in siblings if sib.get("clickable") == "true" and _scaled(_bounds(sib), width)[0] >= 460),
+                None,
+            )
+            header_group = next(
+                (sib for sib in siblings
+                 if sib is not like_btn and 75 <= _scaled(_bounds(sib), width)[0] < 450
+                 and any(d.get("class", "").endswith("TextView") and d.get("text", "").strip()
+                         for d in visible_children(sib))),
+                None,
+            )
+            if header_group is not None and like_btn is not None:
+                anc = parent
+                for _ in range(4):
+                    if anc is None:
+                        break
+                    comment_avatar_ancestors.add(id(anc))
+                    anc = parent_map.get(anc)
+
+                tvs = [
+                    d for d in visible_children(header_group)
+                    if d.get("class", "").endswith("TextView") and d.get("text", "").strip()
+                ]
+                nick_tv = next((d for d in tvs if d.get("clickable") == "true"), tvs[0] if tvs else None)
+                has_badge = any(
+                    (_resource(d) == "ehq" or d.get("content-desc", "").strip() == "视频号logo")
+                    for d in visible_children(header_group)
+                )
+                # Compute precise thumb box inside like_btn.
+                thumb_img = next(
+                    (d for d in like_btn.iter("node") if d is not like_btn and valid_visible(d)
+                     and d.get("class", "").endswith("ImageView")),
+                    None,
+                )
+                if thumb_img is not None:
+                    tb = _scaled(_bounds(thumb_img), width)
+                    tw, th = max(36, tb[2]), max(34, tb[3])
+                    c_like_box = [tb[0] - (tw - tb[2]) // 2, tb[1] - (th - tb[3]) // 2, tw, th]
+                else:
+                    lb = _scaled(_bounds(like_btn), width)
+                    lw, lh = min(40, lb[2]), min(40, lb[3])
+                    c_like_box = [lb[0] + (lb[2] - lw) // 2, lb[1] + (lb[3] - lh) // 2, lw, lh]
+
+                if nick_tv is not None:
+                    meta = node_meta.setdefault(id(nick_tv), {})
+                    meta["commentNicknameControl"] = True
+                    meta["commentLikeBox"] = c_like_box
+                    if has_badge:
+                        meta["hasChannelsBadge"] = True
+                if len(tvs) >= 2:
+                    node_meta.setdefault(id(tvs[-1]), {})["commentHeaderDate"] = True
+
+                hb = _bounds(header_group)
+                for sib in siblings:
+                    if sib in (header_group, like_btn):
+                        continue
+                    sb = _bounds(sib)
+                    if sb[1] >= hb[3] - 20 and sib.get("class") == "android.widget.RelativeLayout":
+                        container_kinds[id(sib)] = "comment-body"
+
+        # Chat self-avatar -> mark sibling TextView bubbles in same chat list row to preserve controlBox.
+        if cls.endswith("ImageView") and desc.endswith("头像") and desc != "头像" and _scaled(_bounds(node), width)[0] >= 500:
+            row_anc = parent_map.get(node)
+            for _ in range(3):
+                if row_anc is None:
+                    break
+                rb = _bounds(row_anc)
+                if rb and (rb[2] - rb[0]) >= int(width * 0.85):
+                    for d in row_anc.iter("node"):
+                        if valid_visible(d) and d.get("class", "").endswith("TextView") and d.get("text", "").strip():
+                            chat_bubble_ids.add(id(d))
+                    break
+                row_anc = parent_map.get(row_anc)
+
+    # Profile bio wrapper detection when profile anchors are present.
+    if profile_top_bottom is not None and profile_follow_top is not None and profile_follow_top > profile_top_bottom:
+        bio_limit = profile_follow_top
+        for node in root.iter("node"):
+            if not valid_visible(node) or not node.get("class", "").endswith("TextView"):
+                continue
+            txt = node.get("text", "").strip()
+            b = _bounds(node)
+            if profile_top_bottom <= b[1] < profile_follow_top and re.fullmatch(
+                r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|商品橱窗",
+                txt,
+            ):
+                bio_limit = min(bio_limit, b[1])
+        for node in root.iter("node"):
+            if not valid_visible(node):
+                continue
+            b = _bounds(node)
+            sb = _scaled(b, width)
+            if sb[0] <= 70 and profile_top_bottom - 8 <= b[1] < bio_limit - 4 and b[3] <= bio_limit + 6:
+                txt = node.get("text", "").strip()
+                if re.search(r"IP\s*(?:归)?属地", txt):
+                    continue
+                if node.get("class", "").endswith("TextView") and txt:
+                    container_kinds.setdefault(id(node), "bio")
+
+    # 3. Comment reply-expander bar & Message-center 2-button bar ("回复" + thumb-like).
+    for node in root.iter("node"):
+        if not valid_visible(node):
+            continue
+        res_id = _resource(node)
+        box = _bounds(node)
+        sb = _scaled(box, width)
+
+        # Reply expander: full-width empty clickable FrameLayout beneath a comment item (or legacy mvg/i0q).
+        is_legacy_expander = res_id in ("mvg", "i0q")
+        is_structural_expander = (
+            node.get("class") == "android.widget.FrameLayout"
+            and node.get("clickable") == "true"
+            and len(node) == 0
+            and not node.get("text", "").strip()
+            and not node.get("content-desc", "").strip()
+            and box[0] == 0
+            and box[2] == width
+            and 22 <= sb[3] <= 105
+            and (p := parent_map.get(node)) is not None
+            and any(id(sib) in comment_avatar_ancestors for sib in visible_children(p) if sib is not node)
+        )
+        if is_legacy_expander or is_structural_expander:
+            lh = min(sb[3], TEXT_LINE_HEIGHT)
+            node_meta.setdefault(id(node), {}).update({
+                "directText": "展开更多回复",
+                "directBox": [96, sb[1] + (sb[3] - lh) // 2, 160, lh],
+            })
+            continue
+
+        # Message center horizontal 2-button bar: [child(0)="回复", child(1)=thumb-like].
+        if 95 <= sb[0] <= 185 and 150 < sb[1] < scaled_height - 70:
+            clicks = [
+                c for c in visible_children(node)
+                if c.get("clickable") == "true"
+                and not c.get("text", "").strip()
+                and not c.get("content-desc", "").strip()
+                and not any(
+                    d.get("text", "").strip() or d.get("content-desc", "").strip()
+                    for d in c.iter("node") if valid_visible(d)
+                )
+            ]
+            if len(clicks) == 2:
+                b0, b1 = _bounds(clicks[0]), _bounds(clicks[1])
+                s0, s1 = _scaled(b0, width), _scaled(b1, width)
+                if (
+                    abs(s0[1] - s1[1]) <= 12
+                    and s1[0] >= s0[0] + s0[2] - 8
+                    and 75 <= s0[2] <= 155
+                    and 45 <= s1[2] <= 130
+                    and 42 <= s0[3] <= 105
+                ):
+                    anc = parent_map.get(node)
+                    has_msg_header = False
+                    for _ in range(2):
+                        if anc is None:
+                            break
+                        if any(
+                            valid_visible(d)
+                            and d.get("class", "").endswith("TextView")
+                            and d.get("text", "").strip()
+                            and _bounds(d)[3] <= b0[1] + 12
+                            for d in anc.iter("node")
+                        ):
+                            has_msg_header = True
+                            break
+                        anc = parent_map.get(anc)
+                    if has_msg_header:
+                        lw, lh = min(48, s1[2]), min(48, s1[3])
+                        like_box = [s1[0] + (s1[2] - lw) // 2, s1[1] + (s1[3] - lh) // 2, lw, lh]
+                        node_meta.setdefault(id(clicks[0]), {}).update({
+                            "directText": "回复",
+                            "messageLikeBox": like_box,
+                        })
+
+    return container_kinds, node_meta, extra_lines, chat_bubble_ids
 
 
 def text_lines(xml, width, height, containers=False):
@@ -128,6 +540,9 @@ def text_lines(xml, width, height, containers=False):
     hidden = {id(node) for layer in covered_layers(root, width, height) for node in layer.iter("node")}
     parent_map = {child: parent for parent in root.iter("node") for child in parent}
     drawer_scroll_forward = _drawer_scroll_forward(root, hidden, width, height)
+    structural_kinds, node_meta, extra_lines, chat_bubble_ids = _structural_roles(
+        root, hidden, parent_map, width, height
+    )
     scaled_height = round(height * 720 / width)
     for node in root.iter("node"):
         if id(node) in hidden:
@@ -146,15 +561,28 @@ def text_lines(xml, width, height, containers=False):
             continue
         descendants = [child for child in node.iter("node") if child is not node]
         res_id = _resource(node)
-        mld_direct = res_id == "mld" and node.get("content-desc", "").strip() == "私信按钮"
-        kind = None if mld_direct else TEXT_CONTAINERS.get(res_id)
-        # A bio control can hold only its first lines, so it is read with OCR on
-        # full profile reads as well; fill_containers keeps the more complete reading.
-        if kind and (kind == "bio" or not any(child.get("text", "").strip() for child in descendants)):
-            hole_box = _scaled(box, width)
-            if kind == "reply-expander" and hole_box[0] < 88 and hole_box[2] > 400:
-                hole_box = [88, hole_box[1], 320, hole_box[3]]
-            holes.append({"text": "", "container": kind, "box": hole_box, "source": "hierarchy"})
+        meta = node_meta.get(id(node), {})
+        mld_direct = node.get("content-desc", "").strip() == "私信按钮"
+        kind = None if mld_direct else (structural_kinds.get(id(node)) or TEXT_CONTAINERS.get(res_id))
+        if kind:
+            if kind == "feed-author":
+                # Ignore avatar-column "直播中" pills so live-author VODs still expose the nickname hole.
+                has_text_child = any(
+                    child.get("text", "").strip()
+                    and child.get("text", "").strip() != "直播中"
+                    and ((cb := _bounds(child)) is None or _scaled(cb, width)[0] >= 88)
+                    for child in descendants
+                )
+            elif kind == "bio":
+                has_text_child = False
+            else:
+                has_text_child = any(child.get("text", "").strip() for child in descendants)
+            if not has_text_child:
+                hole_box = _scaled(box, width)
+                if kind == "feed-author" and hole_box[0] < 96 and hole_box[0] + hole_box[2] > 110:
+                    right = hole_box[0] + hole_box[2]
+                    hole_box = [96, hole_box[1], right - 96, hole_box[3]]
+                holes.append({"text": "", "container": kind, "box": hole_box, "source": "hierarchy"})
         text = node.get("text", "").strip()
         if text and descendants:
             child_text = "".join(child.get("text", "").strip() for child in descendants)
@@ -163,9 +591,13 @@ def text_lines(xml, width, height, containers=False):
         # Container descriptions can summarize children and duplicate whole
         # pages; only a container without labelled descendants speaks for itself.
         attribute = "text"
+        direct_only = False
         if mld_direct and not text:
             attribute = "content-desc"
             text = "私信"
+        elif not text and meta.get("directText"):
+            text = meta["directText"]
+            direct_only = True
         elif not text and not any(child.get("text", "").strip()
                                   or child.get("content-desc", "").strip() not in ("", *ICON_DESCRIPTIONS)
                                   for child in descendants):
@@ -180,22 +612,32 @@ def text_lines(xml, width, height, containers=False):
             continue
         if re.search(r"请完成.*验证|拖动滑块|安全验证|验证码", text):
             raise RuntimeError("Verification detected; manual intervention required")
-        scaled = _scaled(box, width)
-        if attribute == "text" and "\n" not in text and scaled[3] > TEXT_LINE_HEIGHT + 10:
+        raw_scaled = _scaled(box, width)
+        scaled = meta.get("directBox") or raw_scaled
+        if not meta.get("directBox") and attribute == "text" and "\n" not in text and scaled[3] > TEXT_LINE_HEIGHT + 10:
             # Keep the vertical centre: a padded label must share the reading
             # row of the labels beside it, as OCR boxes do.
             scaled = [scaled[0], scaled[1] + (scaled[3] - TEXT_LINE_HEIGHT) // 2, scaled[2], TEXT_LINE_HEIGHT]
-        selector = {"attribute": attribute, "value": node.get(attribute),
-                    "resource": node.get("resource-id", ""), "class": node.get("class", "")}
-        line = {"text": text, "box": scaled, "score": 1.0, "selector": selector, "source": "hierarchy"}
+        line = {"text": text, "box": scaled, "score": 1.0, "source": "hierarchy"}
+        if not direct_only:
+            line["selector"] = {"attribute": attribute, "value": node.get(attribute),
+                                "resource": node.get("resource-id", ""), "class": node.get("class", "")}
+        elif node.get("resource-id"):
+            line["selector"] = {"attribute": "resource-id", "value": node.get("resource-id"),
+                                "resource": node.get("resource-id", ""), "class": node.get("class", "")}
         if node.get("selected") in ("true", "false"):
             line["selected"] = node.get("selected") == "true"
         if drawer_scroll_forward is not None and is_comment_drawer_heading(line, scaled_height):
             line["canScrollForward"] = drawer_scroll_forward
-        if res_id == "bkl":
+        if res_id == "bkl" or (id(node) in chat_bubble_ids and scaled != raw_scaled):
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
-            line["controlBox"] = _scaled(box, width)
-        if res_id == "kbf":
+            line["controlBox"] = raw_scaled
+        for meta_key in ("commentNicknameControl", "hasChannelsBadge", "commentHeaderDate",
+                         "commentLikeBox", "workAuthorControl", "feedRole", "buttonBox",
+                         "iconBox", "messageLikeBox"):
+            if meta_key in meta:
+                line[meta_key] = meta[meta_key]
+        if res_id == "kbf" and not line.get("hasChannelsBadge"):
             parent = parent_map.get(node)
             if parent is not None and any(
                 (_resource(sib) == "ehq" or sib.get("content-desc", "").strip() == "视频号logo")
@@ -207,6 +649,7 @@ def text_lines(xml, width, height, containers=False):
         if (attribute == "content-desc" and text in ICON_DESCRIPTIONS) or res_id == "a50":
             line["icon"] = True
         lines.append(line)
+    lines.extend(extra_lines)
     if not lines:
         raise HierarchyUnavailable("No visible WeChat text controls")
     # Identical nested labels are one visual control, not two author candidates.
@@ -384,13 +827,20 @@ def correct_ocr(recognized, semantic):
 
 
 def refresh_target(lines, previous):
-    candidates = [line for line in lines if line.get("selector") == previous.get("selector")]
+    role = previous.get("feedRole")
+    if role:
+        candidates = [line for line in lines if line.get("feedRole") == role]
+    else:
+        candidates = [line for line in lines if line.get("selector") == previous.get("selector")]
     if len(candidates) != 1:
         raise RuntimeError("Control is missing or ambiguous; no input was sent")
+    matched = candidates[0]
+    use_button_box = bool(previous.get("buttonBox") and previous["box"] == previous["buttonBox"])
+    candidate_box = list(matched.get("buttonBox") or matched["box"]) if use_button_box else matched["box"]
     # A few pixels come from re-rounding padded bounds; a real move is larger.
-    if max(abs(a - b) for a, b in zip(candidates[0]["box"], previous["box"])) > 6:
+    if max(abs(a - b) for a, b in zip(candidate_box, previous["box"])) > 6:
         raise RuntimeError("Control moved before click; no input was sent")
-    return candidates[0]
+    return {**matched, "box": candidate_box} if use_button_box else matched
 
 
 def channels_intro_acknowledgement(lines):
@@ -535,7 +985,7 @@ def _chat_ready(lines, height, author):
         _edit_box(lines)
         or find(
             lines,
-            r"^发送$|可按住\s*转文字|按住\s*说话|仅可发\s*1\s*条消息"
+            r"^发送$|可按住\s*转文字|按住\s*说话|切换私信身份|切换到按住说话|切换到键盘|更多功能按钮，已折叠|仅可发\s*1\s*条消息"
             r"|设置.{0,12}才能发消息|才能(?:给\S+)?发消息|不接收.{0,6}消息"
             r"|无法发送私信|暂无法接收私信|频繁发送私信|私信.{0,8}频繁|请明天再试|私信.{0,8}达到.{0,8}上限",
         )
@@ -569,7 +1019,7 @@ def _composer_or_drawer_ready(lines, height, author):
 # page that fails it, or a label not listed here, falls back to full-screen OCR.
 CONTROL_PAGES = {
     "navigation-bottom": _navigation_ready, "navigation-top": _navigation_ready,
-    **dict.fromkeys(("tab-check-", "tab-after-loc-", "tab-switched-", "tab-switched-loc-",
+    **dict.fromkeys(("feed-ready", "tab-check-", "tab-after-loc-", "tab-switched-", "tab-switched-loc-",
                      "verify-stage-recommend", "verify-stage-friends", "verify-stage-follow", "verify-stage-city",
                      "feed-after-collect", "feed-after-like", "feed-after-author-touch",
                      "feed-after-author-touch-retry", "feed-before-personal", "profile-first-work",
@@ -632,20 +1082,20 @@ _FEED_AUTHOR_LABELS = (
     "feed", "before-author", "search-opened-video-", "preemptive-feed-",
     "recommend-feed-", "friends-feed-", "follow-feed-", "city-feed-",
     "recommend-recovered-", "friends-recovered-", "follow-recovered-", "city-recovered-",
-    "link-video", "link-video-", "resume-check",
+    "link-video", "link-video-",
 )
 _FULL_PROFILE_LABELS = (
-    "author-profile", "author-profile-touch", "author-profile-touch-retry",
-    "commenter-profile", "commenter-profile-before-more",
+    "author-profile", "commenter-profile",
+)
+_TOUCH_PROFILE_LABELS = (
+    "author-profile-touch", "author-profile-touch-retry", "commenter-profile-before-more",
 )
 _FOLLOW_PROFILE_LABELS = (
     "profile-follow-check", "profile-after-follow", "profile-touch", "profile-grid",
 )
-_REPLY_EXPAND_DRAWER_LABELS = (
+_DRAWER_LABELS = (
     "comments", "comments-details", "comments-page-", "comments-replies", "comments-expanded",
     "comments-return", "comments-after-skip", "comments-recover",
-)
-_BODY_ONLY_DRAWER_LABELS = (
     "video-details", "expanded-description", "comments-preemptive-work-header",
     "comments-preemptive-work-expanded", "comments-check", "comments-after-like",
     "comments-after-post", "comments-after-reply", "comments-after-profile-touch",
@@ -668,11 +1118,11 @@ def _needed_containers(label, lines, height):
             if user_card_open(page_lines(lines), height):
                 return set()
         return {"profile-name", "certification", "bio", "follow-button", "message-button"}
+    if _matches_any(label, _TOUCH_PROFILE_LABELS):
+        return {"profile-name", "follow-button", "message-button"}
     if _matches_any(label, _FOLLOW_PROFILE_LABELS):
         return {"follow-button", "message-button"}
-    if _matches_any(label, _REPLY_EXPAND_DRAWER_LABELS):
-        return {"comment-body", "reply-expander"}
-    if _matches_any(label, _BODY_ONLY_DRAWER_LABELS):
+    if _matches_any(label, _DRAWER_LABELS):
         return {"comment-body"}
     return set()
 
@@ -710,7 +1160,8 @@ def choose_snapshot(label, height, author, hierarchy, templates, ocr, regional_o
         if complete_for(filled, label, height, author):
             source = "mixed" if any(line.get("filledContainer") for line in filled) else "hierarchy"
             return page_lines(filled), source
-        extra_roi = container_roi(lines, height) if regional_ocr and scoped != lines else None
+        allow_extra = bool(needed or page_check(label) is _known_page)
+        extra_roi = container_roi(lines, height) if regional_ocr and allow_extra and scoped != lines else None
         if extra_roi and extra_roi != roi:
             extra_filled = fill_containers(lines, regional_ocr(extra_roi))
             if complete_for(extra_filled, label, height, author):

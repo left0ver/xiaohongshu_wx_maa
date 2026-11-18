@@ -542,6 +542,180 @@ class HierarchyTests(unittest.TestCase):
             heading = next(item for item in lines if item["text"] == "评论 9")
             self.assertEqual(heading.get("canScrollForward"), expected)
 
+    def test_id_free_structural_topology_across_feed_profile_drawer_and_messages(self):
+        from collection import comment_control_in_feed, drawer_author_nickname, parse_author, share_geometry
+        from comments import parse_comment_drawer
+        from interactions import _feed_collect_geometry, _feed_like_geometry, parse_comment_messages
+
+        def node(cls, bounds, *children, **attrs):
+            return ({"resource-id": "", "class": cls, "bounds": bounds, **attrs}, list(children))
+
+        # 1. Feed with zero resource-ids, a "直播中" badge inside feed-author, and 0-comment slot.
+        feed_xml = tree(node("android.widget.FrameLayout", "[0,0][1236,2676]",
+            node("android.widget.LinearLayout", "[0,2097][1236,2676]",
+                node("android.widget.TextView", "[49,2146][1187,2280]", text="家常红烧肉教程"),
+                node("android.view.ViewGroup", "[0,2392][1236,2441]",
+                    node("android.widget.FrameLayout", "[19,2392][1217,2441]",
+                        node("android.widget.SeekBar", "[19,2417][1217,2429]"))),
+                node("android.view.ViewGroup", "[0,2429][1236,2602]",
+                    node("android.widget.FrameLayout", "[0,2429][589,2602]",
+                        node("android.widget.LinearLayout", "[0,2429][463,2602]",
+                            node("android.widget.TextView", "[40,2510][120,2560]", text="直播中"),
+                            clickable="true")),
+                    node("android.widget.LinearLayout", "[589,2439][1217,2592]",
+                        node("android.view.ViewGroup", "[589,2439][746,2592]",
+                            node("android.widget.ImageView", "[622,2439][713,2530]"),
+                            node("android.widget.TextView", "[626,2542][710,2592]", text="88"),
+                            clickable="true"),
+                        node("android.widget.LinearLayout", "[746,2439][903,2592]",
+                            node("android.widget.ImageView", "[779,2439][870,2530]"),
+                            clickable="true"),
+                        node("android.view.ViewGroup", "[903,2439][1060,2592]",
+                            node("android.widget.ImageView", "[936,2439][1027,2530]"),
+                            node("android.widget.TextView", "[940,2542][1024,2592]", text="19"),
+                            clickable="true"),
+                        node("android.widget.LinearLayout", "[1060,2439][1217,2592]",
+                            node("android.widget.ImageView", "[1093,2439][1184,2530]"),
+                            clickable="true")),
+                    clickable="true"))))
+        feed_controls = text_lines(feed_xml, 1236, 2676, containers=True)
+        holes = [h for h in feed_controls if h.get("container") == "feed-author"]
+        self.assertEqual(len(holes), 1)
+        self.assertGreaterEqual(holes[0]["box"][0], 96)
+        # resume-check / feed-ready succeed with zero OCR via structural bottom bar.
+        reg_noop, full_noop = Mock(), Mock()
+        ready_lines, ready_src = choose_snapshot("resume-check", 1559, None, lambda: feed_controls, Mock(), full_noop, regional_ocr=reg_noop)
+        self.assertEqual(ready_src, "hierarchy")
+        reg_noop.assert_not_called()
+        full_noop.assert_not_called()
+        self.assertIsNotNone(comment_control_in_feed(ready_lines, 1559))
+        self.assertEqual(_feed_like_geometry(ready_lines, 1559)["count"], 88)
+        self.assertEqual(_feed_collect_geometry(ready_lines, 1559)["count"], 19)
+        self.assertTrue(440 <= share_geometry(ready_lines, 1559)["box"][0] <= 470)
+
+        # 2. Profile with zero resource-ids: anchors on 头像 + 设置 + 私信按钮.
+        profile_xml = tree(node("android.widget.FrameLayout", "[0,0][1236,2676]",
+            node("android.widget.LinearLayout", "[0,750][1236,2676]",
+                node("android.view.ViewGroup", "[0,800][1236,1020]",
+                    node("android.widget.ImageView", "[60,820][260,1020]", **{"content-desc": "头像"}),
+                    node("android.widget.LinearLayout", "[320,820][980,1020]",
+                        node("android.view.View", "[320,830][780,910]"),
+                        node("android.widget.TextView", "[320,930][600,990]", text="湖北 武汉 女")),
+                    node("android.widget.RelativeLayout", "[1040,830][1180,970]", **{"content-desc": "设置"})),
+                node("android.widget.TextView", "[60,1080][700,1140]", text="日常做菜分享"),
+                node("android.widget.TextView", "[60,1170][400,1230]", text="32条原创内容"),
+                node("android.widget.LinearLayout", "[60,1260][1176,1400]",
+                    node("android.widget.FrameLayout", "[60,1260][600,1400]", clickable="true"),
+                    node("android.widget.FrameLayout", "[636,1260][1176,1400]", clickable="true", **{"content-desc": "私信按钮"})))))
+        prof_controls = text_lines(profile_xml, 1236, 2676, containers=True)
+        self.assertEqual({h["container"] for h in prof_controls if h.get("container")},
+                         {"profile-name", "follow-button", "bio"})
+        # author-profile-touch skips bio container OCR.
+        reg_touch = Mock(return_value=[line("阿梅厨房", 190, 490, 180, 34), line("关注", 160, 750, 60, 34)])
+        prof_lines, prof_src = choose_snapshot("author-profile-touch", 1559, "阿梅厨房",
+                                               lambda: prof_controls, Mock(), Mock(), regional_ocr=reg_touch)
+        self.assertEqual(prof_src, "mixed")
+        self.assertEqual(parse_author(prof_lines, "阿梅厨房")["authorNickname"], "阿梅厨房")
+
+        # 3. Comment drawer over feed with zero resource-ids, "精选评论 108", native work author, and reply-expander.
+        drawer_xml = tree(node("android.widget.FrameLayout", "[0,0][1236,2676]",
+            node("android.widget.FrameLayout", "[0,0][1236,2676]",
+                node("android.widget.SeekBar", "[19,2417][1217,2429]"),
+                node("android.widget.TextView", "[49,2146][1187,2280]", text="底层视频流文案")),
+            node("android.widget.FrameLayout", "[0,0][1236,2676]",
+                node("android.widget.LinearLayout", "[0,696][1236,2676]",
+                    node("android.widget.TextView", "[172,751][420,813]", text="精选评论 108"),
+                    node("androidx.recyclerview.widget.RecyclerView", "[0,869][1236,2500]",
+                        node("android.widget.LinearLayout", "[0,869][1236,1180]",
+                            node("android.widget.RelativeLayout", "[173,882][1187,979]",
+                                node("android.widget.LinearLayout", "[173,882][498,979]",
+                                    node("android.widget.TextView", "[173,882][420,1014]", clickable="true", text="喜剧之王单口季")),
+                                node("android.widget.LinearLayout", "[517,918][886,979]",
+                                    node("android.widget.TextView", "[517,921][603,979]", text="作者"),
+                                    node("android.widget.TextView", "[622,921][708,979]", text="上海"),
+                                    node("android.widget.TextView", "[727,921][886,979]", text="11月6日"))),
+                            node("android.widget.TextView", "[173,990][1100,1120]", text="作品正文内容"),
+                            clickable="true"),
+                        node("android.widget.FrameLayout", "[0,1245][1236,1620]",
+                            node("android.widget.LinearLayout", "[0,1245][1236,1620]",
+                                node("android.view.ViewGroup", "[0,1245][1236,1490]",
+                                    node("android.widget.ImageView", "[30,1275][167,1412]", clickable="true", **{"content-desc": "头像"}),
+                                    node("android.widget.LinearLayout", "[173,1294][993,1352]",
+                                        node("android.widget.TextView", "[173,1257][320,1389]", clickable="true", text="小麦穗AAA"),
+                                        node("android.widget.ImageView", "[322,1275][380,1370]", **{"content-desc": "视频号logo"}),
+                                        node("android.widget.TextView", "[390,1294][476,1352]", text="广东"),
+                                        node("android.widget.TextView", "[495,1294][993,1352]", text="3天前")),
+                                    node("android.widget.RelativeLayout", "[49,1364][1187,1440]",
+                                        node("android.widget.TextView", "[173,1364][1187,1440]", text="看着太有食欲了")),
+                                    node("android.widget.LinearLayout", "[993,1251][1236,1399]",
+                                        node("android.widget.ImageView", "[1130,1297][1186,1353]"),
+                                        clickable="true")),
+                                node("android.widget.FrameLayout", "[0,1490][1236,1610]", clickable="true")),
+                            clickable="true"),
+                        scrollable="true", **{"scroll-forward": "false"}),
+                    node("android.widget.EditText", "[173,2521][961,2657]", text="佳一讲商业\xa0发表评论:")))))
+        drawer_controls = text_lines(drawer_xml, 1236, 2676, containers=True)
+        self.assertEqual([h for h in drawer_controls if h.get("container")], [])
+        for drawer_label in ("comments", "comments-details", "comments-page-2", "comments-return"):
+            reg_d, full_d = Mock(), Mock()
+            d_lines, d_src = choose_snapshot(drawer_label, 1559, "喜剧之王单口季",
+                                             lambda: drawer_controls, Mock(), full_d, regional_ocr=reg_d)
+            self.assertEqual(d_src, "hierarchy")
+            reg_d.assert_not_called()
+            full_d.assert_not_called()
+        self.assertNotIn("底层视频流文案", [l["text"] for l in d_lines])
+        self.assertEqual(drawer_author_nickname(d_lines), "喜剧之王单口季")
+        parsed_drawer = parse_comment_drawer(d_lines, 1559, parent_event_id="W")
+        self.assertEqual(parsed_drawer["declaredTotal"], 108)
+        self.assertIs(parsed_drawer["canScrollForward"], False)
+        self.assertEqual(len(parsed_drawer["comments"]), 1)
+        self.assertEqual(parsed_drawer["comments"][0]["nickname"], "小麦穗AAA")
+        self.assertTrue(parsed_drawer["comments"][0]["_hasChannelsBadge"])
+        self.assertEqual(len(parsed_drawer["replyExpands"]), 1)
+        self.assertEqual(parsed_drawer["replyExpands"][0]["text"], "展开更多回复")
+
+        # 4. Message center with zero resource-ids: 2-button horizontal bar [child(0)="回复", child(1)=thumb-like].
+        msg_xml = tree(node("android.widget.FrameLayout", "[0,0][1236,2676]",
+            node("androidx.appcompat.app.a", "[444,120][680,256]", **{"content-desc": "点赞"}),
+            node("androidx.appcompat.app.a", "[680,120][916,256]", **{"content-desc": "评论"}),
+            node("android.widget.LinearLayout", "[0,280][1236,660]",
+                node("android.widget.TextView", "[221,298][403,356]", text="AI吕哥说"),
+                node("android.widget.TextView", "[470,304][544,354]", text="昨天"),
+                node("android.widget.TextView", "[221,370][752,432]", text="看到回复了，谢谢分享。"),
+                node("android.widget.LinearLayout", "[221,498][549,633]",
+                    node("android.widget.LinearLayout", "[221,498][414,630]", clickable="true"),
+                    node("android.widget.LinearLayout", "[414,498][549,633]", clickable="true")))))
+        msg_lines = page_lines(text_lines(msg_xml, 1236, 2676, containers=True))
+        msgs = parse_comment_messages(msg_lines, height=1559)
+        self.assertEqual(len(msgs), 1)
+        like_x, like_y, like_w, like_h = msgs[0]["likeBox"]
+        # Center of [414..549] in 720p is ~280 (never the old missed x=247 edge).
+        self.assertTrue(270 <= like_x + like_w // 2 <= 290)
+
+    def test_refresh_target_supports_structural_feed_role_button_box_and_count_updates(self):
+        from collection import comment_control_in_feed
+
+        before = [{
+            "text": "194",
+            "box": [641, 1529, 37, 29],
+            "selector": {"attribute": "text", "value": "194", "resource": "com.tencent.mm:id/c6s", "class": "android.widget.TextView"},
+            "feedRole": "comment",
+            "buttonBox": [612, 1466, 96, 92],
+            "iconBox": [632, 1466, 56, 56],
+        }]
+        after = [{
+            "text": "195",
+            "box": [641, 1529, 37, 29],
+            "selector": {"attribute": "text", "value": "195", "resource": "com.tencent.mm:id/c6s", "class": "android.widget.TextView"},
+            "feedRole": "comment",
+            "buttonBox": [612, 1466, 96, 92],
+            "iconBox": [632, 1466, 56, 56],
+        }]
+        ctrl = comment_control_in_feed(before, 1605)
+        self.assertEqual(ctrl["box"], [612, 1466, 96, 92])
+        refreshed = refresh_target(after, ctrl)
+        self.assertEqual(refreshed["box"], [612, 1466, 96, 92])
+
 
 if __name__ == "__main__":
     unittest.main()

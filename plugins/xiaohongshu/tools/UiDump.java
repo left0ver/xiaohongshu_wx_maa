@@ -350,18 +350,34 @@ public final class UiDump {
         return value == null ? "" : value.toString();
     }
 
+    private static boolean isEmptyCommentBodyWrapper(AccessibilityNodeInfo node, Rect box, String resourceId) {
+        if (box.isEmpty() || !node.isVisibleToUser()) return false;
+        if (!"com.tencent.mm".equals(text(node.getPackageName()))) return false;
+        if ("com.tencent.mm:id/c6d".equals(resourceId)) return true;
+        return "android.widget.RelativeLayout".equals(text(node.getClassName()))
+            && node.getChildCount() == 1
+            && text(node.getText()).trim().isEmpty()
+            && text(node.getContentDescription()).trim().isEmpty();
+    }
+
+    private static boolean isHiddenCommentBodyText(AccessibilityNodeInfo node, Rect box, String resourceId) {
+        if (box.isEmpty() || !"com.tencent.mm".equals(text(node.getPackageName()))) return false;
+        if ("com.tencent.mm:id/c1_".equals(resourceId)) return true;
+        return "android.widget.TextView".equals(text(node.getClassName()))
+            && !text(node.getText()).trim().isEmpty();
+    }
+
     private static void write(XmlSerializer xml, AccessibilityNodeInfo node, int depth, boolean insideVisibleCommentBody) throws Exception {
         if (depth > 80 || ++count > 10000) throw new IllegalStateException("Hierarchy limit exceeded");
         Rect box = new Rect();
         node.getBoundsInScreen(box);
         String resourceId = text(node.getViewIdResourceName());
         // Some vendor containers are invisible/empty while their descendants
-        // are visible. WeChat also keeps full comment text in c1_ (marked
-        // visibleToUser=false) inside a visible c6d comment-body container.
+        // are visible. WeChat also keeps full comment text in a hidden child
+        // TextView inside a visible single-child RelativeLayout comment-body wrapper.
         boolean visible = !box.isEmpty() && (node.isVisibleToUser()
-            || (insideVisibleCommentBody && "com.tencent.mm:id/c1_".equals(resourceId)));
-        boolean childInsideCommentBody = insideVisibleCommentBody
-            || (visible && "com.tencent.mm:id/c6d".equals(resourceId));
+            || (insideVisibleCommentBody && isHiddenCommentBodyText(node, box, resourceId)));
+        boolean childInsideCommentBody = isEmptyCommentBodyWrapper(node, box, resourceId);
         if (visible) {
             emitted++;
             xml.startTag("", "node");

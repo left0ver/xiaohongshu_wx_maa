@@ -361,6 +361,26 @@ class CollectionTests(unittest.TestCase):
         ensure_feed(ui, launch=False)
         self.assertEqual(ui.clicks, ["视频号", "推荐"])
 
+    def test_ensure_feed_backs_out_of_stale_channels_profile_via_pure_controls(self):
+        from collection import ensure_feed
+
+        home = [line("发现", 426, 1522), line("通讯录", 220, 1522)]
+        discover = [line("发现", 320, 90), line("视频号", 100, 300)]
+        stale_profile = [
+            line("地球online动物篇", 152, 90),
+            line("8124", 59, 420),
+            line("5773", 300, 420),
+            line("4701", 560, 620),
+        ]
+        ui = FakeUi([home, discover, FEED[:3]])
+        ui.controls_exposed = True
+        hier_seq = iter([discover, stale_profile, FEED[:3]])
+        ui.hierarchy = lambda timeout=4, force=False: next(hier_seq)
+        res = ensure_feed(ui, need_author=False)
+        self.assertEqual(res, FEED[:3])
+        self.assertEqual(ui.backs, 1)
+        self.assertEqual(ui.clicks, ["发现", "视频号"])
+
     def test_first_nickname_is_not_replaced_by_a_longer_profile_name(self):
         for wrong_header in (False, True, "longer-name"):
             with self.subTest(wrong_header=wrong_header), tempfile.TemporaryDirectory() as root, contextlib.redirect_stdout(io.StringIO()):

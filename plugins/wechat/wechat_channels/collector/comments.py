@@ -146,7 +146,7 @@ def _header_name_box(row, nickname):
     """Construct a safe click target over the commenter's nickname."""
     left_items = [item for item in row["items"] if item["box"][0] < 450]
     first = left_items[0] if left_items else row["items"][0]
-    if first.get("selector", {}).get("resource", "").endswith("/kbf"):
+    if first.get("commentNicknameControl") or first.get("selector", {}).get("resource", "").endswith("/kbf"):
         return list(first["box"])
     x, y, w, h = first["box"]
     return [x, y, min(w, 32), h]
@@ -222,7 +222,11 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
             None,
         )
         has_recommend_badge = recommend_item is not None
-        has_like_action = like_item is not None or has_recommend_badge
+        structural_like_box = next(
+            (item["commentLikeBox"] for item in row["items"] if item.get("commentLikeBox")),
+            None,
+        )
+        has_like_action = like_item is not None or has_recommend_badge or structural_like_box is not None
         pieces = [
             item
             for item in row["items"]
@@ -267,7 +271,9 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         if not like_count_text and recommend_item is not None:
             like_count_text = re.fullmatch(RECOMMEND_BADGE_RE, recommend_item["text"].strip())[1]
         row_h = max(24, row["bottom"] - row["top"])
-        if has_recommend_badge:
+        if structural_like_box is not None:
+            like_box = list(structural_like_box)
+        elif has_recommend_badge:
             like_box = [590, row["top"], 36, row_h]
         elif like_item is not None:
             lx, ly, lw, lbh = like_item["box"]
@@ -953,6 +959,7 @@ def filter_comments(comments, words, complete):
 
 
 COMMENT_LIMIT_KEYS = {
+    "maxComments": "max_comments",
     "maxPages": "max_pages",
     "maxReplyExpansions": "max_reply_expansions",
     "maxProfiles": "max_profiles",
@@ -976,6 +983,8 @@ def comment_limits(config):
         limits[name] = int(text)
     if limits.get("max_pages") == 0:
         raise ValueError("maxPages must be at least 1")
+    if limits.get("max_comments") == 0:
+        raise ValueError("maxComments must be at least 1")
     return limits
 
 
@@ -994,6 +1003,7 @@ def collect_visible_comments(
     comment_filter_words=(),
     publish_events=None,
     initial_drawer_lines=None,
+    max_comments=None,
 ):
     """Read the comment drawer page by page.
 
@@ -1091,6 +1101,9 @@ def collect_visible_comments(
                 """Keep every reading, including ones superseded by a later expansion."""
                 nonlocal last_parent
                 for item in page["comments"]:
+                    if (max_comments is not None and len(collected) >= max_comments
+                            and not any(same_comment(known, item) for known in collected.values())):
+                        continue
                     if item["key"] in stalled_reply_parents or item["key"] in reply_clicks:
                         item["repliesCollected"] = True
                     _collect_comment(collected, aliases, item, replace=replace)
@@ -1160,6 +1173,7 @@ def collect_visible_comments(
                             c
                             for c in sorted(drawer["comments"], key=candidate_rank)
                             if c["key"] not in visited_comment_keys
+                            and canonical_key(c["key"]) in collected
                             and c["nickname"] != "[表情昵称]"
                             and not c.get("_isSelf")
                             and (not comment_filter_words or matched_words(c.get("content"), comment_filter_words))
@@ -1224,6 +1238,9 @@ def collect_visible_comments(
                     publish_comment(key)
 
                 # 4. Determine whether collection is complete or should scroll to next page.
+                if max_comments is not None and len(collected) >= max_comments:
+                    end_reason = "comment_limit"
+                    break
                 if drawer["empty"]:
                     end_reason = "empty_comments"
                     complete = True
@@ -1307,7 +1324,7 @@ def collect_visible_comments(
                 "replyExpansions": reply_expansions_done,
                 "repliesCollected": has_replies,
                 "limits": {"maxPages": max_pages, "maxReplyExpansions": max_reply_expansions,
-                           "maxProfiles": max_profiles},
+                           "maxProfiles": max_profiles, "maxComments": max_comments},
                 "commentsRead": read_count,
                 "filterWords": list(comment_filter_words or ()),
                 "profiles": profiles,

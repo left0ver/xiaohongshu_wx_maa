@@ -5,10 +5,16 @@ import time
 from commands import run
 
 FOREGROUND_SETTLE_SECONDS = 3.0
+FOREGROUND_CACHE_SECONDS = 0.4
+_last_foreground_ok_at = -1.0
 
 
 def foreground(timeout=15):
-    started = time.monotonic()
+    global _last_foreground_ok_at
+    now = time.monotonic()
+    if _last_foreground_ok_at >= 0 and 0 <= now - _last_foreground_ok_at <= FOREGROUND_CACHE_SECONDS:
+        return
+    started = now
     deadline = started + timeout
     settle_deadline = None
     checks = 0
@@ -21,7 +27,9 @@ def foreground(timeout=15):
         resumed = re.findall(r"(?:mResumedActivity|topResumedActivity):[^\n]+", activity)
         if resumed:
             if not all(" com.tencent.mm/" in line for line in resumed):
+                _last_foreground_ok_at = -1.0
                 raise RuntimeError("微信不在前台；未执行操作：" + "；".join(line.strip() for line in resumed))
+            _last_foreground_ok_at = time.monotonic()
             if checks > 1:
                 print(json.dumps({"kind": "foregroundReady", "checks": checks,
                                   "durationMs": round((time.monotonic() - started) * 1000)},
