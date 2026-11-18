@@ -19,10 +19,13 @@ from collection import (
     open_basic_info,
     parse_author,
     profile_bio_expand,
+    strip_certification_from_bio,
 )
 from layout import (
     DATE,
     REGION,
+    clean_control_text,
+    clean_region_name,
     compact,
     find_comment_drawer_heading,
     is_comment_drawer_heading,
@@ -177,7 +180,8 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
     if heading is None:
         raise ValueError("Comment drawer is not visible")
 
-    heading_text = compact(heading["text"])
+    heading_item = next(item for item in heading["items"] if is_comment_drawer_heading(item, height))
+    heading_text = compact(heading_item["text"])
     count_match = re.search(r"评论(\d+)$", heading_text)
     declared_total = int(count_match[1]) if count_match else None
     empty = bool(find(lines, EMPTY_COMMENTS_RE)) or declared_total == 0
@@ -208,7 +212,8 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
             (
                 item
                 for item in row["items"]
-                if item["box"][0] > 480 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip())
+                if item.get("commentRole") == "like-count"
+                or (item["box"][0] > 480 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
             ),
             None,
         )
@@ -231,6 +236,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
             item
             for item in row["items"]
             if item["box"][0] < 570
+            and item.get("commentRole") != "like-count"
             and not re.search(r"已声明原创|都在搜", item["text"])
             and not (item["box"][0] > 400 and re.fullmatch(LIKE_BADGE_RE, item["text"].strip()))
             and not (item["box"][0] > 460 and re.fullmatch(RECOMMEND_BADGE_RE, item["text"].strip()))
@@ -241,21 +247,78 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         left = min(item["box"][0] for item in pieces)
         if left > 220:
             continue
-        text = compact("".join(item["text"] for item in pieces))
-        match = re.fullmatch(rf"(.+?)({REGION}|我)({DATE})", text)
+        prev_row = rows[index - 1] if index > 0 else None
+        is_work_meta = bool(
+            prev_row
+            and "作者" in prev_row["text"]
+            and row["top"] - prev_row["bottom"] <= lh * 1.5
+        )
+        nick_ctrl = next(
+            (it for it in pieces if it.get("commentRole") == "nickname" or it.get("commentNicknameControl")),
+            None,
+        )
+        date_ctrl = next(
+            (it for it in pieces if it.get("commentRole") == "date" or it.get("commentHeaderDate")),
+            None,
+        )
         raw_nick, region, date = None, None, None
-        if match:
-            raw_nick, region, date = match[1], match[2], match[3]
-        elif has_like_action and 90 <= left <= 215:
-            bare = re.fullmatch(rf"({REGION}|我)({DATE})", text)
-            prev_row = rows[index - 1] if index > 0 else None
-            is_work_meta = bool(
-                prev_row
-                and "作者" in prev_row["text"]
-                and row["top"] - prev_row["bottom"] <= lh * 1.5
+        if nick_ctrl is not None or date_ctrl is not None:
+            # Control-first: read nickname, region, and date directly from their isolated controls.
+            if date_ctrl is not None:
+                date = clean_control_text(date_ctrl["text"]).strip() or None
+            else:
+                for it in reversed(pieces):
+                    if it is not nick_ctrl and re.fullmatch(DATE, compact(it["text"])):
+                        date = clean_control_text(it["text"]).strip()
+                        date_ctrl = it
+                        break
+            def _valid_comment_region(item):
+                val = compact(item["text"])
+                return bool(re.fullmatch(rf"(?:{REGION})(?:省|市|自治区|特别行政区)?|我", val))
+
+            region_ctrl = (
+                next(
+                    (
+                        it for it in pieces
+                        if it is not nick_ctrl
+                        and it is not date_ctrl
+                        and it.get("commentRole") == "region"
+                        and _valid_comment_region(it)
+                    ),
+                    None,
+                )
+                or next(
+                    (
+                        it for it in pieces
+                        if it is not nick_ctrl
+                        and it is not date_ctrl
+                        and it.get("source") == "hierarchy"
+                        and _valid_comment_region(it)
+                    ),
+                    None,
+                )
             )
-            if bare and not is_work_meta:
-                raw_nick, region, date = "[表情昵称]", bare[1], bare[2]
+            if region_ctrl is not None:
+                raw_reg = clean_control_text(region_ctrl["text"]).strip()
+                region = "我" if raw_reg == "我" else clean_region_name(raw_reg)
+            if nick_ctrl is not None and date:
+                raw_nick = clean_control_text(nick_ctrl["text"]).strip()
+            elif date and has_like_action and 90 <= left <= 215 and not is_work_meta and not any(
+                it["text"].strip() == "作者" for it in pieces
+            ):
+                raw_nick = "[表情昵称]"
+        else:
+            # OCR fallback: slice concatenated header row only when structural controls are unavailable.
+            text = compact("".join(item["text"] for item in pieces))
+            match = re.fullmatch(rf"(.+?)({REGION}|我)({DATE})", text)
+            if match:
+                raw_nick, raw_reg, date = match[1], match[2], match[3]
+                region = "我" if raw_reg == "我" else clean_region_name(raw_reg)
+            elif has_like_action and 90 <= left <= 215:
+                bare = re.fullmatch(rf"({REGION}|我)({DATE})", text)
+                if bare and not is_work_meta:
+                    raw_reg = bare[1]
+                    raw_nick, region, date = "[表情昵称]", ("我" if raw_reg == "我" else clean_region_name(raw_reg)), bare[2]
         if not raw_nick:
             continue
         nickname, has_badge = clean_comment_nickname(raw_nick)
@@ -365,7 +428,7 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
                 ]
             body.append(text)
 
-        content = "\n".join(body).strip()
+        content = clean_control_text("\n".join(body)).strip()
         if level == 2 and current_parent is None and resolve_parent is not None and content:
             resolved = resolve_parent({
                 "nickname": header["nickname"],
@@ -667,6 +730,7 @@ def inspect_commenter_profile(ui, comment):
             basic = open_basic_info(ui, more)
             ui.back()
             ui.back()
+            cert = basic.get("authorCertification") or profile.get("authorCertification")
             return {
                 "commentKey": comment["key"],
                 "nickname": profile["authorNickname"],
@@ -674,8 +738,8 @@ def inspect_commenter_profile(ui, comment):
                 "douyinId": basic["authorDouyinId"],
                 "identityMethod": "wechat-channel-id",
                 "accountType": "channels",
-                "authorBio": profile.get("authorBio"),
-                "authorCertification": basic.get("authorCertification") or profile.get("authorCertification"),
+                "authorBio": strip_certification_from_bio(profile.get("authorBio"), cert),
+                "authorCertification": cert,
                 "ipLocation": basic.get("authorIpLocation") or profile.get("authorIpLocation") or comment.get("ipLocation"),
                 "profileLocation": basic.get("authorProfileLocation") or profile.get("authorProfileLocation"),
                 "profileVisited": True,

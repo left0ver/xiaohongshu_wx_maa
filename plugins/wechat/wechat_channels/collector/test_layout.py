@@ -195,6 +195,34 @@ class LayoutTests(unittest.TestCase):
         same_row_expand = [*DETAILS[:4], line("」原声", 127, 691, 68), line("展开", 201, 692, 48), *DETAILS[6:]]
         self.assertEqual(work_region(same_row_expand)["expand"]["text"], "展开")
 
+    def test_profile_excludes_contact_button_and_dedupes_basic_info_certification(self):
+        from collection import strip_certification_from_bio
+
+        # 0-work Channels commenter where 私信 button box[1] (669) is higher than OCR follow text box[1] (691).
+        zero_work_profile = [
+            {**line("穿着雨鞋去踩水", 193, 507, 252, 38), "filledContainer": "profile-name"},
+            {**line("福建 福州 女", 194, 548, 147, 34), "source": "hierarchy", "profileRole": "location"},
+            {**line("私信", 367, 669, 317, 79), "source": "hierarchy", "profileRole": "action-button",
+             "selector": {"attribute": "content-desc", "value": "私信按钮", "class": "android.widget.FrameLayout"}},
+            {**line("关注", 162, 691, 56, 32), "filledContainer": "follow-button"},
+        ]
+        parsed_zero = parse_author(zero_work_profile, "穿着雨鞋去踩水")
+        self.assertIsNone(parsed_zero["authorBio"])
+        self.assertEqual(parsed_zero["authorProfileLocation"], "福建 福州 女")
+
+        # Certified creator where header OCR includes truncated cert + badge icon before Basic Info supplies full cert.
+        self.assertEqual(
+            strip_certification_from_bio(
+                "北京新线聚阵文化传播…\n💖\n看剧怕踩雷？别慌！\nMCN: 小马扎",
+                "北京新线聚阵文化传播有限公司",
+            ),
+            "看剧怕踩雷？别慌！\nMCN: 小马扎",
+        )
+
+        # Basic Info with "未知" IP normalizes to None instead of overwriting known comment province.
+        unknown_ip_info = [item for item in INFO if item["text"] != "福建"] + [line("未知", 250, 607, 68)]
+        self.assertIsNone(parse_basic_info(unknown_ip_info)["authorIpLocation"])
+
 
 
 class DetailsGlyphTests(unittest.TestCase):

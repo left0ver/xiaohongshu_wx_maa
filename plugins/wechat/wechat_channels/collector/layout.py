@@ -6,7 +6,7 @@ from statistics import median
 from difflib import SequenceMatcher
 
 DATE = r"(?:\d{4}年)?\d{1,2}月\d{1,2}日|\d{4}[-/]\d{1,2}[-/]\d{1,2}|(?:今天|昨天|前天)(?:\s*\d{1,2}:\d{2})?|\d+\s*(?:分钟|小时|天)前|刚刚"
-REGION = r"北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆|香港|澳门|台湾|中国|美国|日本|韩国|英国|法国|德国|加拿大|澳大利亚|新加坡|马来西亚|泰国|海外"
+REGION = r"中国(?:香港|澳门|台湾)|北京|天津|河北|山西|内蒙古|辽宁|吉林|黑龙江|上海|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|广西|海南|重庆|四川|贵州|云南|西藏|陕西|甘肃|青海|宁夏|新疆|香港|澳门|台湾|中国|美国|日本|韩国|英国|法国|德国|加拿大|澳大利亚|新加坡|马来西亚|泰国|海外"
 # Screenshots are scaled to 720 wide; the status bar text sits above this line.
 STATUS_BAR_BOTTOM = 60
 LABELS = {
@@ -50,6 +50,19 @@ def find_comment_drawer_heading(lines, height=None):
 def compact(text):
     # Controls interleave zero-width spaces; they are not text to compare.
     return re.sub(r"[\s\u200b-\u200d\u2060\ufeff]+", "", unicodedata.normalize("NFKC", text))
+
+
+def clean_control_text(value):
+    if value is None:
+        return None
+    return re.sub(r"[\u200b-\u200d\u2060\ufeff]+", "", value)
+
+
+def clean_region_name(value):
+    if not value:
+        return None
+    cleaned = re.sub(r"^中国(?=(?:香港|澳门|台湾)$)", "", compact(value))
+    return cleaned or None
 
 
 # Captions and comments are OCR text: the same one can read slightly differently each time.
@@ -213,19 +226,48 @@ def work_region(lines):
         x, y, w, h = last["box"]
         if re.search(r"(?:展开|全文)$", last["text"].strip()) and x + w >= 640 and len(last["text"].strip()) > 2:
             expand = {**last, "text": "展开", "box": [x + w - 48, y, 48, h]}
-    return {"heading": heading, "header": header, "authorHeader": header_text,
+    header_items = [item for item in header["items"] if not re.search(r"已声明原创|都在搜", item["text"])]
+    return {"heading": heading, "header": header, "headerItems": header_items, "authorHeader": header_text,
             "metadata": metadata, "body": body, "boundary": boundary,
             "boundaryKind": boundary_kind, "expand": expand, "lineHeight": height}
 
 
 def metadata_values(region):
+    # Control-first: read publishLocation and publishTimeText directly from separate controls after "作者".
+    header_items = region.get("headerItems") or ()
+    tag_idx = next(
+        (idx for idx, item in enumerate(header_items)
+         if item.get("workRole") == "author-tag"
+         or (item.get("source") == "hierarchy" and item["text"].strip() == "作者")),
+        None,
+    )
+    if tag_idx is not None and tag_idx + 1 < len(header_items):
+        after = [item for item in header_items[tag_idx + 1:] if item.get("source") == "hierarchy"]
+        if after:
+            date_ctrl = next(
+                (item for item in after
+                 if item.get("workRole") == "date" or re.fullmatch(DATE, compact(item["text"]))),
+                None,
+            )
+            loc_ctrl = next(
+                (item for item in after
+                 if item is not date_ctrl
+                 and re.fullmatch(f"(?:{REGION})(?:省|市|自治区|特别行政区)?", compact(item["text"]))),
+                None,
+            )
+            if date_ctrl is not None or loc_ctrl is not None:
+                return {
+                    "publishTimeText": clean_control_text(date_ctrl["text"]).strip() if date_ctrl else None,
+                    "publishLocation": clean_region_name(loc_ctrl["text"]) if loc_ctrl else None,
+                }
+
     metadata = compact(region["metadata"])
     date = re.search(DATE, metadata)
     location = metadata[:date.start()] + metadata[date.end():] if date else metadata
     location = location.strip("·•:：,，|丨I")
     if not re.fullmatch(f"(?:{REGION})(?:省|市|自治区|特别行政区)?", location):
         location = None
-    return {"publishTimeText": date.group(0) if date else None, "publishLocation": location}
+    return {"publishTimeText": date.group(0) if date else None, "publishLocation": clean_region_name(location)}
 
 
 def video_values(lines, author):
@@ -234,9 +276,9 @@ def video_values(lines, author):
         raise ValueError("The full description boundary is not visible")
     if region["expand"]:
         raise ValueError("Description needs expansion")
-    text = "".join(item["text"].strip() for row in region["body"] for item in row["items"]
+    text = clean_control_text("".join(item["text"].strip() for row in region["body"] for item in row["items"]
                    if not re.search(r"已声明原创|发表评论", item["text"])
-                   and not re.fullmatch(r"收起", item["text"].strip()))
+                   and not re.fullmatch(r"收起", item["text"].strip())))
     if not text or text.rstrip().endswith(("…", "...")):
         raise ValueError("Description is empty or still truncated")
     return {"authorNickname": author, "description": text, **metadata_values(region)}

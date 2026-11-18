@@ -42,6 +42,7 @@ from layout import (
     DATE,
     REGION,
     WorkHeaderMissing,
+    clean_control_text,
     compact,
     find_comment_drawer_heading,
     line_height,
@@ -1895,12 +1896,23 @@ def parse_comment_messages(lines, height=1605, frame=None):
         header_pieces = [item for item in header_row["items"] if 110 <= item["box"][0] < 540]
         if not header_pieces:
             continue
-        raw_header = " ".join(item["text"].strip() for item in header_pieces).strip()
-        date_match = re.search(rf"({DATE})\s*$", raw_header)
-        msg_time = compact(date_match[1]) if date_match else ""
-        raw_prefix = raw_header[: date_match.start()].strip() if date_match else raw_header
-        raw_prefix = re.sub(r"\s*(?:关注我的|朋友|作者)\s*$", "", raw_prefix).strip()
-        nickname, has_badge = clean_comment_nickname(raw_prefix)
+        hier_pieces = [item for item in header_pieces if item.get("source") == "hierarchy" and item["text"].strip()]
+        if len(hier_pieces) >= 2:
+            date_ctrl = next(
+                (it for it in reversed(hier_pieces[1:]) if re.fullmatch(DATE, compact(it["text"]))),
+                None,
+            )
+            msg_time = compact(date_ctrl["text"]) if date_ctrl else ""
+            raw_prefix = clean_control_text(hier_pieces[0]["text"]).strip()
+            nickname, has_badge = clean_comment_nickname(raw_prefix)
+            has_badge = has_badge or any(it.get("hasChannelsBadge") for it in hier_pieces)
+        else:
+            raw_header = " ".join(item["text"].strip() for item in header_pieces).strip()
+            date_match = re.search(rf"({DATE})\s*$", raw_header)
+            msg_time = compact(date_match[1]) if date_match else ""
+            raw_prefix = raw_header[: date_match.start()].strip() if date_match else raw_header
+            raw_prefix = re.sub(r"\s*(?:关注我的|朋友|作者)\s*$", "", raw_prefix).strip()
+            nickname, has_badge = clean_comment_nickname(raw_prefix)
         if not nickname:
             continue
 
@@ -1910,7 +1922,7 @@ def parse_comment_messages(lines, height=1605, frame=None):
             row_items = [item for item in br["items"] if 110 <= item["box"][0] < 540]
             if not row_items:
                 continue
-            txt = "".join(item["text"] for item in row_items).strip()
+            txt = clean_control_text("".join(item["text"] for item in row_items)).strip()
             if not txt:
                 continue
             if br["left"] >= header_row["left"] + 10 and body_lines and re.match(r"^[^:：]+[:：]", txt):

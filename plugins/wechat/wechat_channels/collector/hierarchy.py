@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 
 from collection import author_in_feed, find, parse_author, parse_basic_info, parse_video, profile_bio_expand
-from layout import LABELS, WorkHeaderMissing, find_comment_drawer_heading, is_comment_drawer_heading, label_values, reading_rows, work_region
+from layout import DATE, LABELS, REGION, WorkHeaderMissing, compact, find_comment_drawer_heading, is_comment_drawer_heading, label_values, reading_rows, work_region
 
 PACKAGE = "com.tencent.mm"
 
@@ -272,8 +272,23 @@ def _structural_roles(root, hidden, parent_map, width, height):
         text = node.get("text", "").strip()
         cls = node.get("class", "")
 
-        # Work header native author TextView left of / above "作者" tag.
+        # Work header native author TextView left of / above "作者" tag, plus metadata siblings right of it.
         if cls.endswith("TextView") and text == "作者":
+            node_meta.setdefault(id(node), {})["workRole"] = "author-tag"
+            tag_parent = parent_map.get(node)
+            if tag_parent is not None and valid_visible(tag_parent):
+                seen_tag = False
+                for sib in visible_children(tag_parent):
+                    if sib is node:
+                        seen_tag = True
+                        continue
+                    if not seen_tag or not sib.get("class", "").endswith("TextView"):
+                        continue
+                    stxt = sib.get("text", "").strip()
+                    if not stxt or stxt == "已声明原创":
+                        continue
+                    srole = "date" if re.fullmatch(DATE, compact(stxt)) else "location"
+                    node_meta.setdefault(id(sib), {})["workRole"] = srole
             branch = node
             for _ in range(3):
                 parent = parent_map.get(branch)
@@ -294,12 +309,15 @@ def _structural_roles(root, hidden, parent_map, width, height):
                         None,
                     )
                     if nick_tv is not None:
-                        node_meta.setdefault(id(nick_tv), {})["workAuthorControl"] = True
+                        node_meta.setdefault(id(nick_tv), {}).update(
+                            {"workAuthorControl": True, "workRole": "author"}
+                        )
                         break
                 branch = parent
 
         # Profile message button -> sibling follow button.
-        if desc == "私信按钮":
+        if desc in ("私信按钮", "客服按钮"):
+            node_meta.setdefault(id(node), {})["profileRole"] = "action-button"
             msg_box = _bounds(node)
             profile_follow_top = min(profile_follow_top or msg_box[1], msg_box[1])
             btn_bar = parent_map.get(node)
@@ -318,12 +336,16 @@ def _structural_roles(root, hidden, parent_map, width, height):
             if parent is None or av_scaled[0] >= 240:
                 continue
             siblings = [sib for sib in visible_children(parent) if sib is not node]
-            has_settings = any(
-                _scaled(_bounds(sib), width)[0] >= 500
+            settings_sibs = [
+                sib for sib in siblings
+                if _scaled(_bounds(sib), width)[0] >= 500
                 and any(d.get("content-desc", "").strip() == "设置" for d in sib.iter("node") if valid_visible(d))
-                for sib in siblings
-            )
-            if has_settings:
+            ]
+            if settings_sibs:
+                for ss in settings_sibs:
+                    for d in ss.iter("node"):
+                        if valid_visible(d) and d.get("content-desc", "").strip() == "设置":
+                            node_meta.setdefault(id(d), {})["profileRole"] = "action-button"
                 pb = _bounds(parent)
                 profile_top_bottom = max(profile_top_bottom or pb[3], pb[3])
                 mid = next(
@@ -331,6 +353,9 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     None,
                 )
                 if mid is not None:
+                    for d in mid.iter("node"):
+                        if valid_visible(d) and d.get("class", "").endswith("TextView") and d.get("text", "").strip():
+                            node_meta.setdefault(id(d), {})["profileRole"] = "location"
                     mid_children = visible_children(mid)
                     name_target = mid_children[0] if mid_children else mid
                     container_kinds[id(name_target)] = "profile-name"
@@ -368,17 +393,32 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     d for d in visible_children(header_group)
                     if d.get("class", "").endswith("TextView") and d.get("text", "").strip()
                 ]
-                nick_tv = next((d for d in tvs if d.get("clickable") == "true"), tvs[0] if tvs else None)
+                nick_tv = next((d for d in tvs if d.get("clickable") == "true"), None)
+                if nick_tv is None and len(tvs) >= 2 and not re.fullmatch(DATE, compact(tvs[0].get("text", ""))):
+                    # Non-clickable nickname fallback only when first TextView is not a region+date pair.
+                    if len(tvs) >= 3 or not re.fullmatch(DATE, compact(tvs[-1].get("text", ""))):
+                        nick_tv = tvs[0]
+                date_tv = next(
+                    (d for d in reversed(tvs) if d is not nick_tv and re.fullmatch(DATE, compact(d.get("text", "")))),
+                    tvs[-1] if len(tvs) >= 2 and tvs[-1] is not nick_tv else None,
+                )
                 has_badge = any(
                     (_resource(d) == "ehq" or d.get("content-desc", "").strip() == "视频号logo")
                     for d in visible_children(header_group)
                 )
-                # Compute precise thumb box inside like_btn.
+                # Compute precise thumb box & count control inside like_btn.
                 thumb_img = next(
                     (d for d in like_btn.iter("node") if d is not like_btn and valid_visible(d)
                      and d.get("class", "").endswith("ImageView")),
                     None,
                 )
+                like_cnt_tv = next(
+                    (d for d in like_btn.iter("node") if d is not like_btn and valid_visible(d)
+                     and d.get("class", "").endswith("TextView") and d.get("text", "").strip()),
+                    None,
+                )
+                if like_cnt_tv is not None:
+                    node_meta.setdefault(id(like_cnt_tv), {})["commentRole"] = "like-count"
                 if thumb_img is not None:
                     tb = _scaled(_bounds(thumb_img), width)
                     tw, th = max(36, tb[2]), max(34, tb[3])
@@ -391,11 +431,27 @@ def _structural_roles(root, hidden, parent_map, width, height):
                 if nick_tv is not None:
                     meta = node_meta.setdefault(id(nick_tv), {})
                     meta["commentNicknameControl"] = True
+                    meta["commentRole"] = "nickname"
                     meta["commentLikeBox"] = c_like_box
                     if has_badge:
                         meta["hasChannelsBadge"] = True
-                if len(tvs) >= 2:
-                    node_meta.setdefault(id(tvs[-1]), {})["commentHeaderDate"] = True
+                if date_tv is not None:
+                    dmeta = node_meta.setdefault(id(date_tv), {})
+                    dmeta["commentHeaderDate"] = True
+                    dmeta["commentRole"] = "date"
+                    if nick_tv is None:
+                        dmeta["commentLikeBox"] = c_like_box
+                for mid_tv in tvs:
+                    if mid_tv is nick_tv or mid_tv is date_tv:
+                        continue
+                    mtxt = compact(mid_tv.get("text", ""))
+                    if mtxt == "作者":
+                        mrole = "author-tag"
+                    elif re.fullmatch(rf"(?:{REGION})(?:省|市|自治区|特别行政区)?|我", mtxt):
+                        mrole = "region"
+                    else:
+                        mrole = "badge"
+                    node_meta.setdefault(id(mid_tv), {})["commentRole"] = mrole
 
                 hb = _bounds(header_group)
                 for sib in siblings:
@@ -404,6 +460,9 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     sb = _bounds(sib)
                     if sb[1] >= hb[3] - 20 and sib.get("class") == "android.widget.RelativeLayout":
                         container_kinds[id(sib)] = "comment-body"
+                        for body_tv in sib.iter("node"):
+                            if valid_visible(body_tv) and body_tv.get("class", "").endswith("TextView") and body_tv.get("text", "").strip():
+                                node_meta.setdefault(id(body_tv), {})["commentRole"] = "body"
 
         # Chat self-avatar -> mark sibling TextView bubbles in same chat list row to preserve controlBox.
         if cls.endswith("ImageView") and desc.endswith("头像") and desc != "头像" and _scaled(_bounds(node), width)[0] >= 500:
@@ -428,9 +487,10 @@ def _structural_roles(root, hidden, parent_map, width, height):
             txt = node.get("text", "").strip()
             b = _bounds(node)
             if profile_top_bottom <= b[1] < profile_follow_top and re.fullmatch(
-                r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|商品橱窗",
+                r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|商品橱窗|没有更多动态",
                 txt,
             ):
+                node_meta.setdefault(id(node), {})["profileRole"] = "boundary"
                 bio_limit = min(bio_limit, b[1])
         for node in root.iter("node"):
             if not valid_visible(node):
@@ -442,6 +502,9 @@ def _structural_roles(root, hidden, parent_map, width, height):
                 if re.search(r"IP\s*(?:归)?属地", txt):
                     continue
                 if node.get("class", "").endswith("TextView") and txt:
+                    node_meta.setdefault(id(node), {})["profileRole"] = "bio"
+                    container_kinds.setdefault(id(node), "bio")
+                elif sb[2] >= 180 and sb[3] >= 16 and len(node) == 0 and not txt and not node.get("content-desc", "").strip():
                     container_kinds.setdefault(id(node), "bio")
 
     # 3. Comment reply-expander bar & Message-center 2-button bar ("回复" + thumb-like).
@@ -633,8 +696,8 @@ def text_lines(xml, width, height, containers=False):
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = raw_scaled
         for meta_key in ("commentNicknameControl", "hasChannelsBadge", "commentHeaderDate",
-                         "commentLikeBox", "workAuthorControl", "feedRole", "buttonBox",
-                         "iconBox", "messageLikeBox"):
+                         "commentLikeBox", "commentRole", "workAuthorControl", "workRole",
+                         "profileRole", "feedRole", "buttonBox", "iconBox", "messageLikeBox"):
             if meta_key in meta:
                 line[meta_key] = meta[meta_key]
         if res_id == "kbf" and not line.get("hasChannelsBadge"):

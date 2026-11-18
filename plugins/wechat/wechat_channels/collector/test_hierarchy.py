@@ -716,6 +716,91 @@ class HierarchyTests(unittest.TestCase):
         refreshed = refresh_target(after, ctrl)
         self.assertEqual(refreshed["box"], [612, 1466, 96, 92])
 
+    def test_control_first_field_extraction_avoids_ocr_concatenation_artifacts(self):
+        from collection import parse_video
+        from comments import parse_comment_drawer
+
+        def node(cls, bounds, *children, **attrs):
+            return ({"resource-id": "", "class": cls, "bounds": bounds, **attrs}, list(children))
+
+        # Comment drawer with separate controls: "发仔" + "中国香港" + "1天前" + like count "4" + zero-width space in body,
+        # plus "#都在搜: ..." on the same horizontal row as "评论 26".
+        drawer_xml = tree(node("android.widget.FrameLayout", "[0,0][1080,2408]",
+            node("android.widget.TextView", "[150,655][295,710]", text="评论 26"),
+            node("android.widget.TextView", "[520,656][990,708]", text="#都在搜: 港式茶餐厅"),
+            node("android.view.ViewGroup", "[40,850][1040,1090]",
+                node("android.widget.LinearLayout", "[150,860][980,912]",
+                    node("android.widget.LinearLayout", "[150,860][310,912]",
+                        node("android.widget.TextView", "[150,860][302,911]", text="周周私房", clickable="true")),
+                    node("android.widget.TextView", "[372,861][448,911]", text="作者"),
+                    node("android.widget.TextView", "[463,861][540,911]", text="中国香港"),
+                    node("android.widget.TextView", "[556,861][770,911]", text="2天前")),
+                node("android.widget.TextView", "[150,940][990,1000]", text="鲫鱼豆腐汤\u200b做法")),
+            node("android.view.ViewGroup", "[40,1200][1040,1420]",
+                node("android.widget.ImageView", "[40,1210][120,1290]", **{"content-desc": "头像"}),
+                node("android.widget.LinearLayout", "[129,1210][660,1265]",
+                    node("android.widget.TextView", "[129,1210][249,1261]", text="发仔", clickable="true"),
+                    node("android.widget.TextView", "[243,1210][395,1261]", text="中国香港"),
+                    node("android.widget.TextView", "[411,1210][660,1261]", text="1天前")),
+                node("android.widget.LinearLayout", "[920,1205][1040,1275]",
+                    node("android.widget.TextView", "[952,1212][976,1261]", text="4"),
+                    node("android.widget.ImageView", "[985,1212][1035,1261]"),
+                    clickable="true"),
+                node("android.widget.RelativeLayout", "[150,1272][990,1340]",
+                    node("android.widget.TextView", "[150,1272][990,1330]", text="见到真面目\u200b[强]"))),
+            node("android.view.ViewGroup", "[40,1450][1040,1660]",
+                node("android.widget.ImageView", "[40,1460][120,1540]", **{"content-desc": "头像"}),
+                node("android.widget.LinearLayout", "[125,1460][900,1515]",
+                    node("android.widget.TextView", "[125,1460][243,1511]", text="貝...", clickable="true"),
+                    node("android.widget.FrameLayout", "[279,1460][541,1511]",
+                        node("android.widget.TextView", "[279,1460][541,1511]", text="已帮作者上热门")),
+                    node("android.widget.TextView", "[560,1460][635,1511]", text="广东"),
+                    node("android.widget.TextView", "[651,1460][900,1511]", text="8天前")),
+                node("android.widget.LinearLayout", "[920,1455][1040,1525]",
+                    node("android.widget.TextView", "[955,1462][978,1511]", text="3"),
+                    node("android.widget.ImageView", "[985,1462][1035,1511]"),
+                    clickable="true"),
+                node("android.widget.RelativeLayout", "[150,1522][990,1590]",
+                    node("android.widget.TextView", "[150,1522][990,1580]", text="Go go go 女食神"))),
+            node("android.widget.EditText", "[150,2305][830,2356]", text="发表评论:")))
+
+        lines = page_lines(text_lines(drawer_xml, 1080, 2408, containers=True))
+        video = parse_video(lines, "周周私房")
+        self.assertEqual(video["publishLocation"], "香港")
+        self.assertEqual(video["publishTimeText"], "2天前")
+        self.assertEqual(video["description"], "鲫鱼豆腐汤做法")
+
+        parsed = parse_comment_drawer(lines, 1605, parent_event_id="vid-hk")
+        self.assertEqual(parsed["declaredTotal"], 26)
+        self.assertEqual(len(parsed["comments"]), 2)
+        c = parsed["comments"][0]
+        self.assertEqual(c["nickname"], "发仔")
+        self.assertEqual(c["ipLocation"], "香港")
+        self.assertEqual(c["commentTime"], "1天前")
+        self.assertEqual(c["_likeCountText"], "4")
+        self.assertEqual(c["content"], "见到真面目[强]")
+        c2 = parsed["comments"][1]
+        self.assertEqual(c2["nickname"], "貝...")
+        self.assertEqual(c2["ipLocation"], "广东")
+        self.assertEqual(c2["commentTime"], "8天前")
+        self.assertEqual(c2["_likeCountText"], "3")
+
+        from interactions import parse_comment_messages
+        msg_lines = [
+            {"text": "小朋友", "box": [129, 174, 90, 34], "source": "hierarchy"},
+            {"text": "朋友", "box": [230, 176, 52, 29], "source": "hierarchy"},
+            {"text": "前天", "box": [295, 177, 43, 29], "source": "hierarchy"},
+            {"text": "看到回复了\u200b谢谢分享。", "box": [129, 216, 309, 36], "source": "hierarchy"},
+            {"text": "佳一讲商业: 谢谢留言。", "box": [154, 259, 270, 29], "source": "hierarchy"},
+            {"text": "回复", "box": [129, 311, 112, 34], "source": "hierarchy", "messageLikeBox": [256, 303, 48, 48]},
+        ]
+        msgs = parse_comment_messages(msg_lines, 1605)
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["nickname"], "小朋友")
+        self.assertEqual(msgs[0]["messageTime"], "前天")
+        self.assertEqual(msgs[0]["content"], "看到回复了谢谢分享。")
+        self.assertEqual(msgs[0]["quotedContent"], "佳一讲商业: 谢谢留言。")
+
 
 if __name__ == "__main__":
     unittest.main()

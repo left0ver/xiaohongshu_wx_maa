@@ -13,6 +13,8 @@ from pathlib import Path
 from layout import (
     REGION,
     WorkHeaderMissing,
+    clean_control_text,
+    clean_region_name,
     find_comment_drawer_heading,
     label_values,
     line_height,
@@ -165,37 +167,121 @@ def parse_video(lines, author):
     return video_values(lines, author)
 
 
+def _has_word_char(text):
+    return any(unicodedata.category(ch).startswith(("L", "N")) for ch in (text or ""))
+
+
+def strip_certification_from_bio(bio, certification):
+    """Remove duplicate/truncated header certification and its badge icon from authorBio once Basic Info provides it."""
+    if not bio:
+        return None
+    cert_norm = normalize(certification or "")
+    lines = [clean_control_text(part).strip() for part in bio.splitlines()]
+    while lines:
+        head = lines[0]
+        if not head:
+            lines.pop(0)
+            continue
+        head_norm = normalize(re.sub(r"[.…⋯·√✓✔]+$", "", head))
+        if cert_norm and head_norm and (
+            head_norm == cert_norm
+            or (len(head_norm) >= 4 and cert_norm.startswith(head_norm))
+        ):
+            lines.pop(0)
+            while lines and not _has_word_char(lines[0]):
+                lines.pop(0)
+            continue
+        break
+    cleaned = "\n".join(part for part in lines if part).strip()
+    return cleaned or None
+
+
 def parse_author(lines, author):
-    contact = find(lines, r"^(私信|客服)$")
+    contact = (
+        next(
+            (l for l in lines if l.get("profileRole") == "action-button" and re.fullmatch(r"私信|客服", l["text"].strip())),
+            None,
+        )
+        or find(lines, r"^(私信|客服)$")
+    )
     follow = find(lines, r"^(?:[√✓]?)\s*(已关注|申请关注|关注)$")
     if not contact or not follow or abs(contact["box"][1] - follow["box"][1]) > line_height(lines) * 2:
         raise ValueError("Author profile controls are missing")
     name = profile_name(lines, author)
-    area = sorted((line for line in lines
-                   if name["box"][1] + name["box"][3] <= line["box"][1] < follow["box"][1]),
-                  key=lambda line: (line["box"][1], line["box"][0]))
+    lh = line_height(lines)
+    action_top = min(follow["box"][1], contact["box"][1])
+    area = sorted(
+        (
+            line for line in lines
+            if name["box"][1] + name["box"][3] <= line["box"][1] < action_top
+            and line is not contact
+            and line is not follow
+            and line.get("profileRole") != "action-button"
+            and line.get("filledContainer") not in ("follow-button", "message-button")
+            and line.get("selector", {}).get("value") not in ("私信按钮", "客服按钮", "设置")
+        ),
+        key=lambda line: (line["box"][1], line["box"][0]),
+    )
     ip = find(area, r"IP\s*(?:归)?属地\s*[:：]?")
     certification = find(area, r"认证|企业主体|职业信息|^音乐(?:人|达人)$")
-    location = next((line for line in area
-                     if line["box"][0] >= name["box"][0] - 15
-                     and line["box"][1] - name["box"][1] < line_height(lines) * 4
-                     and (re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:\\s*已实名)?", line["text"])
-                          # The profile control separates province, city and gender with spaces.
-                          or re.fullmatch(f"(?:{REGION})(?:\\s+[\u4e00-\u9fff]{{1,8}}){{0,3}}\\s*", line["text"]))
-                     and line is not ip and line is not certification), None)
+
+    def _matches_profile_location(line):
+        txt = clean_control_text(line["text"]).strip()
+        return bool(
+            re.fullmatch(f"(?:{REGION})(?:[\u4e00-\u9fff\\s]{{0,8}}[男女市区县])?(?:\\s*已实名)?", txt)
+            # The profile control separates province, city and gender with spaces.
+            or re.fullmatch(f"(?:{REGION})(?:\\s+[\u4e00-\u9fff]{{1,8}}){{0,3}}\\s*", txt)
+            or re.fullmatch(r"[男女](?:\s*已实名)?", txt)
+        )
+
+    location = next(
+        (
+            line for line in area
+            if line.get("profileRole") == "location"
+            and _matches_profile_location(line)
+            and line is not ip and line is not certification
+        ),
+        None,
+    ) or next(
+        (
+            line for line in area
+            if line["box"][0] >= name["box"][0] - 15
+            and line["box"][1] - name["box"][1] < lh * 4
+            and _matches_profile_location(line)
+            and line is not ip and line is not certification
+        ),
+        None,
+    )
     # Profile statistics and feature rows follow the biography. Stop at their
     # structural boundary, rather than collecting everything above Follow.
-    boundary = min((line["box"][1] for line in area
-                    if re.fullmatch(r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗", line["text"].strip())),
-                   default=follow["box"][1])
-    bio = [line["text"] for line in area if line["box"][1] < boundary
-           if line is not ip and line is not certification and line is not location]
+    boundary = min(
+        (
+            line["box"][1] for line in area
+            if line.get("profileRole") == "boundary"
+            or re.fullmatch(
+                r"\d+(?:\.\d+)?[万wW]?\s*(?:条原创内容|条朋友圈内容|作品|粉丝|获赞)|音乐电台(?:.*人在听)?|播放|商品橱窗|没有更多动态",
+                line["text"].strip(),
+            )
+        ),
+        default=action_top,
+    )
+    bio = [
+        clean_control_text(line["text"]).strip()
+        for line in area
+        if line["box"][1] < boundary
+        and line is not ip
+        and line is not certification
+        and line is not location
+        and not (line.get("filledContainer") in ("profile-name", "certification") and not _has_word_char(line["text"]))
+    ]
+    raw_bio = "\n".join(part for part in bio if part) or None
+    cert_text = clean_control_text(certification["text"]).strip() if certification else None
     fields = {
-        "authorNickname": name["text"].strip(),
-        "authorCertification": certification["text"] if certification else None,
-        "authorIpLocation": re.sub(r".*IP\s*(?:归)?属地\s*[:：]?\s*", "", ip["text"]) if ip else None,
-        "authorProfileLocation": location["text"] if location else None,
-        "authorBio": None if profile_bio_expand(lines, author) else ("\n".join(bio) or None),
+        "authorNickname": clean_control_text(name["text"]).strip(),
+        "authorCertification": cert_text,
+        "authorIpLocation": clean_region_name(re.sub(r".*IP\s*(?:归)?属地\s*[:：]?\s*", "", ip["text"])) if ip else None,
+        "authorProfileLocation": clean_control_text(location["text"]).strip() if location else None,
+        "authorBio": None if profile_bio_expand(lines, author) else strip_certification_from_bio(raw_bio, cert_text),
     }
     fields["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if fields[key] is None]
     return fields
@@ -222,10 +308,14 @@ def parse_basic_info(lines):
     channel_id = re.sub(r"\s+", "", values.get("channel") or "")
     if not channel_id or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", channel_id):
         raise ValueError("A valid public Channels ID was not recognized")
+    raw_ip = (values.get("ip") or "").strip()
+    raw_loc = clean_control_text(values.get("location") or "").strip()
+    ip_val = clean_region_name(raw_ip) if raw_ip and raw_ip not in ("未知", "暂无") else None
+    loc_val = raw_loc if raw_loc and raw_loc not in ("未知", "暂无") else None
     result = {"authorDouyinId": channel_id, "authorIdentityMethod": "wechat-channel-id",
-              "authorIpLocation": values.get("ip"), "authorProfileLocation": values.get("location")}
+              "authorIpLocation": ip_val, "authorProfileLocation": loc_val}
     if values.get("certification"):
-        result["authorCertification"] = values["certification"].rstrip("√✓✔")
+        result["authorCertification"] = clean_control_text(values["certification"]).rstrip("√✓✔").strip()
     return result
 
 
@@ -808,6 +898,7 @@ def collect_current_video(ui, store, timings, lines, source_mode="RECOMMEND"):
         if not more:
             raise ValueError("More information menu item is missing")
         profile.update(open_basic_info(ui, more))
+        profile["authorBio"] = strip_certification_from_bio(profile.get("authorBio"), profile.get("authorCertification"))
         profile["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if profile[key] is None]
         ui.back()
         ui.back()

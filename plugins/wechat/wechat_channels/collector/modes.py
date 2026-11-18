@@ -39,6 +39,7 @@ from collection import (
     parse_author,
     parse_basic_info,
     profile_bio_expand,
+    strip_certification_from_bio,
     video_details,
 )
 from comments import collect_visible_comments, comment_limits, nickname_matches
@@ -1870,6 +1871,10 @@ def collect_video_in_mode(
                             "authorIdentityMethod": "wechat-author-fallback",
                         }
                     )
+            profile["authorBio"] = strip_certification_from_bio(
+                profile.get("authorBio"),
+                profile.get("authorCertification"),
+            )
             profile["missingFields"] = [
                 key
                 for key in ("authorCertification", "authorIpLocation", "authorBio")
