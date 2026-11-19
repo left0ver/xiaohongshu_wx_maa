@@ -325,7 +325,11 @@ def parse_comment_drawer(lines, height, parent_event_id="", resolve_parent=None)
         has_badge = has_badge or any(item.get("hasChannelsBadge") for item in pieces)
         if not nickname:
             continue
-        level = 1 if left <= 140 else 2
+        structural_level = next(
+            (item["commentLevel"] for item in pieces if item.get("commentLevel") in (1, 2)),
+            None,
+        )
+        level = structural_level if structural_level is not None else (1 if left <= 140 else 2)
         like_count_text = (
             re.sub(r"[凸👍♡赞]+$", "", like_item["text"].strip())
             if like_item is not None

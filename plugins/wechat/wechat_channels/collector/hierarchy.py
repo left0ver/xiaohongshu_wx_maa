@@ -446,8 +446,16 @@ def _structural_roles(root, hidden, parent_map, width, height):
                         continue
 
             # Comment item: header group + right-side clickable like container.
+            # On 1236px Huawei screens a 0-like button can overhang the right edge by a few px (e.g. 1239).
             like_btn = next(
-                (sib for sib in siblings if sib.get("clickable") == "true" and _scaled(_bounds(sib), width)[0] >= 460),
+                (
+                    sib for sib in parent
+                    if sib is not node and sib.tag == "node" and id(sib) not in hidden
+                    and sib.get("package") == PACKAGE and sib.get("enabled") != "false"
+                    and sib.get("visible-to-user") != "false" and sib.get("clickable") == "true"
+                    and (sb := _bounds(sib)) is not None and 0 <= sb[0] < sb[2] and 0 <= sb[1] < sb[3] <= height
+                    and _scaled(sb, width)[0] >= 460
+                ),
                 None,
             )
             header_group = next(
@@ -458,6 +466,22 @@ def _structural_roles(root, hidden, parent_map, width, height):
                 None,
             )
             if header_group is not None and like_btn is not None:
+                grandparent = parent_map.get(parent)
+                gp_cls = (grandparent.get("class") or "") if grandparent is not None else ""
+                is_item_container = (
+                    grandparent is not None
+                    and parent_map.get(grandparent) is not None
+                    and (gpb := _bounds(grandparent)) is not None
+                    and (pb := _bounds(parent)) is not None
+                    and (gpb[3] - gpb[1]) <= max((pb[3] - pb[1]) * 2, int(height * 0.45))
+                )
+                if is_item_container and gp_cls.endswith("FrameLayout"):
+                    structural_level = 2
+                elif is_item_container and gp_cls.endswith("LinearLayout"):
+                    structural_level = 1
+                else:
+                    structural_level = None
+
                 anc = parent
                 for _ in range(4):
                     if anc is None:
@@ -509,6 +533,8 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     meta["commentNicknameControl"] = True
                     meta["commentRole"] = "nickname"
                     meta["commentLikeBox"] = c_like_box
+                    if structural_level is not None:
+                        meta["commentLevel"] = structural_level
                     if has_badge:
                         meta["hasChannelsBadge"] = True
                 if date_tv is not None:
@@ -517,6 +543,8 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     dmeta["commentRole"] = "date"
                     if nick_tv is None:
                         dmeta["commentLikeBox"] = c_like_box
+                        if structural_level is not None:
+                            dmeta["commentLevel"] = structural_level
                 for mid_tv in tvs:
                     if mid_tv is nick_tv or mid_tv is date_tv:
                         continue
@@ -772,7 +800,7 @@ def text_lines(xml, width, height, containers=False):
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = raw_scaled
         for meta_key in ("commentNicknameControl", "hasChannelsBadge", "commentHeaderDate",
-                         "commentLikeBox", "commentRole", "workAuthorControl", "workRole",
+                         "commentLikeBox", "commentRole", "commentLevel", "workAuthorControl", "workRole",
                          "profileRole", "userCardRole", "feedRole", "buttonBox", "iconBox", "messageLikeBox"):
             if meta_key in meta:
                 line[meta_key] = meta[meta_key]

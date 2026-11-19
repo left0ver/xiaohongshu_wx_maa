@@ -888,6 +888,60 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual((c5["nickname"], c5["profileLocation"], c5["gender"], c5["authorBio"]),
                          ("测试", None, None, "女"))
 
+    def test_comment_level_uses_grandparent_container_class_for_short_reply_nicknames(self):
+        from xml.sax.saxutils import escape
+        from comments import parse_comment_drawer
+
+        def node(cls, bounds, *children, **attrs):
+            base = {"package": "com.tencent.mm", "class": cls, "bounds": bounds,
+                    "enabled": "true", "visible-to-user": "true", **attrs}
+            attr_str = " ".join(f'{k}="{escape(str(v))}"' for k, v in base.items())
+            return f"<node {attr_str}>{''.join(children)}</node>"
+
+        # Reproduces Huawei run fe655468: reply by "." has clickable TextView expanded left to x=122 (<140),
+        # but avatar.parent().parent() is FrameLayout (L2) vs LinearLayout (L1).
+        drawer_xml = "<hierarchy>" + node("android.widget.FrameLayout", "[0,0][1236,2676]",
+            node("android.widget.LinearLayout", "[0,696][1236,2676]",
+                node("android.widget.TextView", "[172,751][420,813]", text="评论 405"),
+                node("androidx.recyclerview.widget.RecyclerView", "[0,869][1236,2500]",
+                    # L1 comment: grandparent is LinearLayout
+                    node("android.widget.LinearLayout", "[0,900][1236,1200]",
+                        node("android.view.ViewGroup", "[0,900][1236,1200]",
+                            node("android.widget.ImageView", "[30,930][167,1067]", clickable="true", **{"content-desc": "头像"}),
+                            node("android.widget.LinearLayout", "[173,935][993,995]",
+                                node("android.widget.TextView", "[173,935][320,995]", clickable="true", text="念..."),
+                                node("android.widget.TextView", "[340,935][426,995]", text="江西"),
+                                node("android.widget.TextView", "[446,935][620,995]", text="4天前")),
+                            node("android.widget.RelativeLayout", "[49,1010][1187,1120]",
+                                node("android.widget.TextView", "[173,1010][1187,1120]", text="一级评论正文")),
+                            node("android.widget.LinearLayout", "[993,920][1236,1050]",
+                                node("android.widget.ImageView", "[1130,940][1186,996]"),
+                                clickable="true"))),
+                    # L2 reply by ".": grandparent is FrameLayout; nickname box starts at 210 (scaled x=122 <= 140!)
+                    node("android.widget.FrameLayout", "[0,1210][1236,1500]",
+                        node("android.view.ViewGroup", "[0,1210][1236,1500]",
+                            node("android.widget.ImageView", "[142,1230][278,1366]", clickable="true", **{"content-desc": "头像"}),
+                            node("android.widget.LinearLayout", "[210,1240][1060,1300]",
+                                node("android.widget.TextView", "[210,1240][344,1300]", clickable="true", text="."),
+                                node("android.widget.TextView", "[356,1240][442,1300]", text="河南"),
+                                node("android.widget.TextView", "[462,1240][720,1300]", text="6月17日")),
+                            node("android.widget.RelativeLayout", "[142,1310][1187,1400]",
+                                node("android.widget.TextView", "[271,1310][1187,1400]", text="回复细品岁月:行呗")),
+                            node("android.widget.LinearLayout", "[993,1230][1236,1360]",
+                                node("android.widget.ImageView", "[1130,1250][1186,1306]"),
+                                clickable="true"))),
+                    scrollable="true", **{"scroll-forward": "false"}),
+                node("android.widget.EditText", "[173,2521][961,2657]", text="佳一讲商业\xa0发表评论:"))) + "</hierarchy>"
+
+        lines = page_lines(text_lines(drawer_xml, 1236, 2676, containers=True))
+        parsed = parse_comment_drawer(lines, round(2676 * 720 / 1236), parent_event_id="video-1")
+        self.assertEqual(len(parsed["comments"]), 2)
+        parent_c, reply_c = parsed["comments"]
+        self.assertEqual((parent_c["nickname"], parent_c["commentLevel"]), ("念...", 1))
+        self.assertEqual((reply_c["nickname"], reply_c["commentLevel"]), (".", 2))
+        self.assertEqual(reply_c["parentCommentKey"], parent_c["key"])
+        self.assertEqual(reply_c["replyToNickname"], "细品岁月")
+
 
 if __name__ == "__main__":
     unittest.main()
