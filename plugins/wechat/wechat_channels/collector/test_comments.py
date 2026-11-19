@@ -354,12 +354,25 @@ class ControlTextTests(unittest.TestCase):
         self.assertEqual(clean_comment_nickname("AI吕哥说W"), ("AI吕哥说", True))
         self.assertEqual(clean_comment_nickname("佳一讲商业"), ("佳一讲商业", False))
 
-    def test_user_card_location_includes_the_separate_gender_label(self):
+    def test_user_card_location_excludes_gender_in_fallback_and_structured_modes(self):
+        # Fallback mode (no userCardRole): separate gender label is excluded from profileLocation.
         lines = [line("设置", 1150, 600, 60, 34), line("Mr. 陈", 1180, 187, 87, 41),
                  line("陕西 安康", 1228, 187, 108, 34), line("男", 1228, 303, 25, 34),
                  line("财富是对认知的补偿，而不是对勤奋的嘉奖！", 1269, 187, 460, 34)]
         card = parse_wechat_user_card(lines, "Mr. 陈", 1605)
-        self.assertEqual((card["nickname"], card["profileLocation"]), ("Mr. 陈", "陕西 安康 男"))
+        self.assertEqual((card["nickname"], card["profileLocation"], card["gender"]), ("Mr. 陈", "陕西 安康", "男"))
+
+        # Gender only (no region filled): profileLocation must stay None.
+        gender_only = [line("设置", 1037, 610, 79, 79), line(".", 1135, 187, 7, 42),
+                       line("女", 1184, 187, 25, 34), line("。", 1224, 187, 461, 34)]
+        card2 = parse_wechat_user_card(gender_only, ".", 1559)
+        self.assertEqual((card2["nickname"], card2["profileLocation"], card2["gender"]), (".", None, "女"))
+
+        # OCR-merged "region + gender" on a single line strips trailing gender from profileLocation.
+        ocr_merged = [line("设置", 1206, 619, 55, 29), line("Sunburst", 1344, 182, 159, 32),
+                      line("海南 三亚 女", 1396, 182, 144, 30)]
+        card3 = parse_wechat_user_card(ocr_merged, "Sunburst", 1605)
+        self.assertEqual((card3["nickname"], card3["profileLocation"], card3["gender"]), ("Sunburst", "海南 三亚", "女"))
 
 
 class CommentPagingTests(unittest.TestCase):
@@ -430,6 +443,8 @@ class CommentPagingTests(unittest.TestCase):
         self.assertEqual(comment_limits({}), {})
         self.assertEqual(comment_limits({"maxPages": "20", "maxReplyExpansions": "20", "maxProfiles": "0"}),
                          {"max_pages": 20, "max_reply_expansions": 20, "max_profiles": 0})
+        self.assertEqual(comment_limits({"unlimited": False, "maxComments": 20}),
+                         {"max_comments": 20, "max_profiles": None, "max_pages": None, "max_reply_expansions": None})
         self.assertEqual(comment_limits({"unlimited": False, "maxComments": 20, "maxProfiles": 2}),
                          {"max_comments": 20, "max_profiles": 2, "max_pages": None, "max_reply_expansions": None})
         self.assertEqual(comment_limits({"unlimited": True, "maxPages": "3"}),

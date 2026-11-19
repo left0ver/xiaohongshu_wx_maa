@@ -640,6 +640,31 @@ def parse_wechat_user_card(lines, expected_nickname, height):
         return None
     card_top = height * 0.55
     settings = find(lines, r"^设置$", lambda line: line["box"][0] > 520 and line["box"][1] > card_top)
+    tagged_nick = next((line for line in lines if line.get("userCardRole") == "nickname"), None)
+    if tagged_nick is not None:
+        nickname = tagged_nick["text"].strip()
+        if not nickname_matches(expected_nickname, nickname):
+            return None
+        location = next(
+            (line["text"].strip() for line in lines if line.get("userCardRole") == "location"),
+            None,
+        )
+        gender = next(
+            (line["text"].strip() for line in lines if line.get("userCardRole") == "gender"),
+            None,
+        )
+        bio = next(
+            (line["text"].strip() for line in lines if line.get("userCardRole") == "bio"),
+            None,
+        )
+        return {
+            "nickname": nickname,
+            "profileLocation": location or None,
+            "gender": gender or None,
+            "authorBio": bio or None,
+            "hasSettingsControl": bool(settings),
+        }
+
     candidates = sorted(
         (
             line
@@ -657,20 +682,23 @@ def parse_wechat_user_card(lines, expected_nickname, height):
     if not nickname_matches(expected_nickname, nickname):
         return None
     location = None
-    for extra in candidates[1:3]:
+    gender = None
+    for extra in candidates[1:4]:
         txt = extra["text"].strip()
-        if re.search(rf"(?:{REGION})|[男女]$", txt):
-            location = txt
-            # Controls draw the gender as its own label on the location row.
-            gender = next((item for item in candidates
-                           if item is not extra and item["text"].strip() in ("男", "女")
-                           and abs(item["box"][1] - extra["box"][1]) <= 12 and item["box"][0] > extra["box"][0]), None)
-            if gender and not re.search(r"[男女]$", txt):
-                location = f"{txt} {gender['text'].strip()}"
-            break
+        if txt in ("男", "女"):
+            gender = gender or txt
+            continue
+        if location is None and re.search(rf"(?:{REGION})", txt):
+            merged_gender = re.search(r"\s+([男女])$", txt)
+            if merged_gender:
+                gender = gender or merged_gender.group(1)
+                txt = txt[:merged_gender.start()].strip()
+            location = txt or None
     return {
         "nickname": nickname,
         "profileLocation": location,
+        "gender": gender,
+        "authorBio": None,
         "hasSettingsControl": bool(settings),
     }
 
@@ -763,7 +791,7 @@ def inspect_commenter_profile(ui, comment):
             "douyinId": None,
             "identityMethod": "wechat-user-card",
             "accountType": "wechat_user",
-            "authorBio": None,
+            "authorBio": card.get("authorBio"),
             "authorCertification": None,
             "ipLocation": comment.get("ipLocation"),
             "profileLocation": card["profileLocation"],
@@ -1050,10 +1078,12 @@ def comment_limits(config):
     if limits.get("max_comments") == 0:
         raise ValueError("maxComments must be at least 1")
     if "max_comments" in limits and not unlimited:
-        # Bounded count mode: do not let implicit page or reply-expansion defaults
-        # cut off collection before reaching maxComments; stop on maxComments or end of list.
+        # Bounded count mode: do not let implicit page, reply-expansion, or profile
+        # defaults cut off collection; visit every collected commenter's profile
+        # unless visitProfiles=False or maxProfiles is explicitly specified.
         limits.setdefault("max_pages", None)
         limits.setdefault("max_reply_expansions", None)
+        limits.setdefault("max_profiles", None)
     return limits
 
 

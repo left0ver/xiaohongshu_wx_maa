@@ -369,6 +369,82 @@ def _structural_roles(root, hidden, parent_map, width, height):
                             break
                 continue
 
+            # Ordinary WeChat user bottom card: header bar above avatar contains "设置",
+            # and a right-side sibling ViewGroup holds nickname / location / gender / bio.
+            av_box = _bounds(node)
+            if av_box and av_box[1] > int(height * 0.5):
+                header_above = next(
+                    (
+                        sib for sib in siblings
+                        if (hb := _bounds(sib)) and hb[3] <= av_box[1] + int(height * 0.02)
+                        and any(d.get("content-desc", "").strip() == "设置" for d in sib.iter("node") if valid_visible(d))
+                    ),
+                    None,
+                )
+                info_group = next(
+                    (
+                        sib for sib in siblings
+                        if sib is not header_above
+                        and (ib := _bounds(sib)) and ib[0] >= av_box[2] and ib[1] < av_box[3] and ib[3] > av_box[1]
+                        and any(
+                            c.get("class", "").endswith("TextView") and c.get("text", "").strip()
+                            for c in visible_children(sib)
+                        )
+                    ),
+                    None,
+                )
+                if header_above is not None and info_group is not None:
+                    ib = _bounds(info_group)
+                    iw = max(1, ib[2] - ib[0])
+                    text_views = sorted(
+                        (
+                            c for c in visible_children(info_group)
+                            if c.get("class", "").endswith("TextView") and c.get("text", "").strip() and _bounds(c)
+                        ),
+                        key=lambda c: (_bounds(c)[1], _bounds(c)[0]),
+                    )
+                    if text_views:
+                        nick_node = text_views[0]
+                        nb = _bounds(nick_node)
+                        nick_bottom = nb[3]
+                        nick_h = max(1, nb[3] - nb[1])
+                        node_meta.setdefault(id(nick_node), {})["userCardRole"] = "nickname"
+                        rest = text_views[1:]
+                        gender_node = next(
+                            (
+                                c for c in rest
+                                if c.get("text", "").strip() in ("男", "女")
+                                and ((_bounds(c)[2] - _bounds(c)[0]) / iw) < 0.5
+                            ),
+                            None,
+                        )
+                        if gender_node is not None:
+                            node_meta.setdefault(id(gender_node), {})["userCardRole"] = "gender"
+                        others = [c for c in rest if c is not gender_node]
+                        if gender_node is not None:
+                            gb = _bounds(gender_node)
+                            g_h = max(1, gb[3] - gb[1])
+                            g_cy = (gb[1] + gb[3]) / 2.0
+                            for c in others:
+                                cb = _bounds(c)
+                                c_h = max(1, cb[3] - cb[1])
+                                c_cy = (cb[1] + cb[3]) / 2.0
+                                if abs(c_cy - g_cy) < min(c_h, g_h) * 0.5 and cb[0] < gb[0]:
+                                    node_meta.setdefault(id(c), {})["userCardRole"] = "location"
+                                elif cb[1] >= gb[3] - int(g_h * 0.15):
+                                    node_meta.setdefault(id(c), {})["userCardRole"] = "bio"
+                        elif len(others) >= 2:
+                            node_meta.setdefault(id(others[0]), {})["userCardRole"] = "location"
+                            node_meta.setdefault(id(others[1]), {})["userCardRole"] = "bio"
+                        elif len(others) == 1:
+                            only = others[0]
+                            ob = _bounds(only)
+                            w_ratio = (ob[2] - ob[0]) / iw
+                            gap_ratio = (ob[1] - nick_bottom) / nick_h
+                            role = "bio" if (w_ratio >= 0.75 or gap_ratio >= 0.75) else "location"
+                            node_meta.setdefault(id(only), {})["userCardRole"] = role
+                        continue
+
             # Comment item: header group + right-side clickable like container.
             like_btn = next(
                 (sib for sib in siblings if sib.get("clickable") == "true" and _scaled(_bounds(sib), width)[0] >= 460),
@@ -697,7 +773,7 @@ def text_lines(xml, width, height, containers=False):
             line["controlBox"] = raw_scaled
         for meta_key in ("commentNicknameControl", "hasChannelsBadge", "commentHeaderDate",
                          "commentLikeBox", "commentRole", "workAuthorControl", "workRole",
-                         "profileRole", "feedRole", "buttonBox", "iconBox", "messageLikeBox"):
+                         "profileRole", "userCardRole", "feedRole", "buttonBox", "iconBox", "messageLikeBox"):
             if meta_key in meta:
                 line[meta_key] = meta[meta_key]
         if res_id == "kbf" and not line.get("hasChannelsBadge"):

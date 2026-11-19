@@ -801,6 +801,93 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual(msgs[0]["content"], "看到回复了谢谢分享。")
         self.assertEqual(msgs[0]["quotedContent"], "佳一讲商业: 谢谢留言。")
 
+    def test_ordinary_wechat_user_card_structural_roles_work_without_ids_or_fixed_px(self):
+        from xml.sax.saxutils import escape
+        from comments import parse_wechat_user_card
+
+        def node(cls, bounds, *children, **attrs):
+            base = {"package": "com.tencent.mm", "class": cls, "bounds": bounds,
+                    "enabled": "true", "visible-to-user": "true", **attrs}
+            attr_str = " ".join(f'{k}="{escape(str(v))}"' for k, v in base.items())
+            inner = "".join(children)
+            return f"<node {attr_str}>{inner}</node>"
+
+        def tree(*children):
+            return "<hierarchy>" + "".join(children) + "</hierarchy>"
+
+        def card_xml(w, h, info_children):
+            # Scale card layout dynamically from (w, h) to verify resolution/DPI independence.
+            top = int(h * 0.73)
+            hdr_bottom = int(h * 0.80)
+            av_top = hdr_bottom
+            av_size = int(w * 0.16)
+            av_left = int(w * 0.06)
+            info_left = av_left + av_size + int(w * 0.04)
+            info_right = int(w * 0.94)
+            return tree(node("android.widget.FrameLayout", f"[0,{top}][{w},{h}]",
+                node("android.view.ViewGroup", f"[0,{top}][{w},{h}]",
+                    node("android.widget.FrameLayout", f"[{av_left},{top}][{info_right},{hdr_bottom}]",
+                        node("android.widget.FrameLayout", f"[{int(w*0.03)},{top+20}][{int(w*0.14)},{hdr_bottom-20}]",
+                             clickable="true", **{"content-desc": "返回"}),
+                        node("android.widget.FrameLayout", f"[{int(w*0.85)},{top+20}][{int(w*0.96)},{hdr_bottom-20}]",
+                             clickable="true", **{"content-desc": "设置"})),
+                    node("android.widget.ImageView", f"[{av_left},{av_top}][{av_left+av_size},{av_top+av_size}]",
+                         clickable="true", **{"content-desc": "头像"}),
+                    node("android.view.ViewGroup", f"[{info_left},{av_top}][{info_right},{av_top+int(av_size*1.1)}]",
+                         *info_children))))
+
+        # Case 1 (1080x2408): gender-only + full-width single-char bio -> profileLocation must be None.
+        xml1 = card_xml(1080, 2408, [
+            node("android.widget.TextView", "[281,1926][310,1988]", text="."),
+            node("android.widget.TextView", "[281,1999][319,2050]", text="女"),
+            node("android.widget.TextView", "[281,2061][972,2112]", text="。"),
+        ])
+        lines1 = page_lines(text_lines(xml1, 1080, 2408, containers=True))
+        c1 = parse_wechat_user_card(lines1, ".", round(2408 * 720 / 1080))
+        self.assertEqual((c1["nickname"], c1["profileLocation"], c1["gender"], c1["authorBio"]), (".", None, "女", "。"))
+
+        # Case 2 (1440x3200 QHD): all 4 fields including overseas region without Chinese province prefix.
+        xml2 = card_xml(1440, 3200, [
+            node("android.widget.TextView", "[374,2560][590,2642]", text="献樾🔒流泪"),
+            node("android.widget.TextView", "[374,2658][620,2724]", text="英格兰 谢菲尔德"),
+            node("android.widget.TextView", "[636,2658][686,2724]", text="女"),
+            node("android.widget.TextView", "[374,2740][1296,2806]", text="尘间不羡仙与鸳"),
+        ])
+        lines2 = page_lines(text_lines(xml2, 1440, 3200, containers=True))
+        c2 = parse_wechat_user_card(lines2, "献樾🔒流泪", round(3200 * 720 / 1440))
+        self.assertEqual((c2["nickname"], c2["profileLocation"], c2["gender"], c2["authorBio"]),
+                         ("献樾🔒流泪", "英格兰 谢菲尔德", "女", "尘间不羡仙与鸳"))
+
+        # Case 3 (1080x2408): bio-only (no location, no gender) at full width / row 3.
+        xml3 = card_xml(1080, 2408, [
+            node("android.widget.TextView", "[281,1926][420,1988]", text="张秀英"),
+            node("android.widget.TextView", "[281,2061][972,2112]", text="好人一生平安"),
+        ])
+        lines3 = page_lines(text_lines(xml3, 1080, 2408, containers=True))
+        c3 = parse_wechat_user_card(lines3, "张秀英", round(2408 * 720 / 1080))
+        self.assertEqual((c3["nickname"], c3["profileLocation"], c3["gender"], c3["authorBio"]),
+                         ("张秀英", None, None, "好人一生平安"))
+
+        # Case 4 (1080x2408): location-only (wrap_content on row 2, no gender, no bio).
+        xml4 = card_xml(1080, 2408, [
+            node("android.widget.TextView", "[281,1926][380,1988]", text="遗憾"),
+            node("android.widget.TextView", "[281,1999][442,2050]", text="安徽 蚌埠"),
+        ])
+        lines4 = page_lines(text_lines(xml4, 1080, 2408, containers=True))
+        c4 = parse_wechat_user_card(lines4, "遗憾", round(2408 * 720 / 1080))
+        self.assertEqual((c4["nickname"], c4["profileLocation"], c4["gender"], c4["authorBio"]),
+                         ("遗憾", "安徽 蚌埠", None, None))
+
+        # Case 5: full-width bio literally equal to "女" is classified as bio, not gender.
+        xml5 = card_xml(1080, 2408, [
+            node("android.widget.TextView", "[281,1926][380,1988]", text="测试"),
+            node("android.widget.TextView", "[281,2061][972,2112]", text="女"),
+        ])
+        lines5 = page_lines(text_lines(xml5, 1080, 2408, containers=True))
+        c5 = parse_wechat_user_card(lines5, "测试", round(2408 * 720 / 1080))
+        self.assertEqual((c5["nickname"], c5["profileLocation"], c5["gender"], c5["authorBio"]),
+                         ("测试", None, None, "女"))
+
 
 if __name__ == "__main__":
     unittest.main()

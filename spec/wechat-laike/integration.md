@@ -4,7 +4,7 @@
 
 1. 在 `laike-service` 创建平台为 `WECHAT_CHANNELS`、支持云端任务的授权码。
 2. 在视频号 App 填写服务地址、软件代码和授权码，完成 Shizuku 授权。App 与 Shizuku 都需要允许后台运行。
-3. 在后台“视频号任务”选择设备，保存采集入口、关键词、视频数量、筛选词、评论采集范围（采集全部或最多采集指定条数）与资料访问人数。
+3. 在后台“视频号任务”选择设备，保存采集入口、关键词、视频数量、筛选词、评论采集范围（采集全部或最多采集指定条数）与是否采集评论者资料。
 4. 在“设备与下发”启动、同步配置或停止任务。保存配置只更新设置，启动时生成参数快照。
 5. 在任务记录查看进度与结果，在视频号任务页面查看最近采集数据。
 
@@ -65,7 +65,7 @@
 | `link_message_commenter` | `link`、`nickname`、`text` |
 | `inspect_messages` | `like`、`maxMessages`、`replyText` |
 
-采集入口为 `recommend` 或 `search`，搜索需要 `keyword`。`count` 为 1 至 500。`commentOptions` 包含 `unlimited`、`visitProfiles`、`maxComments`（每个视频最多采集的评论数量，范围 1 至 1000，默认 20）和 `maxProfiles`（资料访问人数，范围 0 至 1000，默认 2）；已移除 `maxPages`、`maxReplyExpansions`，传入这两个字段会返回参数错误。`unlimited` 开启时采集全部评论；关闭时按 `maxComments` 限制单视频采集总评论数（含展开回复），达到上限即停。评论和私信文字最多 500 字。
+采集入口为 `recommend` 或 `search`，搜索需要 `keyword`。`count` 为 1 至 500。`commentOptions` 包含 `unlimited`、`visitProfiles` 和 `maxComments`（每个视频最多采集的评论数量，范围 1 至 1000，默认 20）；已移除 `maxPages`、`maxReplyExpansions`、`maxProfiles`，传入这些字段会返回参数错误。`unlimited` 开启时采集全部评论；关闭时按 `maxComments` 限制单视频采集总评论数（含展开回复），达到上限即停。`visitProfiles` 开启时默认访问所有已采集评论者的个人资料。评论和私信文字最多 500 字。
 
 手机通过 `command_ack` 上报 `commandId`、`success` 和 `message`。任务查询与回调通过 `status` 和 `resultMessage` 说明执行情况。采集明细通过 WebSocket 上报并保存到内容事件表。
 

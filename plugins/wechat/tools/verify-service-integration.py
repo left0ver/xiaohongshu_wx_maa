@@ -60,7 +60,7 @@ def verify(directory, base, password_file=None, card_index=0, config_file=None):
     fields = {item["name"]: item.get("value", "") for item in form.select("input[name]")}
     config = {"task": "collect_channels", "options": {"entry": "search", "keyword": "家常菜", "count": 1,
               "videoFilter": "", "commentFilter": "", "commentOptions": {"unlimited": False, "visitProfiles": True,
-              "maxComments": 20, "maxProfiles": 2}}}
+              "maxComments": 20}}}
     if config_file is not None:
         config = json.loads(config_file.read_text())
     selected_key = cards[card_index]["licenseKey"]

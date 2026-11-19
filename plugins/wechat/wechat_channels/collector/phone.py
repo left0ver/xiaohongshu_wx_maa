@@ -135,7 +135,7 @@ def main():
             event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
             (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
             if "--comments" in sys.argv:
-                # Optional JSON after --comments uses the task-option keys, e.g. {"maxComments": 20, "maxProfiles": 2} or {"unlimited": true}.
+                # Optional JSON after --comments uses the task-option keys, e.g. {"maxComments": 20} or {"unlimited": true}.
                 limits = comment_limits(_load_flag_config(sys.argv, "--comments"))
                 timings.emit({"kind": "commentLimits", **limits})
                 comments = collect_visible_comments(ui, root / "data/videos.sqlite3", event, timings, **limits)
