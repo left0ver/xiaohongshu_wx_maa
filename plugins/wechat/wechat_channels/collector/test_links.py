@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from hierarchy import text_lines
 from links import (
     LinkLedger,
+    open_file_helper,
     private_message_state,
     require_private_message_available,
     resend_confirmation,
@@ -150,6 +151,117 @@ class RecordedPrivateMessageTests(unittest.TestCase):
         self.assertTrue(is_pending)
         self.assertIsNone(btn)
         self.assertGreater(msg["controlBox"][3], msg["box"][3])
+
+
+class OpenFileHelperRecoveryTests(unittest.TestCase):
+    def _line(self, text, x, y, w=120, h=34, cls="android.widget.TextView", selected=None):
+        item = {
+            "text": text,
+            "box": [x, y, w, h],
+            "source": "hierarchy",
+            "selector": {"attribute": "text", "value": text, "resource": "", "class": cls},
+        }
+        if selected is not None:
+            item["selected"] = selected
+        return item
+
+    def _home(self, helper_y=168):
+        items = [
+            self._line("微信", 69, 1566, 43, 29, selected=True),
+            self._line("通讯录", 238, 1566, 64, 29, selected=False),
+        ]
+        if helper_y is not None:
+            items.append(self._line("文件传输助手", 137, helper_y, 472, 41, cls="android.view.View"))
+        return items
+
+    def _chat(self):
+        return [
+            self._line("文件传输助手", 120, 80, 200, 40),
+            self._line("", 100, 1490, 450, 50, cls="android.widget.EditText"),
+        ]
+
+    def test_recovers_and_retries_direct_tap_when_push_shifts_chat_list(self):
+        from unittest.mock import patch
+
+        class FakeUi:
+            height = 1605
+            controls_exposed = False
+
+            def __init__(self, snapshots):
+                self.snapshots = list(snapshots)
+                self.clicks = []
+                self.backs = 0
+                self.typed = []
+
+            def snapshot(self, label):
+                return self.snapshots.pop(0)
+
+            def click(self, target):
+                self.clicks.append((target["text"], target["box"]))
+
+            def back(self):
+                self.backs += 1
+
+            def set_text(self, text):
+                self.typed.append(text)
+
+            def controls_now(self):
+                return []
+
+        official_accounts_page = [self._line("订阅号消息", 120, 80)]
+        home_shifted = self._home(helper_y=297)
+        ui = FakeUi([official_accounts_page, home_shifted, self._chat()])
+        with patch("links.time.sleep"):
+            chat = open_file_helper(ui, home_lines=self._home(helper_y=168))
+        self.assertTrue(any(l["selector"]["class"].endswith("EditText") for l in chat))
+        self.assertEqual(ui.backs, 1)
+        self.assertEqual(ui.typed, [])
+        self.assertEqual(ui.clicks, [("文件传输助手", [137, 168, 472, 41]), ("文件传输助手", [137, 297, 472, 41])])
+
+    def test_recovers_when_search_accidentally_opens_web_search_page(self):
+        from unittest.mock import patch
+
+        class FakeUi:
+            height = 1605
+            controls_exposed = False
+
+            def __init__(self, snapshots):
+                self.snapshots = list(snapshots)
+                self.clicks = []
+                self.backs = 0
+                self.typed = []
+
+            def snapshot(self, label):
+                return self.snapshots.pop(0)
+
+            def click(self, target):
+                self.clicks.append(target["text"])
+
+            def back(self):
+                self.backs += 1
+
+            def set_text(self, text):
+                self.typed.append(text)
+
+            def controls_now(self):
+                return []
+
+        web_search = [
+            self._line("文件传输助手", 72, 96, 442, 34, cls="android.widget.EditText"),
+            self._line("搜索", 593, 96, 97, 34, cls="android.widget.TextView"),
+            self._line("文\u200b件\u200b传\u200b输\u200b助\u200b手", 0, 171, 720, 101, cls="android.view.View"),
+        ]
+        contact_search = [
+            self._line("文件传输助手", 72, 96, 442, 34, cls="android.widget.EditText"),
+            self._line("取消", 610, 96, 80, 34, cls="android.widget.TextView"),
+            self._line("文件传输助手", 140, 260, 240, 40, cls="android.widget.TextView"),
+        ]
+        ui = FakeUi([web_search, self._home(helper_y=None), contact_search, self._chat()])
+        with patch("links.time.sleep"):
+            chat = open_file_helper(ui, home_lines=self._home(helper_y=None))
+        self.assertTrue(any(l["selector"]["class"].endswith("EditText") for l in chat))
+        self.assertEqual(ui.backs, 1)
+        self.assertEqual(ui.clicks, ["搜索", "搜索", "文件传输助手"])
 
 
 if __name__ == "__main__":

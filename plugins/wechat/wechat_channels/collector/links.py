@@ -199,47 +199,108 @@ def _is_chat(lines):
     return bool(_edit_box(lines) or find(lines, CHAT_TEXT))
 
 
-def open_file_helper(ui, home_lines=None):
-    """微信 tab → 文件传输助手 directly when visible on chat list, else 搜索 → 文件传输助手."""
-    if home_lines:
-        row_pred = lambda line: 140 <= line["box"][1] <= ui.height - 200 and line["box"][0] < 380
-        direct = find(home_lines, rf"^{FILE_HELPER}$", row_pred)
+def _is_wechat_home(ui, lines):
+    return bool(find(lines, r"^微信$", _bottom(ui)) and find(lines, r"^通讯录$", _bottom(ui)))
+
+
+def _is_web_search_page(lines):
+    """WeChat 搜一搜 web search has a top-right green 搜索 TextView and no 取消 button."""
+    top_right = lambda line: line["box"][0] > 490 and line["box"][1] < 200
+    return bool(
+        find(lines, r"^搜索$", lambda line: top_right(line) and line.get("selector", {}).get("class", "").endswith("TextView"))
+        and not find(lines, r"^取消$", top_right)
+    )
+
+
+def _return_to_wechat_home(ui, attempts=3):
+    """After ui.back() from a mis-tapped chat or 搜一搜, confirm WeChat 微信 tab is visible."""
+    for attempt in range(attempts):
+        check_stopped(ui)
+        lines = ui.snapshot(f"link-home-recover-{attempt + 1}")
+        if _is_wechat_home(ui, lines):
+            tab = find(lines, r"^微信$", _bottom(ui))
+            if tab and tab.get("selected") is False:
+                ui.click(tab)
+                return ui.snapshot("link-home")
+            return lines
+        ui.back()
+        time.sleep(0.5)
+    return open_wechat_home(ui)
+
+
+def _try_open_file_helper_direct(ui, home_lines):
+    """Try tapping 文件传输助手 directly on WeChat home; recover cleanly if a push shifted the list."""
+    row_pred = lambda line: 140 <= line["box"][1] <= ui.height - 200 and line["box"][0] < 380
+    current = home_lines
+    for _ in range(2):
+        if not current:
+            return None, current
+        direct = find(current, rf"^{FILE_HELPER}$", row_pred)
         if direct and getattr(ui, "controls_exposed", False) and hasattr(ui, "hierarchy"):
             fresh = [c for c in ui.hierarchy(force=True) if not c.get("icon") and not c.get("container")]
             direct = find(fresh, rf"^{FILE_HELPER}$", row_pred)
-        if direct:
-            ui.click(direct)
-            if getattr(ui, "controls_exposed", False) and hasattr(ui, "hierarchy"):
-                _wait_dm_chat_controls(ui, budget=1.8)
-                visible = [
-                    c for c in (getattr(ui, "controls", None) or [])
-                    if not c.get("icon") and not c.get("container")
-                ]
-                if visible and not _is_chat(visible):
-                    ui.back()
-                    direct = None
-        if direct:
-            chat = ui.snapshot("link-chat")
-            if _is_chat(chat):
+        if not direct:
+            return None, current
+        ui.click(direct)
+        if getattr(ui, "controls_exposed", False) and hasattr(ui, "hierarchy"):
+            _wait_dm_chat_controls(ui, budget=1.8)
+            visible = [
+                c for c in (getattr(ui, "controls", None) or [])
+                if not c.get("icon") and not c.get("container")
+            ]
+            if visible and not _is_chat(visible):
+                ui.back()
+                time.sleep(0.5)
+                current = _return_to_wechat_home(ui)
+                continue
+        chat = ui.snapshot("link-chat")
+        if _is_chat(chat):
+            return chat, current
+        ui.back()
+        time.sleep(0.5)
+        current = _return_to_wechat_home(ui)
+    return None, current
+
+
+def open_file_helper(ui, home_lines=None):
+    """微信 tab → 文件传输助手 directly when visible on chat list, else 搜索 → 文件传输助手."""
+    chat, home_lines = _try_open_file_helper_direct(ui, home_lines)
+    if chat is not None:
+        return chat
+    for attempt in range(2):
+        if home_lines is not None and not _is_wechat_home(ui, home_lines):
+            home_lines = _return_to_wechat_home(ui)
+            chat, home_lines = _try_open_file_helper_direct(ui, home_lines)
+            if chat is not None:
                 return chat
+        controls = ui.controls_now() if hasattr(ui, "controls_now") else (home_lines or [])
+        found = control(controls, r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
+        ui.click(found or {"text": "搜索", "box": [550, 70, 80, 80]})
+        time.sleep(0.8)
+        ui.set_text(FILE_HELPER)
+        results = ui.snapshot("link-search-typed")
+        if _is_web_search_page(results) and attempt == 0:
+            # Mis-entered 微信搜一搜 (e.g. from 公众号 top-right search); return to WeChat home and retry.
             ui.back()
-    found = control(ui.controls_now(), r"^搜索$", lambda line: line["box"][1] < 200 and line["box"][0] > 480)
-    ui.click(found or {"text": "搜索", "box": [550, 70, 80, 80]})
-    time.sleep(0.8)
-    ui.set_text(FILE_HELPER)
-    results = ui.snapshot("link-search-typed")
-    box = _edit_box(results)
-    below = box["box"][1] + box["box"][3] if box else 180
-    # The contact comes first; web-search suggestions with the same words follow it.
-    target = find(results, rf"^{FILE_HELPER}$",
-                  lambda line: line["box"][1] > below and not line.get("selector", {}).get("class", "").endswith("EditText"))
-    if not target:
-        raise ValueError("文件传输助手 was not found in WeChat search")
-    ui.click(target)
-    chat = ui.snapshot("link-chat")
-    if not _is_chat(chat):
-        raise ValueError("The 文件传输助手 chat did not open")
-    return chat
+            time.sleep(0.5)
+            home_lines = _return_to_wechat_home(ui)
+            chat, home_lines = _try_open_file_helper_direct(ui, home_lines)
+            if chat is not None:
+                return chat
+            continue
+        box = _edit_box(results)
+        below = box["box"][1] + box["box"][3] if box else 180
+        # The contact comes first; web-search suggestions with the same words follow it.
+        target = find(results, rf"^{FILE_HELPER}$",
+                      lambda line: line["box"][1] > below and not line.get("selector", {}).get("class", "").endswith("EditText"))
+        if not target:
+            raise ValueError("文件传输助手 was not found in WeChat search")
+        ui.click(target)
+        chat = ui.snapshot("link-chat")
+        if not _is_chat(chat):
+            raise ValueError("The 文件传输助手 chat did not open")
+        return chat
+    raise ValueError("文件传输助手 was not found in WeChat search")
 
 
 def _type(ui, text):

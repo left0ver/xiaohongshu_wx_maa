@@ -91,7 +91,11 @@ class WechatPublisher:
         if draft["event_type"] == "COMMENT":
             for name in ("parentCommentKey", "replyToCommentKey"):
                 if event["payload"].get(name):
-                    event["payload"][name] = _digest([self.scope, "dedupe", "COMMENT", event["payload"][name]])
+                    event["payload"][name] = _digest([self.scope, "event", "COMMENT", event["payload"][name]])
+            if event["payload"].get("userProfileEventId"):
+                event["payload"]["userProfileEventId"] = _digest(
+                    [self.scope, "event", "USER", event["payload"]["userProfileEventId"]]
+                )
         return event
 
     def _emit(self, event):

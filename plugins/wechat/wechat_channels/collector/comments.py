@@ -572,27 +572,47 @@ def parse_comments(lines, height, include_replies=True):
     ]
 
 
+def _profile_matches_comment(profile, comment):
+    """Whether a visited commenter profile belongs to `comment` (exact key or same_person)."""
+    if not profile.get("profileVisited"):
+        return False
+    ckey = comment.get("key")
+    if ckey and profile.get("commentKey") == ckey:
+        return True
+    ip = profile.get("_commentIpLocation") or profile.get("ipLocation")
+    for name in (profile.get("commentNickname"), profile.get("nickname")):
+        if name and same_person({"nickname": name, "ipLocation": ip}, comment):
+            return True
+    return False
+
+
 def resolve_reply_targets(comments, profiles=()):
-    """Link replyToCommentKey/replyToDouyinId and backfill authorDouyinId from visited profiles."""
+    """Link replyToCommentKey/replyToDouyinId and backfill profile fields from visited profiles."""
+    visited_profiles = [p for p in profiles if p.get("profileVisited")]
     profile_by_key = {
         p["commentKey"]: p
-        for p in profiles
-        if p.get("profileVisited") and p.get("commentKey")
+        for p in visited_profiles
+        if p.get("commentKey")
     }
     profile_by_nick = {}
-    for p in profiles:
-        if p.get("profileVisited") and p.get("douyinId"):
+    for p in visited_profiles:
+        if p.get("douyinId"):
             for name in (p.get("commentNickname"), p.get("nickname")):
                 if name:
                     profile_by_nick.setdefault(name, p["douyinId"])
 
     for comment in comments:
         key = comment.get("key")
-        prof = profile_by_key.get(key)
+        prof = profile_by_key.get(key) or next(
+            (p for p in visited_profiles if _profile_matches_comment(p, comment)),
+            None,
+        )
         if prof:
             if prof.get("douyinId"):
                 comment["authorDouyinId"] = prof["douyinId"]
             comment["touchStatus"] = prof.get("touchStatus", "visited")
+            if prof.get("_userDedupeKey"):
+                comment["userProfileEventId"] = prof["_userDedupeKey"]
         elif comment.get("nickname") in profile_by_nick and not comment.get("authorDouyinId"):
             comment["authorDouyinId"] = profile_by_nick[comment["nickname"]]
 
@@ -767,6 +787,7 @@ def inspect_commenter_profile(ui, comment):
                 "commentKey": comment["key"],
                 "nickname": profile["authorNickname"],
                 "commentNickname": nickname,
+                "_commentIpLocation": comment.get("ipLocation"),
                 "douyinId": basic["authorDouyinId"],
                 "identityMethod": "wechat-channel-id",
                 "accountType": "channels",
@@ -792,6 +813,7 @@ def inspect_commenter_profile(ui, comment):
             "commentKey": comment["key"],
             "nickname": card["nickname"],
             "commentNickname": nickname,
+            "_commentIpLocation": comment.get("ipLocation"),
             "douyinId": None,
             "identityMethod": "wechat-user-card",
             "accountType": "wechat_user",
@@ -879,6 +901,7 @@ def save_users(path, comment_events, profiles):
         return []
     by_dedupe = {event["dedupe_key"]: event for event in comment_events}
     events = []
+    linked_profiles = []
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("""CREATE TABLE IF NOT EXISTS user_drafts (
             dedupe_key TEXT PRIMARY KEY, event_id TEXT UNIQUE NOT NULL,
@@ -927,24 +950,54 @@ def save_users(path, comment_events, profiles):
                     "UPDATE user_drafts SET event_json=? WHERE dedupe_key=?",
                     (json.dumps(event, ensure_ascii=False), key),
                 )
-                events.append(event)
-                continue
-            event = {
-                "event_id": str(uuid.uuid4()),
-                "event_type": "USER",
-                "dedupe_key": key,
-                "parent_event_id": parent_id,
-                "device_id": parent_event["device_id"],
-                "source_mode": parent_event["source_mode"],
-                "collected_at": now_ms(),
-                "upload_status": "local_only",
-                "payload": payload,
-            }
-            db.execute(
-                "INSERT INTO user_drafts VALUES (?, ?, ?, 'local_only', ?)",
-                (key, event["event_id"], parent_id, json.dumps(event, ensure_ascii=False)),
-            )
+            else:
+                event = {
+                    "event_id": str(uuid.uuid4()),
+                    "event_type": "USER",
+                    "dedupe_key": key,
+                    "parent_event_id": parent_id,
+                    "device_id": parent_event["device_id"],
+                    "source_mode": parent_event["source_mode"],
+                    "collected_at": now_ms(),
+                    "upload_status": "local_only",
+                    "payload": payload,
+                }
+                db.execute(
+                    "INSERT INTO user_drafts VALUES (?, ?, ?, 'local_only', ?)",
+                    (key, event["event_id"], parent_id, json.dumps(event, ensure_ascii=False)),
+                )
+            profile["_userDedupeKey"] = event["dedupe_key"]
+            linked_profiles.append((profile, event["dedupe_key"]))
             events.append(event)
+        if linked_profiles and comment_events:
+            has_comment_table = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='comment_drafts'"
+            ).fetchone() is not None
+            for ce in comment_events:
+                matched_pair = next(
+                    (
+                        pair for pair in linked_profiles
+                        if stored_key(pair[0].get("commentKey")) == ce["dedupe_key"]
+                        or _profile_matches_comment(pair[0], ce["payload"])
+                    ),
+                    None,
+                )
+                if not matched_pair:
+                    continue
+                prof, user_dedupe_key = matched_pair
+                updated = dict(ce["payload"])
+                updated["userProfileEventId"] = user_dedupe_key
+                if prof.get("douyinId") and not updated.get("authorDouyinId"):
+                    updated["authorDouyinId"] = prof["douyinId"]
+                if not updated.get("touchStatus"):
+                    updated["touchStatus"] = prof.get("touchStatus", "visited")
+                if updated != ce["payload"]:
+                    ce["payload"] = updated
+                    if has_comment_table:
+                        db.execute(
+                            "UPDATE comment_drafts SET event_json=? WHERE dedupe_key=?",
+                            (json.dumps(ce, ensure_ascii=False), ce["dedupe_key"]),
+                        )
     return events
 
 

@@ -164,6 +164,124 @@ class StoredCommentTests(unittest.TestCase):
         self.assertEqual(events[1]["payload"]["parentCommentKey"], events[0]["dedupe_key"])
         self.assertEqual((events[0]["payload"]["commentId"], events[0]["payload"]["platform"]), (None, "wechat"))
 
+    def test_published_reply_links_parent_event_id_and_backfills_repeat_commenter_profile(self):
+        from comments import resolve_reply_targets, save_users
+        from publisher import WechatPublisher
+
+        sent = []
+
+        def fake_transport(events, **_kwargs):
+            sent.extend(events)
+            return {"discoveryAckIds": [e["event_id"] for e in events], "pendingEventIds": [], "uploaded": True}
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "v.sqlite3"
+            video, _ = LocalStore(path).save(payload())
+            c1 = self.comment("平安健康（尚…", "太香了", commentLevel=1, ipLocation="河南")
+            c2 = self.comment("岚夕", "我也要试试", commentLevel=2, parentCommentKey=c1["key"], replyToNickname="平安健康（尚…", ipLocation="湖南")
+            c3 = self.comment("平安健康（尚…", "回复岚夕:很好做", commentLevel=2, parentCommentKey=c1["key"], replyToNickname="岚夕", ipLocation="河南")
+            c4 = self.comment("岚夕", "回复平安健康（尚…:谢谢", commentLevel=2, parentCommentKey=c1["key"], replyToNickname="平安健康（尚…", ipLocation="湖南")
+            c_other = self.comment("岚夕", "另一个同名用户", commentLevel=1, ipLocation="北京")
+
+            profiles = [
+                {
+                    "commentKey": c1["key"],
+                    "nickname": "平安健康（尚爱玲）",
+                    "commentNickname": "平安健康（尚…",
+                    "_commentIpLocation": "河南",
+                    "douyinId": "sphTestChannels01",
+                    "accountType": "channels",
+                    "identityMethod": "wechat-channel-id",
+                    "ipLocation": "河南",
+                    "profileLocation": "河南 郑州",
+                    "profileVisited": True,
+                    "touchStatus": "visited",
+                    "profileActionsPerformed": [],
+                },
+                {
+                    "commentKey": c2["key"],
+                    "nickname": "岚夕",
+                    "commentNickname": "岚夕",
+                    "_commentIpLocation": "湖南",
+                    "douyinId": None,
+                    "accountType": "wechat_user",
+                    "identityMethod": "wechat-user-card",
+                    "ipLocation": "湖南",
+                    "profileLocation": "维也纳",
+                    "profileVisited": True,
+                    "touchStatus": "visited_no_channels_id",
+                    "profileActionsPerformed": [],
+                },
+            ]
+
+            all_comments = [c1, c2, c3, c4, c_other]
+            # Simulate streaming per-comment publishing (as collect_visible_comments does).
+            with WechatPublisher(
+                path,
+                records=Path(root) / "uploads",
+                identity={"scope": "e" * 64, "machine": "dev-1"},
+                transport=fake_transport,
+            ) as pub:
+                pub.enqueue([video])
+                pub.flush()
+                for c in all_comments:
+                    resolve_reply_targets(all_comments, profiles)
+                    c_events = save_comments(path, video, [c])
+                    u_events = save_users(path, c_events, profiles)
+                    pub.enqueue([*c_events, *u_events])
+                    pub.flush()
+
+        by_type = {}
+        for ev in sent:
+            by_type.setdefault(ev["event_type"], []).append(ev)
+        self.assertEqual(len(by_type["VIDEO"]), 1)
+        self.assertEqual(len(by_type["COMMENT"]), 5)
+        self.assertEqual(len(by_type["USER"]), 2)
+
+        video_ev = by_type["VIDEO"][0]
+        c_by_content = {e["payload"]["content"]: e for e in by_type["COMMENT"]}
+        u_by_nick = {e["payload"]["nickname"]: e for e in by_type["USER"]}
+
+        # 1. parentCommentKey & replyToCommentKey equal the referenced COMMENT's event_id (not dedupe_key),
+        # while parent_event_id remains the VIDEO's event_id.
+        ev1 = c_by_content["太香了"]
+        ev2 = c_by_content["我也要试试"]
+        ev3 = c_by_content["回复岚夕:很好做"]
+        ev4 = c_by_content["回复平安健康（尚…:谢谢"]
+        ev_other = c_by_content["另一个同名用户"]
+
+        for ce in (ev1, ev2, ev3, ev4, ev_other):
+            self.assertEqual(ce["parent_event_id"], video_ev["event_id"])
+        self.assertIsNone(ev1["payload"].get("parentCommentKey"))
+        self.assertEqual(ev2["payload"]["parentCommentKey"], ev1["event_id"])
+        self.assertEqual(ev2["payload"]["replyToCommentKey"], ev1["event_id"])
+        self.assertEqual(ev3["payload"]["parentCommentKey"], ev1["event_id"])
+        self.assertEqual(ev3["payload"]["replyToCommentKey"], ev2["event_id"])
+        self.assertEqual(ev4["payload"]["parentCommentKey"], ev1["event_id"])
+        self.assertNotEqual(ev2["payload"]["parentCommentKey"], ev1["dedupe_key"])
+
+        # 2. Repeat comments from the same person inherit userProfileEventId, authorWechatChannelsId, and touchStatus
+        # without creating duplicate USER events; a namesake in another region is NOT linked.
+        u_channels = u_by_nick["平安健康（尚爱玲）"]
+        u_wechat = u_by_nick["岚夕"]
+
+        self.assertEqual(ev1["payload"]["userProfileEventId"], u_channels["event_id"])
+        self.assertEqual(ev1["payload"]["authorWechatChannelsId"], "sphTestChannels01")
+        self.assertEqual(ev1["payload"]["touchStatus"], "visited")
+
+        self.assertEqual(ev3["payload"]["userProfileEventId"], u_channels["event_id"])
+        self.assertEqual(ev3["payload"]["authorWechatChannelsId"], "sphTestChannels01")
+        self.assertEqual(ev3["payload"]["touchStatus"], "visited")
+
+        self.assertEqual(ev2["payload"]["userProfileEventId"], u_wechat["event_id"])
+        self.assertEqual(ev2["payload"]["touchStatus"], "visited_no_channels_id")
+
+        self.assertEqual(ev4["payload"]["userProfileEventId"], u_wechat["event_id"])
+        self.assertEqual(ev4["payload"]["touchStatus"], "visited_no_channels_id")
+
+        self.assertIsNone(ev_other["payload"].get("userProfileEventId"))
+        self.assertIsNone(ev_other["payload"].get("touchStatus"))
+
 
 class ShareLinkTests(unittest.TestCase):
     SHEET_FIRST = [line("转发给朋友", 27, 1170, 90, 49), line("浮窗", 54, 1365, 36, 49),
