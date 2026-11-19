@@ -304,12 +304,12 @@ class CommentTests(unittest.TestCase):
                 feed,
                 drawer_initial,
                 drawer_after_comment_expand,
-                drawer_after_reply_expand,
+                wechat_user_card,
+                drawer_after_comment_expand,
                 channels_profile,
                 profile_menu,
                 basic_info,
-                drawer_after_reply_expand,
-                wechat_user_card,
+                drawer_after_comment_expand,
                 drawer_after_reply_expand,
             ])
             timings = Timings(Path(directory) / "timings.jsonl", "run-comments")
@@ -494,6 +494,64 @@ class CommentPagingTests(unittest.TestCase):
             self.assertEqual(result_two["replyExpansions"], 0)
             self.assertEqual(result_two["endReason"], "comment_limit")
             self.assertEqual(ui_two.labels.count("comments-replies"), 0)
+
+    def test_depth_first_visits_profile_then_expands_replies_without_leaking_pushed_comments(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "作者", "description": "作品", "authorDouyinId": "sphAuthor001",
+            })
+            bar = line("我发表评论：", 1500, 110, 200, 25)
+            page1 = [
+                line("评论5", 400, 25, 90, 29),
+                line("甲广东8月2日", 500), line("甲的评论", 540),
+                line("2条回复", 580, 96, 110),
+                line("乙河北8月3日", 660), line("乙的评论会被挤出屏幕", 700),
+                bar,
+            ]
+            card_jia = [
+                line("评论5", 400, 25, 90, 29),
+                line("设置", 1206, 619, 55, 29),
+                line("甲", 1344, 182, 80, 32),
+                line("广东 深圳 男", 1396, 182, 144, 30),
+            ]
+            # Expanding 甲's replies pushes 乙 off-screen and reveals L2 reply 丙.
+            expanded = [
+                line("评论5", 400, 25, 90, 29),
+                line("甲广东8月2日", 500), line("甲的评论", 540),
+                line("丙四川8月4日", 580, 160, 280), line("回复甲:丙的二级回复", 620, 160, 280),
+                line("展开更多回复", 680, 160, 150),
+                bar,
+            ]
+            card_bing = [
+                line("评论5", 400, 25, 90, 29),
+                line("设置", 1206, 619, 55, 29),
+                line("丙", 1344, 182, 80, 32),
+                line("四川 成都 女", 1396, 182, 144, 30),
+            ]
+            ui = FakeCommentUi([
+                [line("5", 1555, 622, 42, 23)],
+                page1,
+                card_jia,
+                page1,
+                expanded,
+                card_bing,
+                expanded,
+            ])
+            published_order = []
+            result = collect_visible_comments(
+                ui, path, video_event, Timings(Path(directory) / "t.jsonl", "run-df"),
+                **comment_limits({"unlimited": False, "maxComments": 2}),
+                publish_events=lambda batch: published_order.append([(e["event_type"], e["payload"]["nickname"]) for e in batch]),
+            )
+            self.assertEqual([e["payload"]["nickname"] for e in result["events"]], ["甲", "丙"])
+            self.assertEqual([u["payload"]["nickname"] for u in result["userEvents"]], ["甲", "丙"])
+            self.assertEqual(result["replyExpansions"], 1)
+            self.assertEqual(result["endReason"], "comment_limit")
+            self.assertEqual(published_order, [
+                [("COMMENT", "甲"), ("USER", "甲")],
+                [("COMMENT", "丙"), ("USER", "丙")],
+            ])
 
     def test_unlimited_run_keeps_comments_read_before_expanding_and_follows_more_replies(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
