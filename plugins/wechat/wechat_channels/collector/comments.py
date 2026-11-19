@@ -1049,6 +1049,11 @@ def comment_limits(config):
         raise ValueError("maxPages must be at least 1")
     if limits.get("max_comments") == 0:
         raise ValueError("maxComments must be at least 1")
+    if "max_comments" in limits and not unlimited:
+        # Bounded count mode: do not let implicit page or reply-expansion defaults
+        # cut off collection before reaching maxComments; stop on maxComments or end of list.
+        limits.setdefault("max_pages", None)
+        limits.setdefault("max_reply_expansions", None)
     return limits
 
 
@@ -1194,8 +1199,9 @@ def collect_visible_comments(
 
                 # 2. Expand reply threads. A thread may need several clicks
                 #    ("N条回复", then "展开更多回复"); stop on a thread once a click
-                #    adds nothing so a stuck control cannot loop.
-                while _within(max_reply_expansions, reply_expansions_done):
+                #    adds nothing so a stuck control cannot loop, or as soon as
+                #    max_comments is already satisfied.
+                while _within(max_reply_expansions, reply_expansions_done) and _within(max_comments, len(collected)):
                     pending = [exp for exp in drawer["replyExpands"]
                                if exp["parentKey"] not in stalled_reply_parents]
                     if not pending:

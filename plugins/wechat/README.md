@@ -39,7 +39,7 @@ App 任务（0.12.0，2026-11-11 重新设计）：每个任务都能单独运�
 3. **视频号消息巡检**（`InteractWechatWork` 只开启 `inspectMessages`）：行为不变。
 多入口自动运行（`RunWechatMode`）暂未放回 App。
 
-采集任务默认启用评论者资料访问。任务参数 `commentOptions` 可指定评论范围，例如 `{"visitProfiles":true,"maxPages":1,"maxReplyExpansions":0,"maxProfiles":2}` 表示读取首屏评论并最多访问两位评论者。`USER` 根据 `commentKey` 关联本次保留的 `COMMENT`；评论被过滤后，其对应资料不会关联到其他评论。
+采集任务默认启用评论者资料访问。任务参数 `commentOptions` 可指定评论范围，例如 `{"unlimited":false,"visitProfiles":true,"maxComments":20,"maxProfiles":2}` 表示每个视频最多采集 20 条评论（含展开的二级回复，达标即停）并最多访问两位评论者；`{"unlimited":true,"visitProfiles":true}` 表示采集全部评论。`USER` 根据 `commentKey` 关联本次保留的 `COMMENT`；评论被过滤后，其对应资料不会关联到其他评论。
 
 2026-11-12，华为 Hebe-BD00 与 vivo V2131A 均通过手机 Python 入口完成上述有限范围的搜索采集及实时上报。华为分 4 次发送 1 VIDEO、3 COMMENT、2 USER，收到 6/6 ACK；vivo 分 5 次发送 1 VIDEO、4 COMMENT、2 USER，收到 7/7 ACK。视频各发送一次，评论位置返回验证、SQLite 关联、筛选后用户保存及重启去重检查通过。正式 APK 的这项配置尚待重新打包。
 

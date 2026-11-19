@@ -14,6 +14,12 @@ class CollectionSettingsTests(unittest.TestCase):
         self.assertIs(settings["commentOptions"]["visitProfiles"], True)
         self.assertIsNone(mode_comment_limits(settings["commentOptions"])["max_profiles"])
 
+    def test_collection_accepts_bounded_comment_count_without_page_truncation(self):
+        options = {"unlimited": False, "visitProfiles": True, "maxComments": 20, "maxProfiles": 2}
+        settings = collection_task_config({"entry": "search", "keyword": "家常菜", "commentOptions": options})
+        self.assertEqual(mode_comment_limits(settings["commentOptions"]),
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": 2, "max_comments": 20})
+
     def test_collection_accepts_bounded_profile_visits(self):
         options = {"maxPages": 1, "maxReplyExpansions": 0, "maxProfiles": 2}
         settings = collection_task_config({"entry": "search", "keyword": "家常菜", "commentOptions": options})

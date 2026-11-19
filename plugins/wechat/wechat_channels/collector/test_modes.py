@@ -321,6 +321,9 @@ class ProcessedRecordTests(unittest.TestCase):
     def test_comment_limits_reach_the_comment_collector(self):
         self.assertEqual(mode_comment_limits({"maxReplyExpansions": "3"}),
                          {"max_pages": 2, "max_reply_expansions": 3, "max_profiles": 1})
+        self.assertEqual(mode_comment_limits({"unlimited": False, "visitProfiles": True,
+                                              "maxComments": 20, "maxProfiles": 2}),
+                         {"max_pages": None, "max_reply_expansions": None, "max_profiles": 2, "max_comments": 20})
         self.assertEqual(mode_comment_limits({"unlimited": True}),
                          {"max_pages": None, "max_reply_expansions": None, "max_profiles": None, "max_comments": None})
         with patch("modes.collect_visible_comments") as collect, patch("modes.check_stopped"), \

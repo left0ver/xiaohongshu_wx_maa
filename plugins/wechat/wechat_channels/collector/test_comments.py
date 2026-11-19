@@ -430,12 +430,55 @@ class CommentPagingTests(unittest.TestCase):
         self.assertEqual(comment_limits({}), {})
         self.assertEqual(comment_limits({"maxPages": "20", "maxReplyExpansions": "20", "maxProfiles": "0"}),
                          {"max_pages": 20, "max_reply_expansions": 20, "max_profiles": 0})
+        self.assertEqual(comment_limits({"unlimited": False, "maxComments": 20, "maxProfiles": 2}),
+                         {"max_comments": 20, "max_profiles": 2, "max_pages": None, "max_reply_expansions": None})
         self.assertEqual(comment_limits({"unlimited": True, "maxPages": "3"}),
                          {"max_pages": None, "max_reply_expansions": None, "max_profiles": None, "max_comments": None})
         with self.assertRaises(ValueError):
             comment_limits({"maxPages": "0"})
         with self.assertRaises(ValueError):
+            comment_limits({"maxComments": 0})
+        with self.assertRaises(ValueError):
             comment_limits({"maxProfiles": "-1"})
+
+    def test_max_comments_expands_replies_until_total_reached_and_stops_without_extra_clicks(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            path = Path(directory) / "videos.sqlite3"
+            video_event, _ = LocalStore(path).save({
+                "authorNickname": "作者", "description": "作品", "authorDouyinId": "sphAuthor001",
+            })
+            bar = line("我发表评论：", 1500, 110, 200, 25)
+            first = [line("评论5", 400, 25, 90, 29),
+                     line("甲广东8月2日", 500), line("甲的评论", 540),
+                     line("乙广东8月2日", 620), line("乙的评论", 660),
+                     line("2条回复", 700, 96, 110), bar]
+            thread = [line("评论5", 400, 25, 90, 29),
+                      line("乙广东8月2日", 500), line("乙的评论", 540),
+                      line("丙广东8月3日", 600, 160, 280), line("回复乙：丙的回复", 640, 160, 280),
+                      line("展开更多回复", 700, 160, 150), bar]
+
+            # 1) maxComments=3: page 1 has 2 top-level comments -> expands reply once to reach 3 ->
+            #    stops immediately without clicking "展开更多回复".
+            ui_three = FakeCommentUi([[line("5", 1555, 622, 42, 23)], first, thread])
+            result_three = collect_visible_comments(
+                ui_three, path, video_event, Timings(Path(directory) / "t3.jsonl", "run3"),
+                **comment_limits({"unlimited": False, "maxComments": 3, "maxProfiles": 0}))
+            names_three = {e["payload"]["nickname"] for e in result_three["events"]}
+            self.assertEqual(names_three, {"甲", "乙", "丙"})
+            self.assertEqual(result_three["replyExpansions"], 1)
+            self.assertEqual(result_three["endReason"], "comment_limit")
+            self.assertEqual(ui_three.labels.count("comments-replies"), 1)
+
+            # 2) maxComments=2: page 1 already satisfies 2 comments -> does not click "2条回复" at all.
+            ui_two = FakeCommentUi([[line("5", 1555, 622, 42, 23)], first])
+            result_two = collect_visible_comments(
+                ui_two, path, video_event, Timings(Path(directory) / "t2.jsonl", "run2"),
+                **comment_limits({"unlimited": False, "maxComments": 2, "maxProfiles": 0}))
+            names_two = {e["payload"]["nickname"] for e in result_two["events"]}
+            self.assertEqual(names_two, {"甲", "乙"})
+            self.assertEqual(result_two["replyExpansions"], 0)
+            self.assertEqual(result_two["endReason"], "comment_limit")
+            self.assertEqual(ui_two.labels.count("comments-replies"), 0)
 
     def test_unlimited_run_keeps_comments_read_before_expanding_and_follows_more_replies(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
