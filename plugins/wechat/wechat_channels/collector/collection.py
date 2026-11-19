@@ -196,6 +196,16 @@ def strip_certification_from_bio(bio, certification):
     return cleaned or None
 
 
+def _clean_profile_location(raw):
+    """Strip trailing gender ('男'/'女') and '已实名' markers from a Channels profile location row."""
+    text = clean_control_text(raw or "").strip()
+    text = re.sub(r"\s*已实名$", "", text).strip()
+    text = re.sub(r"(?:^|\s+)[男女]$", "", text).strip()
+    if re.fullmatch(rf"(?:{REGION})(?:[\u4e00-\u9fff\s]{{0,8}})[男女]", text):
+        text = text[:-1].strip()
+    return text or None
+
+
 def parse_author(lines, author):
     contact = (
         next(
@@ -280,7 +290,7 @@ def parse_author(lines, author):
         "authorNickname": clean_control_text(name["text"]).strip(),
         "authorCertification": cert_text,
         "authorIpLocation": clean_region_name(re.sub(r".*IP\s*(?:归)?属地\s*[:：]?\s*", "", ip["text"])) if ip else None,
-        "authorProfileLocation": clean_control_text(location["text"]).strip() if location else None,
+        "authorProfileLocation": _clean_profile_location(location["text"]) if location else None,
         "authorBio": None if profile_bio_expand(lines, author) else strip_certification_from_bio(raw_bio, cert_text),
     }
     fields["missingFields"] = [key for key in ("authorCertification", "authorIpLocation", "authorBio") if fields[key] is None]

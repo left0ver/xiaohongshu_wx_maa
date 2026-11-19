@@ -208,7 +208,7 @@ class LayoutTests(unittest.TestCase):
         ]
         parsed_zero = parse_author(zero_work_profile, "穿着雨鞋去踩水")
         self.assertIsNone(parsed_zero["authorBio"])
-        self.assertEqual(parsed_zero["authorProfileLocation"], "福建 福州 女")
+        self.assertEqual(parsed_zero["authorProfileLocation"], "福建 福州")
 
         # Certified creator where header OCR includes truncated cert + badge icon before Basic Info supplies full cert.
         self.assertEqual(

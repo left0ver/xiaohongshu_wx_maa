@@ -72,11 +72,21 @@ class FakeUi:
 
 class ControlProfileTests(unittest.TestCase):
     def test_space_separated_profile_location_from_controls(self):
-        for location in ("北京 男 已实名", "河北 邯郸", "广东 韶关 男"):
-            with self.subTest(location=location):
-                lines = [line("作者", 192, 501, 135, 44), line(location, 194, 549, 146, 34),
+        cases = (
+            ("北京 男 已实名", "北京"),
+            ("河北 邯郸", "河北 邯郸"),
+            ("广东 韶关 男", "广东 韶关"),
+            ("湖南 女", "湖南"),
+            ("女", None),
+            ("女 已实名", None),
+        )
+        for raw, expected in cases:
+            with self.subTest(location=raw):
+                lines = [line("作者", 192, 501, 135, 44), line(raw, 194, 549, 146, 34),
                          line("简介", 35, 644), line("关注", 162, 760, 56), line("私信", 496, 760, 56)]
-                self.assertEqual(parse_author(lines, "作者")["authorProfileLocation"], location)
+                parsed = parse_author(lines, "作者")
+                self.assertEqual(parsed["authorProfileLocation"], expected)
+                self.assertEqual(parsed["authorBio"], "简介")
 
 
 class CollectionTests(unittest.TestCase):
@@ -267,7 +277,7 @@ class CollectionTests(unittest.TestCase):
                    *PROFILE[2:], line("音乐电台40人在听", 35, 720), line("播放", 597, 720)]
         result = parse_author(profile, AUTHOR)
         self.assertEqual(result["authorCertification"], "音乐人")
-        self.assertEqual(result["authorProfileLocation"], "江苏女")
+        self.assertEqual(result["authorProfileLocation"], "江苏")
         self.assertEqual(result["authorBio"], "作者简介")
 
     def test_basic_information_pairs_labels_with_same_row_values(self):
