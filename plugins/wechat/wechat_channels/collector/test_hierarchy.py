@@ -92,16 +92,27 @@ class HierarchyTests(unittest.TestCase):
         # The work, the commenter row and the like count are controls; the
         # comment body is an empty container, so only it is recognized.
         xml = tree(screen(
-            layer("ean", sheet(
-                label("评论 294", "d4v", "[60,964][300,1020]"),
-                label(AUTHOR, "kbf", "[198,1100][520,1232]"), label("作者", "a8r", "[530,1140][600,1190]"),
-                label("福建", "hgh", "[610,1140][680,1190]"), label("8月1日", "cgp", "[690,1140][860,1190]"),
-                label("完整的作品文案", "c1_", "[198,1208][1384,1270]"),
-                label("评论者", "kbf", "[198,1460][400,1590]"), label("四川", "hgh", "[420,1500][500,1550]"),
-                label("8月1日", "c85", "[520,1500][900,1550]"), label("12", "aa0", "[1250,1500][1300,1552]"),
-                box("c6d", "[58,1600][1384,1660]"),
-                label("帮她上热门", "x1", "[240,1400][700,1440]"))),
-            layer("nsv", label("被盖住的推荐流文案", "o45", "[98,1600][1384,1700]")),
+            layer("", sheet(
+                label("评论 294", "", "[60,964][300,1020]"),
+                label(AUTHOR, "", "[198,1100][520,1232]"), label("作者", "", "[530,1140][600,1190]"),
+                label("福建", "", "[610,1140][680,1190]"), label("8月1日", "", "[690,1140][860,1190]"),
+                label("完整的作品文案", "", "[198,1208][1384,1270]"),
+                box("", "[0,1450][1440,1680]",
+                    label("", "", "[54,1460][190,1596]", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                    box("", "[198,1460][920,1590]",
+                        label("评论者", "", "[198,1460][400,1590]", clickable="true"),
+                        label("四川", "", "[420,1500][500,1550]"),
+                        label("8月1日", "", "[520,1500][900,1550]"),
+                        **{"class": "android.widget.LinearLayout"}),
+                    box("", "[1180,1470][1400,1580]",
+                        label("12", "", "[1250,1500][1300,1552]"),
+                        **{"class": "android.widget.LinearLayout", "clickable": "true"}),
+                    box("", "[58,1600][1384,1660]", **{"class": "android.widget.RelativeLayout"}),
+                    **{"class": "android.view.ViewGroup"}),
+                label("帮她上热门", "", "[240,1400][700,1440]"))),
+            layer("",
+                  ({"class": "android.widget.SeekBar", "bounds": "[16,2800][1424,2810]"}, []),
+                  label("被盖住的推荐流文案", "", "[98,1600][1384,1700]")),
         ))
         lines = text_lines(xml, 1440, 3116, containers=True)
         body = line("不能采集成作品文案", 99, 803, 300)
@@ -116,24 +127,33 @@ class HierarchyTests(unittest.TestCase):
         self.assertEqual((x, y, height), (29, 800, 30))
 
     def test_visible_layer_does_not_depend_on_sibling_order(self):
-        drawer = layer("ean", sheet(label("评论 3", "d4v", "[60,964][300,1020]")))
-        feed = layer("nsv", label("推荐流文案", "o45", "[98,2600][1384,2700]"))
-        for layers in ((feed, drawer), (drawer, feed)):
-            with self.subTest(order=[item[0]["resource-id"] for item in layers]):
+        drawer = layer("", sheet(label("评论 3", "", "[60,964][300,1020]")))
+        feed = layer("",
+                     ({"class": "android.widget.SeekBar", "bounds": "[16,2800][1424,2810]"}, []),
+                     label("推荐流文案", "", "[98,2600][1384,2700]"))
+        for name, layers in (("feed-first", (feed, drawer)), ("drawer-first", (drawer, feed))):
+            with self.subTest(order=name):
                 texts = [item["text"] for item in text_lines(tree(screen(*layers)), 1440, 3116)]
                 self.assertEqual(texts, ["评论 3"])
 
     def test_profile_sheet_covers_drawer_and_feed(self):
-        profile = box("", "[0,0][1440,3116]", sheet(label("浙江 宁波 男", "ov9", "[388,1050][680,1210]")))
-        xml = tree(screen(layer("ean", sheet(label("评论 3", "d4v", "[60,964][300,1020]"))), profile,
-                          layer("nsv", label("推荐流文案", "o45", "[98,2600][1384,2700]"))))
+        profile = box("", "[0,0][1440,3116]", sheet(label("浙江 宁波 男", "", "[388,1050][680,1210]")))
+        xml = tree(screen(
+            layer("", sheet(label("评论 3", "", "[60,964][300,1020]"))),
+            profile,
+            layer("",
+                  ({"class": "android.widget.SeekBar", "bounds": "[16,2800][1424,2810]"}, []),
+                  label("推荐流文案", "", "[98,2600][1384,2700]")),
+        ))
         self.assertEqual([item["text"] for item in text_lines(xml, 1440, 3116)], ["浙江 宁波 男"])
 
     def test_sheet_beside_the_video_pager_hides_the_pager(self):
-        content = box("content", "[0,0][1440,3116]",
-                      box("", "[0,0][1440,3116]", sheet(label("广东 韶关 男", "ov9", "[388,1050][680,1210]"))),
-                      layer("jlt", label("热评", "ehh", "[60,2600][200,2680]")))
-        texts = [item["text"] for item in text_lines(tree(layer("nsv", content)), 1440, 3116)]
+        content = box("", "[0,0][1440,3116]",
+                      box("", "[0,0][1440,3116]", sheet(label("广东 韶关 男", "", "[388,1050][680,1210]"))),
+                      layer("",
+                            ({"class": "android.widget.SeekBar", "bounds": "[16,2800][1424,2810]"}, []),
+                            label("热评", "", "[60,2600][200,2680]")))
+        texts = [item["text"] for item in text_lines(tree(layer("", content)), 1440, 3116)]
         self.assertEqual(texts, ["广东 韶关 男"])
 
     def test_padded_labels_share_one_reading_row(self):
@@ -219,34 +239,110 @@ class HierarchyTests(unittest.TestCase):
                          [c["key"] for c in readings["comments-return"]])
 
     def test_reply_ad_and_message_buttons_are_read_directly_from_controls(self):
-        xml = tree(screen(
-            label("狼王", "kbq", "[308,321][602,498]"),
-            box("lz3", "[308,736][523,915]"),
-            box("kr", "[1200,736][1380,810]"),
-            box("mld", "[800,1189][1400,1307]", **{"content-desc": "私信按钮"}),
+        from comments import parse_comment_drawer
+
+        # Zero resource-ids: message-center 2-button bar -> "回复", comment-drawer ad item -> "广告",
+        # message button content-desc -> "私信", and composer emoji ImageView -> icon=True.
+        xml = tree(box("", "[0,0][1236,2676]",
+            box("", "[0,300][1236,680]",
+                label("狼王", "", "[221,310][420,380]"),
+                box("", "[221,498][549,633]",
+                    box("", "[221,498][414,630]", clickable="true", **{"class": "android.widget.LinearLayout"}),
+                    box("", "[414,498][549,633]", clickable="true", **{"class": "android.widget.LinearLayout"}),
+                    **{"class": "android.widget.LinearLayout"}),
+                **{"class": "android.widget.LinearLayout"}),
+            box("", "[0,914][1236,1391]",
+                label("", "", "[30,944][167,1081]", clickable="true", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                box("", "[173,963][1236,1021]",
+                    label("洛克王国:世界", "", "[173,926][442,1058]", clickable="true"),
+                    **{"class": "android.widget.LinearLayout"}),
+                box("", "[1002,926][1187,1062]", clickable="true", **{"class": "android.widget.FrameLayout"}),
+                box("", "[173,1046][1187,1342]",
+                    label("了解详情", "", "[904,1209][1150,1305]"),
+                    clickable="true", **{"class": "android.widget.LinearLayout"}),
+                **{"class": "android.view.ViewGroup"}),
+            box("", "[636,1500][1176,1620]", **{"content-desc": "私信按钮"}),
+            label("", "", "[38,1700][160,1820]", **{"content-desc": "[强]", "class": "android.widget.ImageView"}),
         ))
-        items = text_lines(xml, 1620, 3612, containers=True)
+        items = text_lines(xml, 1236, 2676, containers=True)
         holes = [item for item in items if item.get("container")]
         self.assertEqual(holes, [])
-        self.assertEqual(sorted(item["text"] for item in page_lines(items)), ["回复", "广告", "狼王", "私信"])
-        # Fallback: mld without content-desc still exposes message-button container for OCR.
-        fallback_items = text_lines(tree(screen(label("狼王", "kbq", "[308,321][602,498]"),
-                                                box("mld", "[800,1189][1400,1307]"))), 1620, 3612, containers=True)
-        self.assertEqual([h["container"] for h in fallback_items if h.get("container")], ["message-button"])
+        self.assertEqual(
+            sorted(item["text"] for item in page_lines(items)),
+            ["了解详情", "回复", "广告", "洛克王国:世界", "狼王", "私信"],
+        )
+        self.assertTrue(next(item for item in items if item["text"] == "[强]")["icon"])
+
+        # Comment drawer with an ID-free ad row between two normal comments skips the ad cleanly.
+        drawer_xml = tree(box("", "[0,0][1236,2676]",
+            label("评论 15", "", "[172,751][420,813]"),
+            box("", "[0,900][1236,1150]",
+                label("", "", "[30,920][167,1057]", clickable="true", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                box("", "[173,926][993,984]",
+                    label("正常用户A", "", "[173,926][380,984]", clickable="true"),
+                    label("江苏", "", "[400,926][486,984]"),
+                    label("2天前", "", "[506,926][680,984]"),
+                    **{"class": "android.widget.LinearLayout"}),
+                box("", "[49,1000][1187,1090]",
+                    label("说得太对了", "", "[173,1000][600,1090]"),
+                    **{"class": "android.widget.RelativeLayout"}),
+                box("", "[993,920][1236,1050]",
+                    label("", "", "[1130,940][1186,996]", **{"class": "android.widget.ImageView"}),
+                    clickable="true", **{"class": "android.widget.LinearLayout"}),
+                **{"class": "android.view.ViewGroup"}),
+            box("", "[0,1200][1236,1680]",
+                label("", "", "[30,1230][167,1367]", clickable="true", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                box("", "[173,1249][1236,1307]",
+                    label("红果免费短剧", "", "[173,1212][431,1344]", clickable="true"),
+                    **{"class": "android.widget.LinearLayout"}),
+                box("", "[1002,1212][1187,1348]", clickable="true", **{"class": "android.widget.FrameLayout"}),
+                box("", "[173,1332][1187,1628]",
+                    label("看漫剧还充会员？我已经免费看半年了", "", "[642,1369][1150,1431]"),
+                    label("了解详情", "", "[904,1495][1150,1591]"),
+                    clickable="true", **{"class": "android.widget.LinearLayout"}),
+                **{"class": "android.view.ViewGroup"}),
+            box("", "[0,1700][1236,1950]",
+                label("", "", "[30,1720][167,1857]", clickable="true", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                box("", "[173,1726][993,1784]",
+                    label("正常用户B", "", "[173,1726][380,1784]", clickable="true"),
+                    label("浙江", "", "[400,1726][486,1784]"),
+                    label("1天前", "", "[506,1726][680,1784]"),
+                    **{"class": "android.widget.LinearLayout"}),
+                box("", "[49,1800][1187,1890]",
+                    label("支持一下", "", "[173,1800][600,1890]"),
+                    **{"class": "android.widget.RelativeLayout"}),
+                box("", "[993,1720][1236,1850]",
+                    label("", "", "[1130,1740][1186,1796]", **{"class": "android.widget.ImageView"}),
+                    clickable="true", **{"class": "android.widget.LinearLayout"}),
+                **{"class": "android.view.ViewGroup"}),
+            label("发表评论:", "", "[173,2521][961,2657]", **{"class": "android.widget.EditText"}),
+        ))
+        parsed = parse_comment_drawer(page_lines(text_lines(drawer_xml, 1236, 2676, containers=True)), 1559, parent_event_id="W")
+        self.assertEqual([c["nickname"] for c in parsed["comments"]], ["正常用户A", "正常用户B"])
+        self.assertEqual([c["content"] for c in parsed["comments"]], ["说得太对了", "支持一下"])
 
     def test_comment_body_with_c1_child_uses_pure_controls_without_ocr(self):
         from comments import parse_comment_drawer
         xml = tree(screen(
-            layer("ean", sheet(
-                label("评论 12", "d4v", "[151,656][341,711]"),
-                label("楠霖27", "kbf", "[151,1277][271,1392]"),
-                label("", "ehq", "[238,1275][357,1394]", **{"content-desc": "视频号logo", "class": "android.widget.ImageView"}),
-                label("福建", "hgh", "[335,1309][411,1360]"),
-                label("11天前", "c85", "[427,1309][863,1360]"),
-                box("c6d", "[43,1371][1037,1478]",
-                    label("从灶台来看父亲不爱干活[Facepalm]", "c1_", "[151,1371][1037,1478]")),
-                label("6754", "aa0", "[885,1310][976,1361]"),
-                label("AI吕哥说#\xa0发表评论:", "c6v", "[151,2273][838,2391]", **{"class": "android.widget.EditText"}),
+            layer("", sheet(
+                label("评论 12", "", "[151,656][341,711]"),
+                box("", "[0,1260][1080,1520]",
+                    label("", "", "[27,1280][145,1398]", clickable="true", **{"content-desc": "头像", "class": "android.widget.ImageView"}),
+                    box("", "[151,1277][870,1392]",
+                        label("楠霖27", "", "[151,1277][271,1392]", clickable="true"),
+                        label("", "", "[238,1275][357,1394]", **{"content-desc": "视频号logo", "class": "android.widget.ImageView"}),
+                        label("福建", "", "[335,1309][411,1360]"),
+                        label("11天前", "", "[427,1309][863,1360]"),
+                        **{"class": "android.widget.LinearLayout"}),
+                    box("", "[43,1371][1037,1478]",
+                        label("从灶台来看父亲不爱干活[Facepalm]", "", "[151,1371][1037,1478]"),
+                        **{"class": "android.widget.RelativeLayout"}),
+                    box("", "[870,1280][1050,1390]",
+                        label("6754", "", "[885,1310][976,1361]"),
+                        label("", "", "[985,1310][1035,1361]", **{"class": "android.widget.ImageView"}),
+                        clickable="true", **{"class": "android.widget.LinearLayout"}),
+                    **{"class": "android.view.ViewGroup"}),
+                label("AI吕哥说#\xa0发表评论:", "", "[151,2273][838,2391]", **{"class": "android.widget.EditText"}),
             )),
         ))
         controls = text_lines(xml, 1080, 2408, containers=True)

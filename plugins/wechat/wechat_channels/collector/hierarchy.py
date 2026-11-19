@@ -15,23 +15,6 @@ class HierarchyUnavailable(ValueError):
     pass
 
 
-# Layers stacked in one window. The comment drawer and the profile sheets stay in
-# the tree above the feed, and the order of these siblings differs between
-# devices, so the visible layer is chosen by kind: feed < drawer < other sheet.
-FEED_LAYER, FEED_PAGER, DRAWER_LAYER = "nsv", "jlt", "ean"
-# Controls whose resource-id carries known drawn text directly without OCR.
-DIRECT_TEXT_CONTROLS = {
-    "kr": "广告",
-    "lz3": "回复",
-}
-# Containers WeChat draws without exposing their text in AccessibilityNodeInfo.
-# Structural topology (_structural_roles) locates these without resource-id;
-# legacy IDs remain only as fast-path hints for minimal synthetic test trees.
-TEXT_CONTAINERS = {
-    "c6d": "comment-body",
-    "dzo": "feed-author", "fzm": "profile-name", "fxa": "certification",
-    "fy7": "bio", "fy8": "bio", "fyk": "follow-button", "mld": "message-button",
-}
 # Descriptions that name an icon rather than repeat drawn text. OCR never sees
 # them, so they are kept for locating controls but not offered as page text.
 ICON_DESCRIPTIONS = {
@@ -41,10 +24,6 @@ ICON_DESCRIPTIONS = {
 # A single text line is drawn about this tall (720-wide pixels); TextView bounds
 # often add padding, which would merge or split OCR-style reading rows.
 TEXT_LINE_HEIGHT = 34
-
-
-def _resource(node):
-    return node.get("resource-id", "").rsplit("/", 1)[-1]
 
 
 def _bounds(node):
@@ -57,8 +36,6 @@ def _has_label(node):
 
 
 def _is_drawer_subtree(layer, width, height):
-    if _resource(layer) == DRAWER_LAYER:
-        return True
     scaled_height = round(height * 720 / width)
     has_seek = False
     has_heading = False
@@ -76,8 +53,6 @@ def _is_drawer_subtree(layer, width, height):
 
 
 def _is_feed_subtree(layer, width):
-    if _resource(layer) in (FEED_LAYER, FEED_PAGER):
-        return True
     top_tabs = set()
     for item in layer.iter("node"):
         if item.get("visible-to-user") == "false":
@@ -96,9 +71,9 @@ def _is_feed_subtree(layer, width):
 def covered_layers(root, width, height):
     """Full-screen sibling subtrees drawn under another one; none when no known layering is found.
 
-    The feed is the bottom layer (detected semantically via SeekBar/player controls
-    or legacy `nsv`/`jlt`), the comment drawer is above it, and any other
-    full-screen sheet (profiles, menus, basic info) is above the drawer.
+    The feed is the bottom layer (detected semantically via SeekBar/player controls),
+    the comment drawer is above it, and any other full-screen sheet (profiles, menus,
+    basic info) is above the drawer.
     """
     def rank(layer):
         if _is_drawer_subtree(layer, width, height):
@@ -445,9 +420,9 @@ def _structural_roles(root, hidden, parent_map, width, height):
                             node_meta.setdefault(id(only), {})["userCardRole"] = role
                         continue
 
-            # Comment item: header group + right-side clickable like container.
+            # Comment item or ad item: header group + right-side clickable container.
             # On 1236px Huawei screens a 0-like button can overhang the right edge by a few px (e.g. 1239).
-            like_btn = next(
+            right_btn = next(
                 (
                     sib for sib in parent
                     if sib is not node and sib.tag == "node" and id(sib) not in hidden
@@ -460,12 +435,29 @@ def _structural_roles(root, hidden, parent_map, width, height):
             )
             header_group = next(
                 (sib for sib in siblings
-                 if sib is not like_btn and 75 <= _scaled(_bounds(sib), width)[0] < 450
+                 if sib is not right_btn and 75 <= _scaled(_bounds(sib), width)[0] < 450
                  and any(d.get("class", "").endswith("TextView") and d.get("text", "").strip()
                          for d in visible_children(sib))),
                 None,
             )
-            if header_group is not None and like_btn is not None:
+            if header_group is not None and right_btn is not None:
+                tvs = [
+                    d for d in visible_children(header_group)
+                    if d.get("class", "").endswith("TextView") and d.get("text", "").strip()
+                ]
+                # Ad item in comment drawer: right-side button is an empty clickable FrameLayout ("广告")
+                # and header has only the brand name (no date TextView).
+                is_empty_frame = (
+                    right_btn.get("class") == "android.widget.FrameLayout"
+                    and len(right_btn) == 0
+                    and not right_btn.get("text", "").strip()
+                    and not right_btn.get("content-desc", "").strip()
+                )
+                if is_empty_frame and not any(re.fullmatch(DATE, compact(d.get("text", ""))) for d in tvs):
+                    node_meta.setdefault(id(right_btn), {})["directText"] = "广告"
+                    continue
+                like_btn = right_btn
+
                 grandparent = parent_map.get(parent)
                 gp_cls = (grandparent.get("class") or "") if grandparent is not None else ""
                 is_item_container = (
@@ -489,10 +481,6 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     comment_avatar_ancestors.add(id(anc))
                     anc = parent_map.get(anc)
 
-                tvs = [
-                    d for d in visible_children(header_group)
-                    if d.get("class", "").endswith("TextView") and d.get("text", "").strip()
-                ]
                 nick_tv = next((d for d in tvs if d.get("clickable") == "true"), None)
                 if nick_tv is None and len(tvs) >= 2 and not re.fullmatch(DATE, compact(tvs[0].get("text", ""))):
                     # Non-clickable nickname fallback only when first TextView is not a region+date pair.
@@ -503,7 +491,7 @@ def _structural_roles(root, hidden, parent_map, width, height):
                     tvs[-1] if len(tvs) >= 2 and tvs[-1] is not nick_tv else None,
                 )
                 has_badge = any(
-                    (_resource(d) == "ehq" or d.get("content-desc", "").strip() == "视频号logo")
+                    d.get("content-desc", "").strip() == "视频号logo"
                     for d in visible_children(header_group)
                 )
                 # Compute precise thumb box & count control inside like_btn.
@@ -615,12 +603,10 @@ def _structural_roles(root, hidden, parent_map, width, height):
     for node in root.iter("node"):
         if not valid_visible(node):
             continue
-        res_id = _resource(node)
         box = _bounds(node)
         sb = _scaled(box, width)
 
-        # Reply expander: full-width empty clickable FrameLayout beneath a comment item (or legacy mvg/i0q).
-        is_legacy_expander = res_id in ("mvg", "i0q")
+        # Reply expander: full-width empty clickable FrameLayout beneath a comment item.
         is_structural_expander = (
             node.get("class") == "android.widget.FrameLayout"
             and node.get("clickable") == "true"
@@ -633,7 +619,7 @@ def _structural_roles(root, hidden, parent_map, width, height):
             and (p := parent_map.get(node)) is not None
             and any(id(sib) in comment_avatar_ancestors for sib in visible_children(p) if sib is not node)
         )
-        if is_legacy_expander or is_structural_expander:
+        if is_structural_expander:
             lh = min(sb[3], TEXT_LINE_HEIGHT)
             node_meta.setdefault(id(node), {}).update({
                 "directText": "展开更多回复",
@@ -727,10 +713,9 @@ def text_lines(xml, width, height, containers=False):
                                        "resource": resource, "class": node.get("class")}})
             continue
         descendants = [child for child in node.iter("node") if child is not node]
-        res_id = _resource(node)
         meta = node_meta.get(id(node), {})
-        mld_direct = node.get("content-desc", "").strip() == "私信按钮"
-        kind = None if mld_direct else (structural_kinds.get(id(node)) or TEXT_CONTAINERS.get(res_id))
+        msg_btn_direct = node.get("content-desc", "").strip() == "私信按钮"
+        kind = None if msg_btn_direct else structural_kinds.get(id(node))
         if kind:
             if kind == "feed-author":
                 # Ignore avatar-column "直播中" pills so live-author VODs still expose the nickname hole.
@@ -759,7 +744,7 @@ def text_lines(xml, width, height, containers=False):
         # pages; only a container without labelled descendants speaks for itself.
         attribute = "text"
         direct_only = False
-        if mld_direct and not text:
+        if msg_btn_direct and not text:
             attribute = "content-desc"
             text = "私信"
         elif not text and meta.get("directText"):
@@ -772,9 +757,6 @@ def text_lines(xml, width, height, containers=False):
             if desc_text:
                 attribute = "content-desc"
                 text = desc_text
-            elif res_id in DIRECT_TEXT_CONTROLS:
-                attribute = "resource-id"
-                text = DIRECT_TEXT_CONTROLS[res_id]
         if not text:
             continue
         if re.search(r"请完成.*验证|拖动滑块|安全验证|验证码", text):
@@ -796,7 +778,7 @@ def text_lines(xml, width, height, containers=False):
             line["selected"] = node.get("selected") == "true"
         if drawer_scroll_forward is not None and is_comment_drawer_heading(line, scaled_height):
             line["canScrollForward"] = drawer_scroll_forward
-        if res_id == "bkl" or (id(node) in chat_bubble_ids and scaled != raw_scaled):
+        if id(node) in chat_bubble_ids and scaled != raw_scaled:
             # 聊天消息保留完整控件范围，用于关联头像和发送失败按钮。
             line["controlBox"] = raw_scaled
         for meta_key in ("commentNicknameControl", "hasChannelsBadge", "commentHeaderDate",
@@ -804,16 +786,10 @@ def text_lines(xml, width, height, containers=False):
                          "profileRole", "userCardRole", "feedRole", "buttonBox", "iconBox", "messageLikeBox"):
             if meta_key in meta:
                 line[meta_key] = meta[meta_key]
-        if res_id == "kbf" and not line.get("hasChannelsBadge"):
-            parent = parent_map.get(node)
-            if parent is not None and any(
-                (_resource(sib) == "ehq" or sib.get("content-desc", "").strip() == "视频号logo")
-                and sib.get("visible-to-user") != "false"
-                and (sb := _bounds(sib)) and sb[0] < sb[2] and sb[1] < sb[3]
-                for sib in parent if sib.tag == "node"
-            ):
-                line["hasChannelsBadge"] = True
-        if (attribute == "content-desc" and text in ICON_DESCRIPTIONS) or res_id == "a50":
+        if attribute == "content-desc" and (
+            text in ICON_DESCRIPTIONS
+            or (node.get("class", "").endswith("ImageView") and re.fullmatch(r"\[[^\[\]\s]{1,12}\]", text))
+        ):
             line["icon"] = True
         lines.append(line)
     lines.extend(extra_lines)

@@ -143,16 +143,10 @@ def _self_chat_avatars(controls):
     return [
         line for line in controls
         if line.get("selector", {}).get("class") == "android.widget.ImageView"
-        and line["box"][0] >= 360
-        and (
-            line.get("selector", {}).get("resource") == "com.tencent.mm:id/bk1"
-            or (
-                line.get("selector", {}).get("attribute") == "content-desc"
-                and line.get("text", "").endswith("头像")
-                and line.get("text") != "头像"
-                and line["box"][0] >= 500
-            )
-        )
+        and line.get("selector", {}).get("attribute") == "content-desc"
+        and line.get("text", "").endswith("头像")
+        and line.get("text") != "头像"
+        and line["box"][0] >= 500
     ]
 
 
