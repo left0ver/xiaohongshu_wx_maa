@@ -59,6 +59,7 @@ def main():
                 exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
                 ui = phone_ui(root, run_dir, controls_exposed=exposed)
                 stack.callback(ui.close)
+                ui.ensure_wechat_foreground(emit=timings.emit)
                 if config.get("ensureFeed"):
                     ensure_feed(ui, launch=launch)
                 with timings.phase("run_mode"):
@@ -93,6 +94,7 @@ def main():
                 exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
                 ui = phone_ui(root, run_dir, controls_exposed=exposed)
                 stack.callback(ui.close)
+                ui.ensure_wechat_foreground(emit=timings.emit)
                 if is_collect_flag:
                     ensure_feed(ui, launch=True)
                     result = run_collection_task(ui, root, config, timings=timings)
@@ -116,6 +118,7 @@ def main():
                 exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
                 ui = phone_ui(root, run_dir, controls_exposed=exposed)
                 stack.callback(ui.close)
+                ui.ensure_wechat_foreground(emit=timings.emit)
                 if config.get("ensureFeed"):
                     ensure_feed(ui, launch=launch)
                 quota_path = Path(config.get("quotaPath") or (root / "data/daily_quotas.json"))
@@ -136,6 +139,7 @@ def main():
             exposed = stack.enter_context(expose_controls(root / "data", timings.emit))
             ui = phone_ui(root, run_dir, controls_exposed=exposed)
             stack.callback(ui.close)
+            ui.ensure_wechat_foreground(emit=timings.emit)
             event = collect(ui, LocalStore(root / "data/videos.sqlite3"), timings, launch=launch)
             (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
             if "--comments" in sys.argv:

@@ -9,10 +9,15 @@ FOREGROUND_CACHE_SECONDS = 0.4
 _last_foreground_ok_at = -1.0
 
 
-def foreground(timeout=15):
+def invalidate_foreground_cache():
+    global _last_foreground_ok_at
+    _last_foreground_ok_at = -1.0
+
+
+def foreground(timeout=15, force=False):
     global _last_foreground_ok_at
     now = time.monotonic()
-    if _last_foreground_ok_at >= 0 and 0 <= now - _last_foreground_ok_at <= FOREGROUND_CACHE_SECONDS:
+    if not force and _last_foreground_ok_at >= 0 and 0 <= now - _last_foreground_ok_at <= FOREGROUND_CACHE_SECONDS:
         return
     started = now
     deadline = started + timeout
@@ -40,3 +45,12 @@ def foreground(timeout=15):
             settle_deadline = time.monotonic() + FOREGROUND_SETTLE_SECONDS
             deadline = min(deadline, settle_deadline)
         time.sleep(min(0.15, max(0, deadline - time.monotonic())))
+
+
+def is_wechat_foreground(timeout=5, force=True):
+    """Return True if WeChat (com.tencent.mm) is currently the resumed foreground app."""
+    try:
+        foreground(timeout=timeout, force=force)
+        return True
+    except RuntimeError:
+        return False

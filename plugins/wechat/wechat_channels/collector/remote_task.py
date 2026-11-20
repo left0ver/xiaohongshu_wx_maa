@@ -108,6 +108,8 @@ def execute_remote(tasker, context, root, config):
                 exposed = resources.enter_context(expose_controls(controls_root, timings.emit))
                 ui = MaaUi(tasker, run_dir, context, controls_exposed=exposed, progress=bridge.progress)
                 resources.callback(ui.close)
+                bridge.call("/progress", {"message": "正在确认微信前台状态"})
+                ui.ensure_wechat_foreground(emit=timings.emit)
                 bridge.call("/progress", {"message": "正在执行视频号任务"})
                 if task == "collect_channels":
                     entry = str(options.get("entry") or "recommend").strip().lower()

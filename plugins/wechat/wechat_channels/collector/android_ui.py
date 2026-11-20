@@ -19,7 +19,7 @@ from maa.resource import Resource
 from maa.tasker import Tasker
 from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
-from foreground import foreground
+from foreground import foreground, invalidate_foreground_cache, is_wechat_foreground
 from frames import AsyncFrameWriter, materialize_frame_file, resolve_dump_frames, schedule_frame_prune
 from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, page_lines, refresh_target, text_lines
 from readiness import wait_basic_info
@@ -830,41 +830,116 @@ class MaaUi:
         self.navigation_stage = None
         time.sleep(0.9)
 
-    def start_wechat_home(self):
-        """Open WeChat on its main tabs, closing the pages an earlier run left above them."""
+    def _wake_screen_if_needed(self):
+        try:
+            power = command("dumpsys", "power", timeout=5).decode("utf-8", "replace")
+            if "mWakefulness=Awake" not in power:
+                command("input", "keyevent", "224", timeout=5)
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+    def _launch_wechat_attempt(self, attempt, *, reset_to_home):
+        if attempt == 0:
+            if reset_to_home:
+                # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP: LauncherUI is brought
+                # back and every page opened on top of it is finished.
+                command("am", "start", "-f", "0x14000000", "-n", "com.tencent.mm/.ui.LauncherUI")
+            else:
+                command("am", "start", "-n", "com.tencent.mm/.ui.LauncherUI")
+            return
+        if attempt == 1:
+            try:
+                if self.controller.post_start_app("com.tencent.mm").wait().succeeded:
+                    return
+            except Exception:
+                pass
+            helper = Path(__file__).with_name("ui-dump.dex")
+            if not reset_to_home and helper.is_file():
+                try:
+                    run(
+                        ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", "--resume-wechat"],
+                        timeout=5,
+                        stopped=self.stopped,
+                    )
+                    return
+                except Exception:
+                    pass
+        command("am", "start", "-f", "0x14000000", "-n", "com.tencent.mm/.ui.LauncherUI")
+
+    def ensure_wechat_foreground(self, *, reset_to_home=False, timeout=15.0, emit=None):
+        """Step 1 guard for every task: ensure WeChat is awake and in the foreground.
+
+        Checks the real foreground Activity (bypassing the 0.4s cache). If WeChat is not
+        in the foreground (or ``reset_to_home=True``), automatically launches / brings
+        WeChat to the foreground with retry escalation until confirmed.
+        """
+        if self.stopped():
+            raise InterruptedError("Collection was stopped")
+        started = time.monotonic()
+        invalidate_foreground_cache()
+        was_in_front = is_wechat_foreground(timeout=min(3.0, timeout), force=True)
+        if was_in_front and not reset_to_home:
+            event = {
+                "kind": "ensureWechatForeground",
+                "wasInForeground": True,
+                "launched": False,
+                "durationMs": round((time.monotonic() - started) * 1000),
+            }
+            if emit is not None:
+                emit(event)
+            return True
+
         self.hierarchy_unavailable = False
         self._invalidate_controls()
         self.navigation_stage = None
-        # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP: LauncherUI is brought
-        # back and every page opened on top of it is finished.
-        command("am", "start", "-f", "0x14000000", "-n", "com.tencent.mm/.ui.LauncherUI")
-        self.startup_deadline = time.monotonic() + 10
+        self._wake_screen_if_needed()
+
+        deadline = time.monotonic() + timeout
+        self.startup_deadline = deadline
+        retry_marks = (0.0, 3.5, 7.5)
+        next_attempt = 0
+        last_error = None
+
         while True:
+            if self.stopped():
+                raise InterruptedError("Collection was stopped")
+            elapsed = time.monotonic() - started
+            if next_attempt < len(retry_marks) and elapsed >= retry_marks[next_attempt]:
+                try:
+                    self._launch_wechat_attempt(next_attempt, reset_to_home=reset_to_home)
+                except Exception as exc:
+                    last_error = str(exc)
+                next_attempt += 1
+            remaining = deadline - time.monotonic()
             try:
-                foreground()
-                return
-            except RuntimeError:
-                remaining = self.startup_deadline - time.monotonic()
+                foreground(timeout=min(2.0, max(0.2, remaining)), force=True)
+                event = {
+                    "kind": "ensureWechatForeground",
+                    "wasInForeground": was_in_front,
+                    "launched": True,
+                    "attempts": next_attempt,
+                    "resetToHome": reset_to_home,
+                    "durationMs": round((time.monotonic() - started) * 1000),
+                }
+                if emit is not None:
+                    emit(event)
+                return True
+            except RuntimeError as exc:
+                last_error = str(exc)
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError("WeChat did not enter the foreground within 10 seconds")
+                    detail = f"（{last_error}）" if last_error else ""
+                    raise RuntimeError(f"自动打开微信超时（{int(timeout)}秒），微信未进入前台{detail}")
                 time.sleep(min(0.25, remaining))
 
+    def start_wechat_home(self):
+        """Open WeChat on its main tabs, closing the pages an earlier run left above them."""
+        self.ensure_wechat_foreground(reset_to_home=True, timeout=15.0)
+
     def start_wechat(self):
-        self.hierarchy_unavailable = False
-        self._invalidate_controls()
-        self.navigation_stage = None
-        if not self.controller.post_start_app("com.tencent.mm").wait().succeeded:
-            raise RuntimeError("WeChat could not be opened")
-        self.startup_deadline = time.monotonic() + 10
-        while True:
-            try:
-                foreground()
-                return
-            except RuntimeError:
-                remaining = self.startup_deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError("WeChat did not enter the foreground within 10 seconds")
-                time.sleep(min(0.25, remaining))
+        """Ensure WeChat is open and in the foreground."""
+        self.ensure_wechat_foreground(reset_to_home=False, timeout=15.0)
 
 
 def phone_ui(root, evidence_dir, controls_exposed=False):

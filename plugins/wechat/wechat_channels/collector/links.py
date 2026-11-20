@@ -103,6 +103,8 @@ def open_wechat_home(ui, attempts=10):
     if hasattr(ui, "start_wechat_home"):
         ui.start_wechat_home()
         time.sleep(0.6)
+        if hasattr(ui, "ensure_wechat_foreground"):
+            ui.ensure_wechat_foreground(reset_to_home=False, timeout=10.0)
     else:
         ui.start_wechat()
     for attempt in range(attempts):
