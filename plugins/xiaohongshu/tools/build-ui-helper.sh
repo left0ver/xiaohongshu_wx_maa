@@ -11,7 +11,7 @@ mkdir -p "$task_build_dir/classes" "$task_build_dir/dex"
   -d "$task_build_dir/classes" "$project_root/tools/UiDump.java"
 "$sdk_root/build-tools/36.0.0/d8" --min-api 28 \
   --lib "$sdk_root/platforms/android-36/android.jar" \
-  --output "$task_build_dir/dex" "$task_build_dir/classes/xhs/UiDump.class"
+  --output "$task_build_dir/dex" "$task_build_dir/classes/xhs/"*.class
 output_path="${1:-$project_root/xiaohongshu/agent/ui-dump.dex}"
 mkdir -p "$(dirname "$output_path")"
 cp "$task_build_dir/dex/classes.dex" "$output_path"

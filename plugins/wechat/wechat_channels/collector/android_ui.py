@@ -1,5 +1,6 @@
 """Maa OCR adapter. Both the packaged agent and on-device acceptance runner use it."""
 
+import atexit
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from maa.tasker import Tasker
 from collection import MESSAGE_COMMENT_TAB, MESSAGE_LIKE_TAB, find, navigation_roi
 from commands import run
 from foreground import foreground
+from frames import AsyncFrameWriter, materialize_frame_file, resolve_dump_frames, schedule_frame_prune
 from hierarchy import HierarchyUnavailable, channels_intro_acknowledgement, choose_snapshot, page_lines, refresh_target, text_lines
 from readiness import wait_basic_info
 from layout import find_comment_drawer_heading, line_height
@@ -122,9 +124,17 @@ class MaaUi:
         self.controls_at = 0.0
         self.last_snapshot_lines = None
         self.navigation_stage = None
-        # Debug only: keep the exact frames behind each recognition for box overlays.
-        self.dump_frames = os.environ.get("WECHAT_DUMP_FRAMES") == "1"
+        # Debug screenshots: enabled by default on Debug APK, off on Release APK
+        # (overridable via WECHAT_DUMP_FRAMES or <data_root>/.dump_frames).
+        self.dump_frames = resolve_dump_frames(self.evidence_dir)
         self.snapshot_frame = None
+        self.snapshot_frame_file = None
+        self.controls_frame_file = None
+        self._pending_hierarchy_frame = self.evidence_dir / ".pending-hierarchy.jpg"
+        self._frame_writer = AsyncFrameWriter() if self.dump_frames else None
+        if self.dump_frames:
+            schedule_frame_prune(self.evidence_dir)
+            atexit.register(self.close)
         sizes = re.findall(r"(\d+)x(\d+)", command("wm", "size").decode())
         if not sizes:
             raise RuntimeError("Physical screen size is unavailable")
@@ -135,9 +145,21 @@ class MaaUi:
         path = Path(__file__).resolve().parents[1] / "resource/base/pipeline/collect-video.json"
         self.nodes = json.loads(path.read_text(encoding="utf-8"))
 
+    def close(self):
+        writer = getattr(self, "_frame_writer", None)
+        if writer is not None:
+            writer.close(timeout=0.5)
+        pending = getattr(self, "_pending_hierarchy_frame", None)
+        if pending is not None:
+            try:
+                pending.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _invalidate_controls(self):
         self.controls = []
         self.controls_at = 0.0
+        self.controls_frame_file = None
 
     def _has_fresh_controls(self, max_age=2.5):
         controls = getattr(self, "controls", None)
@@ -160,11 +182,20 @@ class MaaUi:
         helper = Path(__file__).with_name("ui-dump.dex")
         if not helper.is_file():
             raise RuntimeError("UI hierarchy helper is missing; reinstall plugin resources")
+        shot_path = None
+        if getattr(self, "dump_frames", False):
+            shot_path = self._pending_hierarchy_frame
+            try:
+                shot_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         with tempfile.TemporaryDirectory(prefix="wechat-ui-") as directory:
             target = Path(directory) / "window.xml"
+            cmd = ["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", str(target)]
+            if shot_path is not None:
+                cmd.extend(["--screenshot", str(shot_path)])
             try:
-                run(["env", "CLASSPATH=" + str(helper), "app_process", "/system/bin", "xhs.UiDump", str(target)],
-                    timeout=max(0, deadline - time.monotonic()), stopped=lambda: self.tasker.stopping)
+                run(cmd, timeout=max(0, deadline - time.monotonic()), stopped=lambda: self.tasker.stopping)
                 xml = target.read_text(encoding="utf-8")
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as error:
                 raise HierarchyUnavailable("Hierarchy is unavailable: " + type(error).__name__) from error
@@ -174,15 +205,27 @@ class MaaUi:
             foreground(timeout=max(min(1.0, timeout), deadline - time.monotonic()))
         except subprocess.TimeoutExpired as error:
             raise HierarchyUnavailable("Hierarchy foreground confirmation timed out") from error
+        captured_shot = None
+        if shot_path is not None:
+            try:
+                if shot_path.is_file() and shot_path.stat().st_size > 0:
+                    captured_shot = shot_path
+            except OSError:
+                captured_shot = None
         try:
             lines = self.annotate(text_lines(xml, self.width, self.physical_height, containers=True), "hierarchy")
             # Icons and empty containers are not page text, but locate controls.
             self.controls = lines
             self.controls_at = time.monotonic()
+            self.controls_frame_file = captured_shot
+            if captured_shot is not None:
+                self.snapshot_frame_file = captured_shot
             return lines
         except HierarchyUnavailable:
             self._invalidate_controls()
             self.hierarchy_unavailable = not self.controls_exposed
+            if captured_shot is not None:
+                self.snapshot_frame_file = captured_shot
             raise
 
     def annotate(self, lines, source):
@@ -271,6 +314,7 @@ class MaaUi:
             self.progress(label)
         attempts = []
         self.snapshot_frame = None
+        self.snapshot_frame_file = None
 
         def measured(source, read):
             started = time.monotonic_ns()
@@ -288,6 +332,8 @@ class MaaUi:
         def read_hierarchy():
             if self._has_fresh_controls(max_age=0.6):
                 raw = self.controls
+                if getattr(self, "controls_frame_file", None) is not None:
+                    self.snapshot_frame_file = self.controls_frame_file
                 attempts.append({"source": "hierarchy", "durationMs": 0, "reused": True})
             else:
                 raw = measured("hierarchy", self.hierarchy)
@@ -322,12 +368,40 @@ class MaaUi:
         (self.evidence_dir / f"{self.sequence:03d}-{label}.json").write_text(
             json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
         if self.dump_frames:
-            # Hierarchy reads take no screenshot; capture right after for the overlay.
-            frame = self.snapshot_frame if self.snapshot_frame is not None else self.debug_screencap()
-            if frame is not None:
-                np.save(self.evidence_dir / f"{self.sequence:03d}-{label}.npy", frame)
+            self._persist_snapshot_frame(label)
         print(json.dumps({"kind": "recognitionTiming", "label": label, "source": source,
                           "attempts": attempts}, ensure_ascii=False), flush=True)
+
+    def _persist_snapshot_frame(self, label):
+        """Save the debug screenshot via Path A (UiDump JPEG) or Path B (async OCR PNG)."""
+        try:
+            stem = f"{self.sequence:03d}-{label}"
+            frame_file = getattr(self, "snapshot_frame_file", None)
+            if frame_file is not None:
+                pending = getattr(self, "_pending_hierarchy_frame", None)
+                consume = pending is not None and frame_file == pending
+                saved = materialize_frame_file(
+                    frame_file,
+                    self.evidence_dir / f"{stem}.jpg",
+                    consume_source=consume,
+                )
+                if saved is not None:
+                    if getattr(self, "controls_frame_file", None) == frame_file:
+                        self.controls_frame_file = saved
+                    self.snapshot_frame_file = saved
+                    return
+            frame = self.snapshot_frame
+            if frame is None:
+                frame = self.debug_screencap()
+            if frame is not None:
+                writer = getattr(self, "_frame_writer", None)
+                if writer is None:
+                    writer = AsyncFrameWriter()
+                    self._frame_writer = writer
+                writer.submit_array(frame, self.evidence_dir / f"{stem}.png")
+        except Exception:
+            # Debug screenshot persistence must never interrupt collection or interaction tasks.
+            pass
 
     def ocr_snapshot(self, label, roi=None):
         if self.tasker.stopping:
@@ -359,13 +433,6 @@ class MaaUi:
             raise RuntimeError("OCR 未能启动识别")
         # Native results retain every OCR box, including ones not chosen as best_result.
         lines = detail.raw_detail["all"]
-        if self.dump_frames and not self.context:
-            self.ocr_calls = getattr(self, "ocr_calls", 0) + 1
-            name = f"ocr-{self.sequence + 1:03d}-{self.ocr_calls:03d}-{label}"
-            np.save(self.evidence_dir / f"{name}.npy", image)
-            (self.evidence_dir / f"{name}.json").write_text(json.dumps(
-                {"label": label, "roi": roi, "threshold": 0.55, "lines": lines},
-                ensure_ascii=False, indent=2), encoding="utf-8")
         lines = [line for line in lines if line.get("score", 0) >= 0.55 and line.get("text", "").strip()]
         return self.annotate(lines, "ocr")
 

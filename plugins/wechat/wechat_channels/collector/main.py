@@ -55,6 +55,7 @@ class CollectVideo(CustomAction):
                 # Restored before the lock is released, even when the run fails.
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                stack.callback(ui.close)
                 event = collect(ui, LocalStore(root / "videos.sqlite3"), timings)
                 (run_dir / "video.json").write_text(json.dumps(event, ensure_ascii=False, indent=2), encoding="utf-8")
                 if self.include_comments:
@@ -135,6 +136,7 @@ class InteractWork(CustomAction):
                 # Restored before the lock is released, even when the run fails.
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                stack.callback(ui.close)
                 if config.get("ensureFeed"):
                     needs_work = any(config.get(key) for key in INTERACTION_ACTIONS if key != "inspectMessages")
                     start_on_feed(ui, need_author=needs_work)
@@ -173,6 +175,7 @@ class RunModeAction(CustomAction):
                 # Restored before the lock is released, even when the run fails.
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                stack.callback(ui.close)
                 # Started from the helper app, WeChat is not in front yet.
                 start_on_feed(ui)
                 result = run_mode(ui, root, config, timings=timings)
@@ -251,6 +254,7 @@ class CollectChannelsAction(CustomAction):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                stack.callback(ui.close)
                 # Enter Channels top bar; search mode skips clicking into 推荐 feed first.
                 ensure_feed(ui, launch=True, need_author=(settings["entry"] != "search"))
                 result = run_collection_task(ui, root, config, timings=timings)
@@ -278,6 +282,7 @@ class LinkTaskAction(CustomAction):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 exposed = stack.enter_context(expose_controls(root, timings.emit))
                 ui = MaaUi(context.tasker, run_dir, context, controls_exposed=exposed)
+                stack.callback(ui.close)
                 quota_store = DailyQuotaStore(root / "daily_quotas.json")
                 report = run_link_task(ui, quota_store, LinkLedger(root / "link_actions.json"), config)
                 (run_dir / "link-task.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),

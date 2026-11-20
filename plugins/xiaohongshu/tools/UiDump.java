@@ -2,6 +2,7 @@ package xhs;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.UiAutomation;
+import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.HandlerThread;
@@ -9,6 +10,7 @@ import android.os.Looper;
 import android.util.Xml;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
@@ -46,19 +48,29 @@ public final class UiDump {
             System.out.println(readClipboardJson());
             return;
         }
-        if (args.length != 1) throw new IllegalArgumentException("output path required");
-        if (args[0].equals("--resume-xhs")) {
-            resumeApp("com.xingin.xhs", "Open a Xiaohongshu work before starting this task");
-            return;
-        }
-        if (args[0].equals("--resume-wechat")) {
-            resumeApp("com.tencent.mm", "Open WeChat before starting this task");
-            return;
+        String xmlPath;
+        String screenshotPath = null;
+        if (args.length == 1) {
+            if (args[0].equals("--resume-xhs")) {
+                resumeApp("com.xingin.xhs", "Open a Xiaohongshu work before starting this task");
+                return;
+            }
+            if (args[0].equals("--resume-wechat")) {
+                resumeApp("com.tencent.mm", "Open WeChat before starting this task");
+                return;
+            }
+            xmlPath = args[0];
+        } else if (args.length == 3 && args[1].equals("--screenshot")) {
+            xmlPath = args[0];
+            screenshotPath = args[2];
+        } else {
+            throw new IllegalArgumentException("output path required");
         }
         HandlerThread thread = new HandlerThread("xhs-hierarchy");
         thread.start();
         UiAutomation automation = null;
         boolean connected = false;
+        Thread shotThread = null;
         try {
             Class<?> connection = Class.forName("android.app.UiAutomationConnection");
             Class<?> binder = Class.forName("android.app.IUiAutomationConnection");
@@ -67,6 +79,17 @@ public final class UiDump {
             automation = constructor.newInstance(thread.getLooper(), connection.getDeclaredConstructor().newInstance());
             UiAutomation.class.getMethod("connect", int.class).invoke(automation, UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
             connected = true;
+            if (screenshotPath != null && !screenshotPath.isEmpty()) {
+                final UiAutomation autoRef = automation;
+                final String shotTarget = screenshotPath;
+                shotThread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        captureCompressedJpeg(autoRef, shotTarget);
+                    }
+                }, "xhs-shot");
+                shotThread.start();
+            }
             AccessibilityServiceInfo info = automation.getServiceInfo();
             info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
                 | AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
@@ -80,7 +103,7 @@ public final class UiDump {
                 if (attempt < 5) Thread.sleep(100);
             }
             if (root == null) throw new IllegalStateException("No active window");
-            try (FileOutputStream output = new FileOutputStream(args[0])) {
+            try (FileOutputStream output = new FileOutputStream(xmlPath)) {
                 XmlSerializer xml = Xml.newSerializer();
                 xml.setOutput(output, "UTF-8");
                 xml.startDocument("UTF-8", true);
@@ -118,9 +141,51 @@ public final class UiDump {
                 root.recycle();
             }
         } finally {
+            if (shotThread != null) {
+                try { shotThread.join(1500); } catch (InterruptedException ignored) {}
+            }
             if (connected) UiAutomation.class.getMethod("disconnect").invoke(automation);
             thread.quitSafely();
             thread.join();
+        }
+    }
+
+    private static void captureCompressedJpeg(UiAutomation automation, String targetPath) {
+        Bitmap bmp = null;
+        Bitmap scaled = null;
+        File tmp = new File(targetPath + ".tmp");
+        try {
+            bmp = automation.takeScreenshot();
+            if (bmp == null) return;
+            int w = bmp.getWidth();
+            int h = bmp.getHeight();
+            if (w <= 0 || h <= 0) return;
+            int targetW = Math.min(540, w);
+            int targetH = Math.max(1, Math.round((float) h * targetW / (float) w));
+            // filter=false avoids slow CPU bilinear filtering on HARDWARE bitmaps while staying sharp at 540px.
+            scaled = (targetW < w) ? Bitmap.createScaledBitmap(bmp, targetW, targetH, false) : bmp;
+            File target = new File(targetPath);
+            File parent = target.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                if (!scaled.compress(Bitmap.CompressFormat.JPEG, 72, fos)) {
+                    tmp.delete();
+                    return;
+                }
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.delete();
+            }
+        } catch (Throwable ignored) {
+            // Debug screenshot capture must never fail the UI hierarchy dump.
+            try { tmp.delete(); } catch (Throwable ignoredDelete) {}
+        } finally {
+            if (scaled != null && scaled != bmp) {
+                try { scaled.recycle(); } catch (Throwable ignored) {}
+            }
+            if (bmp != null) {
+                try { bmp.recycle(); } catch (Throwable ignored) {}
+            }
         }
     }
 

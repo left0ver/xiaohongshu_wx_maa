@@ -516,7 +516,7 @@ index 79a790a..39d8fb4 100644
      match crate::directory_access::probe("maaLogs", &log_dir) {
          Ok(()) => {
              if let Err(error) = maa_framework::configure_logging(&log_dir.to_string_lossy()) {
-@@ -1162,6 +1171,8 @@ pub fn create_session(
+@@ -1162,11 +1171,16 @@ pub fn create_session(
      }
  
      let resource = Resource::new()?;
@@ -525,6 +525,14 @@ index 79a790a..39d8fb4 100644
  
      let agent_session = match agent {
          Some(prepared) if !prepared.descriptor.runtimes.is_empty() => {
+             crate::agent::set_maa_framework_version(
+                 &mut pi_environment,
+                 maa_framework::maa_version(),
+             );
++            pi_environment
++                .entry("PI_DEBUG_BUILD".to_string())
++                .or_insert_with(|| if cfg!(debug_assertions) { "1" } else { "0" }.to_string());
+             Some(
 @@ -1474,9 +1476,9 @@ impl FailureLog {
  /// consumed before the first task (an empty-display hint) and on a task
  /// failure (the concrete cause).
