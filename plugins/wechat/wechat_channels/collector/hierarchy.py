@@ -1178,6 +1178,7 @@ CONTROL_PAGES = {
                      "comments-after-skip", "comments-recover", "comments-after-like", "comments-after-post",
                      "comments-after-reply", "comments-after-profile-touch", "comments-after-profile-touch-retry",
                      "comments-after-user-card", "comments-preemptive-start", "drawer-recover", "comments-locate-",
+                     "comments-relocate-",
                      # Scrolled pages (comments-page-N, comments-page-N-back) must be read like the
                      # return check reads them, or the two readings of one comment cannot match.
                      "comments-page-"), _comments_ready),
@@ -1243,7 +1244,7 @@ _DRAWER_LABELS = (
     "comments-preemptive-work-expanded", "comments-check", "comments-after-like",
     "comments-after-post", "comments-after-reply", "comments-after-profile-touch",
     "comments-after-profile-touch-retry", "comments-after-user-card",
-    "comments-preemptive-start", "comments-locate-", "drawer-recover", "share-paste-drawer",
+    "comments-preemptive-start", "comments-locate-", "comments-relocate-", "drawer-recover", "share-paste-drawer",
 )
 
 

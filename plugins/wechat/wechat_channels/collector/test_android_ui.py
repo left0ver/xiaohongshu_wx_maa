@@ -126,6 +126,59 @@ class MessageTabsTest(unittest.TestCase):
             ui.click(target)
             self.assertEqual(len(dump_calls), 1)
 
+    def test_comments_snapshot_captures_roi_baseline_before_hierarchy(self):
+        import tempfile
+        from pathlib import Path
+
+        ui = android_ui.MaaUi.__new__(android_ui.MaaUi)
+        ui.tasker = types.SimpleNamespace(stopping=False)
+        ui.progress = None
+        ui.height = 1605
+        ui.sequence = 0
+        ui.observation = 0
+        ui.dump_frames = False
+        ui.controls = []
+        ui.controls_at = 0.0
+        ui.controls_frame = None
+        ui.controls_frame_file = None
+        ui.snapshot_frame = None
+        ui.snapshot_frame_file = None
+        ui.navigation_stage = None
+        with tempfile.TemporaryDirectory() as tmp:
+            ui.evidence_dir = Path(tmp)
+            order = []
+            baseline = [["frame"]]
+
+            def fake_capture():
+                order.append("capture")
+                return baseline
+
+            drawer = [
+                {"text": "评论 5", "box": [100, 437, 95, 37], "source": "hierarchy"},
+                {"text": "林间微风", "box": [101, 753, 120, 34], "source": "hierarchy"},
+                {"text": "发表评论:", "box": [101, 1537, 220, 34], "source": "hierarchy"},
+            ]
+
+            def fake_hierarchy():
+                order.append("hierarchy")
+                return drawer
+
+            ui.capture_frame = fake_capture
+            ui.hierarchy = fake_hierarchy
+            ui._acknowledge_channels_intro = lambda lines: lines
+            ui.message_tabs = lambda _l, _r, _m: []
+            ui.snapshot("comments")
+            self.assertEqual(order, ["capture", "hierarchy"])
+            self.assertIs(ui.snapshot_frame, baseline)
+            self.assertIs(ui.controls_frame, baseline)
+
+            # Non-target snapshots (after-like / personal-page) skip extra baseline capture.
+            order.clear()
+            ui.controls_at = 0.0
+            ui.snapshot("comments-after-like")
+            self.assertEqual(order, ["hierarchy"])
+            self.assertIsNone(ui.snapshot_frame)
+
 
 if __name__ == "__main__":
     unittest.main()

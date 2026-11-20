@@ -129,6 +129,7 @@ class MaaUi:
         self.dump_frames = resolve_dump_frames(self.evidence_dir)
         self.snapshot_frame = None
         self.snapshot_frame_file = None
+        self.controls_frame = None
         self.controls_frame_file = None
         self._pending_hierarchy_frame = self.evidence_dir / ".pending-hierarchy.jpg"
         self._frame_writer = AsyncFrameWriter() if self.dump_frames else None
@@ -159,7 +160,23 @@ class MaaUi:
     def _invalidate_controls(self):
         self.controls = []
         self.controls_at = 0.0
+        self.controls_frame = None
         self.controls_frame_file = None
+
+    def _needs_roi_baseline(self, label):
+        return bool(
+            label
+            and label.startswith("comments")
+            and not label.startswith(("comments-reply-", "comments-after-"))
+        )
+
+    def _try_capture_roi_frame(self):
+        try:
+            return self.capture_frame()
+        except InterruptedError:
+            raise
+        except Exception:
+            return None
 
     def _has_fresh_controls(self, max_age=2.5):
         controls = getattr(self, "controls", None)
@@ -330,13 +347,22 @@ class MaaUi:
                 attempts.append(attempt)
 
         def read_hierarchy():
-            if self._has_fresh_controls(max_age=0.6):
+            need_baseline = self._needs_roi_baseline(label)
+            if self._has_fresh_controls(max_age=0.6) and (
+                not need_baseline or getattr(self, "controls_frame", None) is not None
+            ):
                 raw = self.controls
+                if getattr(self, "controls_frame", None) is not None:
+                    self.snapshot_frame = self.controls_frame
                 if getattr(self, "controls_frame_file", None) is not None:
                     self.snapshot_frame_file = self.controls_frame_file
                 attempts.append({"source": "hierarchy", "durationMs": 0, "reused": True})
             else:
+                baseline = self._try_capture_roi_frame() if need_baseline else None
                 raw = measured("hierarchy", self.hierarchy)
+                if baseline is not None:
+                    self.controls_frame = baseline
+                    self.snapshot_frame = baseline
             tabs = self.message_tabs(label, raw, measured)
             return [*raw, *self.annotate(tabs, "template")] if tabs else raw
 

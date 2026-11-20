@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from interactions import (
+    PERSONAL_PAGE_SETTLE_SECONDS,
     message_done,
     _work_matches_spec,
     DailyQuotaStore,
@@ -30,6 +31,7 @@ from interactions import (
     post_work_comment,
     preemptive_reply_comment,
     reply_to_comment,
+    roi_frame_diff,
     validate_interaction_config,
     visit_and_touch_commenter_profile,
 )
@@ -1122,6 +1124,180 @@ class WechatInteractionsTests(unittest.TestCase):
         self.assertTrue(found["found"])
         self.assertEqual(found["comment"]["nickname"], "目标评论者")
         self.assertEqual(ui_lazy.comment_scrolls, 1)
+
+    def test_roi_frame_diff_detects_shift_and_ignores_outside_video(self):
+        base = make_frame(720, 1605)
+        # Only top video area changes -> comment row ROI stays stable.
+        video_moved = make_frame(720, 1605, red_boxes=[[0, 0, 720, 400]])
+        stable = roi_frame_diff(base, video_moved, [80, 950, 620, 90])
+        self.assertFalse(stable["changed"])
+        self.assertEqual(stable["mae"], 0.0)
+
+        # Target row pixels change (reordered comment / ad inserted) -> flagged as changed.
+        row_shifted = make_frame(720, 1605, red_boxes=[[80, 960, 400, 60]])
+        shifted = roi_frame_diff(base, row_shifted, [80, 950, 620, 90])
+        self.assertTrue(shifted["changed"])
+        self.assertGreater(shifted["mae"], 3.0)
+        self.assertGreater(shifted["pct15"], 5.0)
+
+    def test_like_comment_relocates_when_target_row_shifts_before_click(self):
+        store = DailyQuotaStore(self.quota_path)
+        shifted_drawer = [
+            {"text": "评论 5", "box": [315, 520, 90, 32]},
+            {"text": "新华社 作者 2小时前", "box": [98, 580, 210, 28]},
+            {"text": "春日航拍美景合集", "box": [98, 616, 240, 30]},
+            # 远山如黛 jumped from y=960 up to y=690 after hot-comment reorder.
+            {"text": "远山如黛 浙江 30分钟前", "box": [98, 690, 230, 28]},
+            {"text": "构图和色调都很舒服", "box": [98, 728, 240, 30]},
+            {"text": "1凸", "box": [645, 690, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        liked_drawer = [
+            {"text": "评论 5", "box": [315, 520, 90, 32]},
+            {"text": "新华社 作者 2小时前", "box": [98, 580, 210, 28]},
+            {"text": "春日航拍美景合集", "box": [98, 616, 240, 30]},
+            {"text": "远山如黛 浙江 30分钟前", "box": [98, 690, 230, 28]},
+            {"text": "构图和色调都很舒服", "box": [98, 728, 240, 30]},
+            {"text": "2凸", "box": [565, 690, 44, 28]},
+            {"text": "推荐♡", "box": [625, 690, 62, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        baseline_1 = make_frame(720, 1605)
+        shifted_pre_click = make_frame(720, 1605, red_boxes=[[80, 960, 420, 70]])
+        baseline_2 = make_frame(720, 1605, red_boxes=[[80, 960, 420, 70]])
+        stable_pre_click = make_frame(720, 1605, red_boxes=[[80, 960, 420, 70]])
+        after_like = make_frame(720, 1605, red_boxes=[[590, 690, 36, 28]])
+
+        class BaselineFakeUi(FakeUi):
+            def __init__(self, snapshots, baselines, frames):
+                super().__init__(snapshots=snapshots, frames=frames)
+                self._baselines = list(baselines)
+                self.snapshot_frame = None
+                self.labels = []
+
+            def snapshot(self, label, author=None):
+                self.labels.append(label)
+                self.snapshot_frame = self._baselines.pop(0) if self._baselines else None
+                return super().snapshot(label, author=author)
+
+        ui = BaselineFakeUi(
+            snapshots=[drawer_lines(total=5), shifted_drawer, liked_drawer],
+            baselines=[baseline_1, baseline_2, None],
+            frames=[shifted_pre_click, stable_pre_click, after_like],
+        )
+        res = like_comment(ui, store, "wxch-video:reorder", target_comment={"nickname": "远山如黛"})
+        self.assertEqual(res["status"], "performed")
+        self.assertEqual(len(ui.clicks), 1)
+        # Clicked the relocated y=690 row instead of the stale y=960 row.
+        self.assertLess(ui.clicks[0]["box"][1], 750)
+        self.assertIn("comments-relocate-1", ui.labels)
+
+    def test_reply_to_comment_relocates_when_target_row_shifts_before_click(self):
+        store = DailyQuotaStore(self.quota_path)
+        shifted_drawer = [
+            {"text": "评论 5", "box": [315, 520, 90, 32]},
+            {"text": "新华社 作者 2小时前", "box": [98, 580, 210, 28]},
+            {"text": "春日航拍美景合集", "box": [98, 616, 240, 30]},
+            {"text": "远山如黛 浙江 30分钟前", "box": [98, 690, 230, 28]},
+            {"text": "构图和色调都很舒服", "box": [98, 728, 240, 30]},
+            {"text": "1凸", "box": [645, 690, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        baseline_1 = make_frame(720, 1605)
+        ad_inserted = make_frame(720, 1605, red_boxes=[[80, 960, 500, 80]])
+        baseline_2 = make_frame(720, 1605, red_boxes=[[80, 960, 500, 80]])
+        stable_2 = make_frame(720, 1605, red_boxes=[[80, 960, 500, 80]])
+
+        class BaselineFakeUi(FakeUi):
+            def __init__(self, snapshots, baselines, frames):
+                super().__init__(snapshots=snapshots, frames=frames)
+                self._baselines = list(baselines)
+                self.snapshot_frame = None
+                self.labels = []
+
+            def snapshot(self, label, author=None):
+                self.labels.append(label)
+                self.snapshot_frame = self._baselines.pop(0) if self._baselines else None
+                return super().snapshot(label, author=author)
+
+        ui = BaselineFakeUi(
+            snapshots=[
+                drawer_lines(total=5),
+                shifted_drawer,
+                composer_lines("AI吕哥说 回复 远山如黛：", "回复"),
+                composer_lines("感谢分享", "回复"),
+                shifted_drawer,
+            ],
+            baselines=[baseline_1, baseline_2, None, None, None],
+            frames=[ad_inserted, stable_2],
+        )
+        res = reply_to_comment(
+            ui,
+            store,
+            "wxch-video:ad-shift",
+            "感谢分享",
+            target_comment={"nickname": "远山如黛"},
+        )
+        self.assertEqual(res["status"], "performed")
+        self.assertEqual(ui.clicks[0]["box"][1], 728)
+        self.assertIn("comments-relocate-1", ui.labels)
+
+    def test_like_comment_aborts_if_target_row_never_stabilizes(self):
+        store = DailyQuotaStore(self.quota_path)
+        f_a = make_frame(720, 1605)
+        f_b = make_frame(720, 1605, red_boxes=[[80, 960, 500, 80]])
+
+        class AlwaysShiftUi(FakeUi):
+            def __init__(self):
+                super().__init__(
+                    snapshots=[drawer_lines(total=5), drawer_lines(total=5), drawer_lines(total=5)],
+                    frames=[f_b, f_b, f_b],
+                )
+                self.snapshot_frame = None
+
+            def snapshot(self, label, author=None):
+                self.snapshot_frame = f_a
+                return super().snapshot(label, author=author)
+
+        ui = AlwaysShiftUi()
+        with self.assertRaisesRegex(RuntimeError, "shifted before click"):
+            like_comment(ui, store, "wxch-video:unstable", target_comment={"nickname": "远山如黛"})
+        self.assertEqual(ui.clicks, [])
+
+    def test_open_personal_messages_waits_two_seconds_after_entering_personal_page(self):
+        personal = [
+            {"text": "赞、收藏和最近看过", "box": [20, 120, 260, 30]},
+            {"text": "消息", "box": [20, 236, 50, 30]},
+        ]
+        center = [
+            {"text": "点赞", "box": [196, 40, 50, 30]},
+            {"text": "评论", "box": [330, 40, 50, 30]},
+        ]
+        events = []
+
+        class RecordingUi(FakeUi):
+            def click(self, line):
+                events.append(("click", line["text"]))
+                return super().click(line)
+
+            def snapshot(self, label, author=None):
+                events.append(("snapshot", label))
+                return super().snapshot(label, author=author)
+
+        ui = RecordingUi([feed_lines(), personal, center, center])
+        with mock.patch("interactions.time.sleep", side_effect=lambda s: events.append(("sleep", s))):
+            open_personal_messages(ui)
+
+        self.assertEqual(PERSONAL_PAGE_SETTLE_SECONDS, 2)
+        self.assertEqual(
+            events[:4],
+            [
+                ("snapshot", "messages-start"),
+                ("click", "personal_icon"),
+                ("sleep", 2),
+                ("snapshot", "personal-page"),
+            ],
+        )
 
 
 if __name__ == "__main__":

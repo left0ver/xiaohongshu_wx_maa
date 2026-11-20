@@ -76,6 +76,12 @@ MAX_KNOWN_WORKS = 500
 # A freshly opened profile keeps reflowing (bio, counters) for a moment; tapping
 # 关注 off an early snapshot can land on the bio instead of the button.
 PROFILE_SETTLE_SECONDS = 3
+# A freshly opened personal page loads asynchronously and collapses its top rows
+# once ready; waiting briefly avoids tapping the pre-collapse 消息 coordinate.
+PERSONAL_PAGE_SETTLE_SECONDS = 2
+TARGET_ROI_MAE_THRESHOLD = 3.0
+TARGET_ROI_PCT15_THRESHOLD = 5.0
+TARGET_ROI_MAX_RELOCATES = 2
 
 
 class QuotaExceededError(RuntimeError):
@@ -342,6 +348,176 @@ def is_red_active(frame, box, min_ratio=0.012, min_pixels=10):
         return (red_count >= min_pixels and ratio >= min_ratio), round(ratio, 4)
 
     return False, 0.0
+
+
+def roi_frame_diff(
+    before,
+    after,
+    box,
+    *,
+    mae_threshold=TARGET_ROI_MAE_THRESHOLD,
+    pct15_threshold=TARGET_ROI_PCT15_THRESHOLD,
+):
+    """Compare a target ROI between baseline and pre-click frames (numpy or test frames)."""
+    empty = {"mae": 0.0, "pct15": 0.0, "changed": False}
+    if before is None or after is None or not box or len(box) != 4:
+        return empty
+    x, y, w, h = [int(round(v)) for v in box]
+    if w <= 0 or h <= 0:
+        return empty
+
+    if hasattr(before, "shape") and hasattr(after, "shape"):
+        if tuple(before.shape[:2]) != tuple(after.shape[:2]) or len(before.shape) < 3 or len(after.shape) < 3:
+            return empty
+        fh, fw = int(before.shape[0]), int(before.shape[1])
+        x0 = max(0, min(fw, x))
+        x1 = max(0, min(fw, x + w))
+        y0 = max(0, min(fh, y))
+        y1 = max(0, min(fh, y + h))
+        if x1 <= x0 or y1 <= y0:
+            return empty
+        diff = abs(before[y0:y1, x0:x1, :3].astype("int16") - after[y0:y1, x0:x1, :3].astype("int16")).mean(axis=2)
+        mae = float(diff.mean())
+        pct15 = float((diff > 15.0).mean() * 100.0)
+        return {
+            "mae": round(mae, 2),
+            "pct15": round(pct15, 2),
+            "changed": bool(mae > mae_threshold or pct15 > pct15_threshold),
+        }
+
+    if (
+        isinstance(before, (list, tuple))
+        and isinstance(after, (list, tuple))
+        and before
+        and after
+        and len(before) == len(after)
+        and isinstance(before[0], (list, tuple))
+        and isinstance(after[0], (list, tuple))
+        and len(before[0]) == len(after[0])
+    ):
+        fh = len(before)
+        fw = len(before[0])
+        x0 = max(0, min(fw, x))
+        x1 = max(0, min(fw, x + w))
+        y0 = max(0, min(fh, y))
+        y1 = max(0, min(fh, y + h))
+        if x1 <= x0 or y1 <= y0:
+            return empty
+        total = 0.0
+        gt15 = 0
+        count = 0
+        for yy in range(y0, y1):
+            row_a = before[yy]
+            row_b = after[yy]
+            for xx in range(x0, x1):
+                pa = row_a[xx]
+                pb = row_b[xx]
+                d = (abs(int(pa[0]) - int(pb[0])) + abs(int(pa[1]) - int(pb[1])) + abs(int(pa[2]) - int(pb[2]))) / 3.0
+                total += d
+                if d > 15.0:
+                    gt15 += 1
+                count += 1
+        mae = total / float(count) if count else 0.0
+        pct15 = gt15 * 100.0 / float(count) if count else 0.0
+        return {
+            "mae": round(mae, 2),
+            "pct15": round(pct15, 2),
+            "changed": bool(mae > mae_threshold or pct15 > pct15_threshold),
+        }
+
+    return empty
+
+
+def _comment_row_roi(comment, click_box, page_height):
+    """Narrow band covering a comment's nickname, first body line, and action area.
+
+    Excludes the playing video above the drawer and any sticker/GIF below the first body line.
+    """
+    boxes = [b for b in (comment.get("_nameBox"), click_box) if b and len(b) == 4]
+    body_box = comment.get("_bodyBox")
+    if body_box and len(body_box) == 4:
+        boxes.append([body_box[0], body_box[1], body_box[2], min(48, max(24, body_box[3]))])
+    if not boxes:
+        return None
+    top = max(430, min(int(round(b[1])) for b in boxes) - 8)
+    bottom = min(max(top + 36, int(page_height) - 90), max(int(round(b[1] + b[3])) for b in boxes) + 8)
+    if bottom <= top:
+        return None
+    return [80, top, 620, bottom - top]
+
+
+def _confirm_comment_target_roi(
+    ui,
+    located,
+    target_spec,
+    *,
+    quota_store,
+    work_key,
+    exclude_self,
+    box_fn,
+    self_nickname="",
+    max_pages=10,
+    require_frame=False,
+    max_relocates=TARGET_ROI_MAX_RELOCATES,
+):
+    """Verify the target comment row did not shift between snapshot and click; relocate if it did."""
+    current_located = located
+    for attempt in range(max_relocates + 1):
+        check_stopped(ui)
+        comment = current_located.get("comment")
+        if not current_located.get("found") or not comment:
+            return current_located, None
+        baseline = getattr(ui, "snapshot_frame", None)
+        need_frame = require_frame or baseline is not None
+        frame = ui.capture_frame() if (need_frame and hasattr(ui, "capture_frame")) else None
+        if baseline is None or frame is None:
+            return current_located, frame
+        roi = _comment_row_roi(comment, box_fn(comment), getattr(ui, "height", 1605))
+        diff = roi_frame_diff(baseline, frame, roi)
+        if not diff["changed"]:
+            return current_located, frame
+        print(
+            json.dumps(
+                {
+                    "kind": "roiRelocate",
+                    "attempt": attempt + 1,
+                    "nickname": comment.get("nickname", ""),
+                    "roi": roi,
+                    "mae": diff["mae"],
+                    "pct15": diff["pct15"],
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        if attempt >= max_relocates:
+            raise RuntimeError(f"Target comment row shifted before click for {comment.get('nickname', '')}")
+        if hasattr(ui, "_invalidate_controls"):
+            ui._invalidate_controls()
+        fresh_lines = ui.snapshot(f"comments-relocate-{attempt + 1}")
+        current_located = locate_target_comment(
+            ui,
+            target_spec=target_spec,
+            self_nickname=self_nickname,
+            quota_store=quota_store,
+            work_key=work_key,
+            exclude_self=exclude_self,
+            max_pages=max_pages,
+            lines=fresh_lines,
+        )
+    return current_located, None
+
+
+def _comment_reply_box(comment):
+    body_box = comment.get("_bodyBox") or [
+        comment["_nameBox"][0],
+        comment.get("_headerTop", 300) + 34,
+        220,
+        32,
+    ]
+    # The middle of a comment can contain a tappable search term. Target its
+    # leading text instead of the center of the full OCR row.
+    return [body_box[0], body_box[1], min(32, body_box[2]), body_box[3]]
 
 
 def _valid_works(works):
@@ -1014,8 +1190,26 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
             "workKey": work_key,
         }
 
+    located, frame = _confirm_comment_target_roi(
+        ui,
+        located,
+        target_comment,
+        quota_store=quota_store,
+        work_key=work_key,
+        exclude_self=exclude_self,
+        box_fn=lambda c: c.get("_likeBox"),
+        require_frame=True,
+    )
+    if not located["found"] or not located["comment"]:
+        return {
+            "action": "comment_like",
+            "status": "target_not_found",
+            "clicked": False,
+            "verified": False,
+            "workKey": work_key,
+        }
+
     comment = located["comment"]
-    frame = ui.capture_frame() if hasattr(ui, "capture_frame") else None
     before = comment_like_state(comment, frame, quota_store=quota_store, work_key=work_key)
     c_key = before["commentKey"]
 
@@ -1172,16 +1366,44 @@ def reply_to_comment(
         }
 
     quota_store.require_quota("comment")
-    body_box = comment.get("_bodyBox") or [
-        comment["_nameBox"][0],
-        comment.get("_headerTop", 300) + 34,
-        220,
-        32,
-    ]
+    located, _ = _confirm_comment_target_roi(
+        ui,
+        located,
+        target_comment,
+        quota_store=quota_store,
+        work_key=work_key,
+        exclude_self=True,
+        box_fn=_comment_reply_box,
+        self_nickname=detected_self,
+        max_pages=max_comment_pages,
+        require_frame=False,
+    )
+    if located.get("rejectedSelf"):
+        self_c = located.get("comment") or {}
+        return {
+            "action": "comment_reply",
+            "status": "self_comment_skipped",
+            "clicked": False,
+            "submitted": False,
+            "verified": True,
+            "workKey": work_key,
+            "nickname": self_c.get("nickname"),
+            "reason": "matched_self_comment",
+        }
+    if not located["found"] or not located["comment"]:
+        return {
+            "action": "comment_reply",
+            "status": "target_not_found",
+            "clicked": False,
+            "submitted": False,
+            "verified": False,
+            "workKey": work_key,
+        }
+    comment = located["comment"]
+    c_key = comment.get("key") or comment_identity_key(work_key, comment["nickname"], comment["content"])
+    reply_key = f"{c_key}:reply:{identity(text)}"
     check_stopped(ui)
-    # The middle of a comment can contain a tappable search term. Target its
-    # leading text instead of the center of the full OCR row.
-    reply_box = [body_box[0], body_box[1], min(32, body_box[2]), body_box[3]]
+    reply_box = _comment_reply_box(comment)
     ui.click({"text": comment["content"], "box": reply_box})
     composer_lines = ui.snapshot("comments-reply-composer")
 
@@ -1821,6 +2043,8 @@ def open_personal_messages(ui, lines=None):
         ) or {"text": "personal_icon", "box": [640, 65, 56, 56]}
         check_stopped(ui)
         ui.click(personal_icon)
+        time.sleep(PERSONAL_PAGE_SETTLE_SECONDS)
+        check_stopped(ui)
         lines = ui.snapshot("personal-page")
         state = classify_page_state(lines, ui.height)
 
@@ -2299,12 +2523,26 @@ def interact_work_and_comments(ui, quota_store, config, video_event=None):
         spec = config["touchCommenterProfile"] if isinstance(config["touchCommenterProfile"], dict) else {}
 
         def touch_commenter():
+            target_spec = commenter_target(config)
             located = locate_target_comment(
                 ui,
-                target_spec=commenter_target(config),
+                target_spec=target_spec,
                 quota_store=quota_store,
                 work_key=work_key,
                 exclude_self=True,
+            )
+            if not (located["found"] and located["comment"]):
+                return {"status": "target_comment_not_found"}
+            located, _ = _confirm_comment_target_roi(
+                ui,
+                located,
+                target_spec,
+                quota_store=quota_store,
+                work_key=work_key,
+                exclude_self=True,
+                box_fn=lambda c: c.get("_nameBox"),
+                self_nickname=config.get("selfNickname", ""),
+                require_frame=False,
             )
             if not (located["found"] and located["comment"]):
                 return {"status": "target_comment_not_found"}
