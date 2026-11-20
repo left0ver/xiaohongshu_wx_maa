@@ -58,6 +58,17 @@ XHS_AGENT_DIR = REPO_ROOT / "plugins" / "xiaohongshu" / "xiaohongshu" / "agent"
 CACHE_ROOT = REPO_ROOT / "data" / "debug-console-cache"
 
 SNAPSHOT_FILE_RE = re.compile(r"^(\d{3})-(.+)\.json$")
+FRAME_EXTENSIONS = (".jpg", ".jpeg", ".webp", ".png", ".npy")
+
+
+def find_snapshot_frame(run_dir: Path, stem: str) -> Path | None:
+    """Locate a captured frame image beside a snapshot JSON, preferring compressed formats."""
+    base = Path(run_dir)
+    for ext in FRAME_EXTENSIONS:
+        candidate = (base / f"{stem}{ext}").resolve()
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
 
 # Known stage display names for WeChat Channels workflows
 STAGE_LABELS = {
@@ -247,6 +258,67 @@ def run_adb(serial: str | None, args: list[str], timeout: float = 15.0, binary: 
     return proc.stdout if binary else proc.stdout.decode("utf-8", errors="replace")
 
 
+ORIGIN_META: dict[str, dict[str, str]] = {
+    "remote": {
+        "label": "📡 后台下发",
+        "optionTitle": "📡 后台下发 · 服务端远程",
+        "desc": "服务端 / 管理后台远程下发给手机 App 自动执行的任务（已自动汇总手机上全部远端授权目录）",
+    },
+    "manual": {
+        "label": "👆 App手动",
+        "optionTitle": "👆 App手动 · 手机界面点击",
+        "desc": "直接在手机 App 界面中手动点击「开始」运行的任务（wechat-channels-data）",
+    },
+    "cli": {
+        "label": "🛠️ 开发调试",
+        "optionTitle": "🛠️ 开发调试 · 命令行/调试台",
+        "desc": "通过电脑命令行或本页右上角「下发任务」经 USB 直接运行的调试任务（wechat-channels-dev/data）",
+    },
+}
+
+
+def classify_scope_origin(path_str: str) -> str:
+    """Map a phone scope path or local cache relative path to one of: remote, manual, cli, other."""
+    normalized = path_str.replace("\\", "/")
+    if "/remote/" in normalized or "__remote__" in normalized:
+        return "remote"
+    if "wechat-channels-dev" in normalized:
+        return "cli"
+    if "wechat-channels-data" in normalized:
+        return "manual"
+    return "other"
+
+
+def _origin_info(origin: str) -> dict[str, str]:
+    return ORIGIN_META.get(
+        origin,
+        {
+            "label": "📁 本地留档",
+            "optionTitle": "📁 本地留档",
+            "desc": "电脑本地保存的历史调试或测试归档记录",
+        },
+    )
+
+
+def _extract_real_run_timestamp(rdir: Path, snaps: list[str], fallback_mtime: int) -> int:
+    """Read the real execution unix timestamp (seconds) from the latest snapshot JSON when available."""
+    rx = re.compile(rb'"observedAtUnixMs"\s*:\s*(\d{12,14})')
+    for snap_name in reversed(snaps):
+        snap_path = rdir / snap_name
+        try:
+            with snap_path.open("rb") as fh:
+                head = fh.read(8192)
+            m = rx.search(head)
+            if not m:
+                raw = snap_path.read_bytes()
+                m = rx.search(raw)
+            if m:
+                return int(int(m.group(1)) // 1000)
+        except OSError:
+            continue
+    return fallback_mtime
+
+
 def list_adb_devices() -> list[dict[str, Any]]:
     """List connected ADB devices with screen geometry, foreground app, and available data scopes."""
     try:
@@ -282,6 +354,7 @@ def list_adb_devices() -> list[dict[str, Any]]:
             "foregroundActivity": None,
             "installedApps": [],
             "scopes": [],
+            "originCounts": {"all": 0, "remote": 0, "manual": 0, "cli": 0},
         }
         try:
             probe_script = (
@@ -301,12 +374,12 @@ def list_adb_devices() -> list[dict[str, Any]]:
                 "echo '---SCOPES---'; "
                 "for d in /data/local/tmp/wechat-channels-data "
                 "/data/local/tmp/wechat-channels-data/remote/* "
-                "/data/local/tmp/wechat-channels-dev/data "
-                "/data/local/tmp/maa-tauri-android/*/xiaohongshu-data "
-                "/data/local/tmp/xiaohongshu-data; do "
+                "/data/local/tmp/wechat-channels-dev/data; do "
                 "  if [ -d \"$d/runs\" ] || [ -f \"$d/videos.sqlite3\" ] || [ -f \"$d/discovery.sqlite3\" ]; then "
                 "    rc=$(ls -1 \"$d/runs\" 2>/dev/null | wc -l); "
-                "    echo \"SCOPE|$d|$rc\"; "
+                "    newest=$(ls -1t \"$d/runs\" 2>/dev/null | head -n 1); "
+                "    mt=0; [ -n \"$newest\" ] && mt=$(stat -c %Y \"$d/runs/$newest\" 2>/dev/null || echo 0); "
+                "    echo \"SCOPE|$d|$rc|$mt\"; "
                 "  fi; "
                 "done"
             )
@@ -359,24 +432,32 @@ def list_adb_devices() -> list[dict[str, Any]]:
                     "remoteScopes": owned_scopes,
                 })
 
+            origin_counts = {"all": 0, "remote": 0, "manual": 0, "cli": 0}
             for sline in scopes_part.splitlines():
                 if sline.startswith("SCOPE|"):
-                    _, spath, rcount = sline.split("|", 2)
+                    parts_s = (sline.split("|", 3) + ["0", "0", "0", "0"])[:4]
+                    _, spath, rcount_s, mt_s = parts_s
                     spath = spath.strip()
-                    label = "共享默认数据目录 (正式版+Debug版手动任务: wechat-channels-data)"
+                    rcount = int(rcount_s.strip() or "0")
+                    latest_mt = int(mt_s.strip() or "0")
+                    origin = classify_scope_origin(spath)
+                    label = _origin_info(origin)["optionTitle"]
                     if "/remote/" in spath:
                         scope_hash = spath.rsplit("/", 1)[-1]
                         owner_tag = scope_owner_map.get(scope_hash, "正式版或历史授权")
-                        label = f"远端任务目录 [{owner_tag}] (remote/{scope_hash[:10]}…)"
-                    elif "wechat-channels-dev" in spath:
-                        label = "CLI 命令行调试目录 (wechat-channels-dev/data)"
-                    elif "xiaohongshu" in spath:
-                        label = f"小红书数据目录 ({spath.split('/tmp/')[-1]})"
+                        label = f"后台下发 [{owner_tag}] (remote/{scope_hash[:10]}…)"
+                    if origin in origin_counts:
+                        origin_counts[origin] += rcount
+                        origin_counts["all"] += rcount
                     info["scopes"].append({
                         "path": spath,
+                        "origin": origin,
                         "label": label,
-                        "runCount": int(rcount.strip() or "0"),
+                        "runCount": rcount,
+                        "latestMtime": latest_mt,
                     })
+            info["scopes"].sort(key=lambda s: s.get("latestMtime", 0), reverse=True)
+            info["originCounts"] = origin_counts
         except Exception as exc:
             info["probeError"] = str(exc)
 
@@ -384,53 +465,84 @@ def list_adb_devices() -> list[dict[str, Any]]:
     return devices
 
 
-def list_device_runs(serial: str, scope_path: str = "/data/local/tmp/wechat-channels-data", limit: int = 25) -> list[dict[str, Any]]:
-    """Fast batch inspection of recent runs on an ADB device without pulling full directories."""
-    runs_dir = f"{scope_path.rstrip('/')}/runs"
-    cap = min(int(limit), 30)
+def list_device_runs(serial: str, scope_path: str = "all", limit: int = 30) -> list[dict[str, Any]]:
+    """Fast batch inspection of recent runs on an ADB device without pulling full directories.
+
+    `scope_path` supports high-level task origins (`all`, `remote`, `manual`, `cli`) as well as
+    an explicit device path (e.g. `/data/local/tmp/wechat-channels-data`).
+    """
+    cap = min(max(int(limit), 1), 40)
+    scope_key = (scope_path or "all").strip()
+    if scope_key == "all":
+        scope_expr = (
+            "/data/local/tmp/wechat-channels-data "
+            "/data/local/tmp/wechat-channels-data/remote/* "
+            "/data/local/tmp/wechat-channels-dev/data"
+        )
+    elif scope_key == "remote":
+        scope_expr = "/data/local/tmp/wechat-channels-data/remote/*"
+    elif scope_key == "manual":
+        scope_expr = "/data/local/tmp/wechat-channels-data"
+    elif scope_key == "cli":
+        scope_expr = "/data/local/tmp/wechat-channels-dev/data"
+    else:
+        safe_path = scope_key.rstrip("/").replace('"', '\\"')
+        scope_expr = f'"{safe_path}"'
+
     script = f"""
-cd "{runs_dir}" 2>/dev/null || exit 0
-for rid in $(ls -1t 2>/dev/null | head -n {cap}); do
-  [ -d "$rid" ] || continue
-  mtime=$(stat -c %Y "$rid" 2>/dev/null || echo 0)
-  set -- "$rid"/[0-9][0-9][0-9]-*.json
+candidates=$(
+  for d in {scope_expr}; do
+    [ -d "$d/runs" ] || continue
+    for rid in $(ls -1t "$d/runs" 2>/dev/null | head -n {cap}); do
+      p="$d/runs/$rid"
+      [ -d "$p" ] || continue
+      mt=$(stat -c %Y "$p" 2>/dev/null || echo 0)
+      printf '%s|%s|%s\\n' "$mt" "$d" "$rid"
+    done
+  done | sort -t '|' -k1,1rn | head -n {cap}
+)
+printf '%s\\n' "$candidates" | while IFS='|' read -r mtime sdir rid; do
+  [ -n "$rid" ] || continue
+  rpath="$sdir/runs/$rid"
+  [ -d "$rpath" ] || continue
+  set -- "$rpath"/[0-9][0-9][0-9]-*.json
   if [ -e "$1" ]; then snaps=$#; else snaps=0; fi
-  set -- "$rid"/*.npy "$rid"/*.png
+  set -- "$rpath"/*.npy "$rpath"/*.png "$rpath"/*.jpg "$rpath"/*.webp
   npys=0
   for f in "$@"; do [ -e "$f" ] && npys=$((npys + 1)); done
   files=""
   for jf in collection.json link-task.json interactions.json mode.json comments.json video.json remote-result.json result.json; do
-    [ -f "$rid/$jf" ] && files="$files,$jf"
+    [ -f "$rpath/$jf" ] && files="$files,$jf"
   done
   rem_res=""
-  if [ -f "$rid/remote-result.json" ]; then
-    rem_res=$(cat "$rid/remote-result.json" 2>/dev/null)
-  elif [ -f "$rid/link-task.json" ]; then
-    rem_res=$(cat "$rid/link-task.json" 2>/dev/null)
-  elif [ -f "$rid/result.json" ]; then
-    rem_res=$(cat "$rid/result.json" 2>/dev/null)
+  if [ -f "$rpath/remote-result.json" ]; then
+    rem_res=$(cat "$rpath/remote-result.json" 2>/dev/null)
+  elif [ -f "$rpath/link-task.json" ]; then
+    rem_res=$(cat "$rpath/link-task.json" 2>/dev/null)
+  elif [ -f "$rpath/result.json" ]; then
+    rem_res=$(cat "$rpath/result.json" 2>/dev/null)
   fi
   last_timing=""
-  if [ -f "$rid/timings.jsonl" ]; then
-    last_timing=$(tail -n 3 "$rid/timings.jsonl" 2>/dev/null)
+  if [ -f "$rpath/timings.jsonl" ]; then
+    last_timing=$(tail -n 3 "$rpath/timings.jsonl" 2>/dev/null)
   fi
   snap_names=""
-  for sf in "$rid"/[0-9][0-9][0-9]-*.json; do
+  for sf in "$rpath"/[0-9][0-9][0-9]-*.json; do
     [ -e "$sf" ] && snap_names="$snap_names,${{sf##*/}}"
   done
-  printf 'RUN|%s|%s|%s|%s|%s|%s|%s|%s\\n' "$rid" "$mtime" "$snaps" "$npys" "$files" "$snap_names" "$(echo "$rem_res" | tr '\\n' ' ')" "$(echo "$last_timing" | tr '\\n' ' ')"
+  printf 'RUN|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' "$sdir" "$rid" "$mtime" "$snaps" "$npys" "$files" "$snap_names" "$(echo "$rem_res" | tr '\\n' ' ')" "$(echo "$last_timing" | tr '\\n' ' ')"
 done
 """
-    out = str(run_adb(serial, ["shell", script], timeout=10.0))
+    out = str(run_adb(serial, ["shell", script], timeout=12.0))
     results = []
-    scope_slug = scope_path.strip("/").replace("/", "__")
     for line in out.splitlines():
         if not line.startswith("RUN|"):
             continue
-        parts = line.split("|", 8)
-        if len(parts) < 9:
+        parts = line.split("|", 9)
+        if len(parts) < 10:
             continue
-        _, rid, mtime_s, snaps_s, npys_s, files_s, snap_names_s, rem_res_s, last_timing_s = parts
+        _, sdir, rid, mtime_s, snaps_s, npys_s, files_s, snap_names_s, rem_res_s, last_timing_s = parts
+        sdir = sdir.strip()
         mtime = int(mtime_s.strip() or "0")
         snap_count = int(snaps_s.strip() or "0")
         frame_count = int(npys_s.strip() or "0")
@@ -440,15 +552,21 @@ done
         outcome = _infer_outcome_from_hints(rem_res_s, last_timing_s)
         summary_msg = _infer_summary_from_hints(rem_res_s, last_timing_s)
 
+        scope_slug = sdir.strip("/").replace("/", "__")
         local_cache_dir = CACHE_ROOT / serial / scope_slug / "runs" / rid
         is_synced = (local_cache_dir / "timings.jsonl").is_file() or any(local_cache_dir.glob("*.json"))
+        origin = classify_scope_origin(sdir)
+        oinfo = _origin_info(origin)
 
         results.append({
-            "id": f"adb:{serial}:{scope_path}:{rid}",
+            "id": f"adb:{serial}:{sdir}:{rid}",
             "runId": rid,
             "sourceType": "adb",
             "serial": serial,
-            "scopePath": scope_path,
+            "scopePath": sdir,
+            "origin": origin,
+            "originLabel": oinfo["label"],
+            "originDesc": oinfo["desc"],
             "localPath": str(local_cache_dir) if is_synced else None,
             "synced": is_synced,
             "mtime": mtime,
@@ -460,21 +578,41 @@ done
             "outcome": outcome,
             "summaryMessage": summary_msg,
         })
+    results.sort(key=lambda item: item["mtime"], reverse=True)
     return results
 
 
 def sync_device_run(serial: str, scope_path: str, run_id: str, include_sqlite: bool = True) -> Path:
-    """Pull a run directory (and optionally videos.sqlite3, daily_quotas.json, link_actions.json) to local cache."""
+    """Pull a run directory (and optionally videos.sqlite3, daily_quotas.json, link_actions.json) to local cache.
+
+    Pulls into a temporary staging directory and merges into the cached run directory so
+    previously synced local frame images (.jpg/.webp/.png/.npy) are preserved even after
+    the phone prunes older frames.
+    """
     scope_slug = scope_path.strip("/").replace("/", "__")
     scope_cache = CACHE_ROOT / serial / scope_slug
     runs_cache = scope_cache / "runs"
     runs_cache.mkdir(parents=True, exist_ok=True)
     target_run_dir = runs_cache / run_id
-    if target_run_dir.exists():
-        shutil.rmtree(target_run_dir)
+    staging_parent = runs_cache / f".sync-{run_id}-{uuid.uuid4().hex[:8]}"
+    staging_run_dir = staging_parent / run_id
+    staging_parent.mkdir(parents=True, exist_ok=True)
 
     remote_run_dir = f"{scope_path.rstrip('/')}/runs/{run_id}"
-    run_adb(serial, ["pull", remote_run_dir, str(target_run_dir)], timeout=60.0)
+    try:
+        run_adb(serial, ["pull", remote_run_dir, str(staging_run_dir)], timeout=60.0)
+        pulled_root = staging_run_dir if staging_run_dir.is_dir() else staging_parent
+        target_run_dir.mkdir(parents=True, exist_ok=True)
+        for src in pulled_root.rglob("*"):
+            rel = src.relative_to(pulled_root)
+            dst = target_run_dir / rel
+            if src.is_dir():
+                dst.mkdir(parents=True, exist_ok=True)
+            elif src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+    finally:
+        shutil.rmtree(staging_parent, ignore_errors=True)
 
     if include_sqlite:
         for aux_file in ("videos.sqlite3", "daily_quotas.json", "link_actions.json", "seen.json"):
@@ -619,7 +757,7 @@ def _infer_outcome_from_hints(rem_res_s: str, last_timing_s: str) -> str:
 # ---------------------------------------------------------------------------
 
 def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
-    """Scan local `data/` directory for run folders containing timings.jsonl or snapshot JSONs."""
+    """Scan local `data/` directory for run folders, deduplicate by runId, and sort by real execution time."""
     data_root = REPO_ROOT / "data"
     if not data_root.is_dir():
         return []
@@ -630,14 +768,19 @@ def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
     for snap_file in data_root.rglob("001-*.json"):
         candidate_dirs.add(snap_file.parent)
 
-    entries = []
+    by_run_id: dict[str, dict[str, Any]] = {}
     for rdir in candidate_dirs:
         try:
             stat = rdir.stat()
         except OSError:
             continue
         snaps = sorted(f.name for f in rdir.glob("[0-9][0-9][0-9]-*.json") if SNAPSHOT_FILE_RE.match(f.name))
-        frames = list(rdir.glob("*.npy")) + list(rdir.glob("*.png"))
+        frames = (
+            list(rdir.glob("*.npy"))
+            + list(rdir.glob("*.png"))
+            + list(rdir.glob("*.jpg"))
+            + list(rdir.glob("*.webp"))
+        )
         json_files = [
             f.name
             for f in rdir.glob("*.json")
@@ -669,16 +812,23 @@ def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
         task_type = _infer_task_type_from_hints(json_files, rem_res_s, last_lines, snap_names_s)
         outcome = _infer_outcome_from_hints(rem_res_s, last_lines)
         summary_msg = _infer_summary_from_hints(rem_res_s, last_lines)
+        real_ts = _extract_real_run_timestamp(rdir, snaps, int(stat.st_mtime))
+        origin = classify_scope_origin(rel_path)
+        oinfo = _origin_info(origin)
+        is_cache = "debug-console-cache" in rel_path
 
-        entries.append({
+        entry = {
             "id": f"local:{rel_path}",
             "runId": run_id,
             "label": rel_path,
-            "sourceType": "cache" if "debug-console-cache" in rel_path else "local",
+            "sourceType": "cache" if is_cache else "local",
+            "origin": origin,
+            "originLabel": oinfo["label"],
+            "originDesc": oinfo["desc"],
             "localPath": str(rdir),
             "relPath": rel_path,
             "synced": True,
-            "mtime": int(stat.st_mtime),
+            "mtime": real_ts,
             "snapshotCount": len(snaps),
             "frameCount": len(frames),
             "resultFiles": sorted(json_files),
@@ -686,8 +836,24 @@ def discover_local_runs(limit: int = 80) -> list[dict[str, Any]]:
             "taskTypeCn": get_task_type_cn(task_type),
             "outcome": outcome,
             "summaryMessage": summary_msg,
-        })
+        }
 
+        dedup_key = run_id if run_id and run_id != "native" else rel_path
+        existing = by_run_id.get(dedup_key)
+        if existing is None:
+            by_run_id[dedup_key] = entry
+        else:
+            new_score = (entry["frameCount"], entry["snapshotCount"], 1 if is_cache else 0, entry["mtime"])
+            old_score = (
+                existing["frameCount"],
+                existing["snapshotCount"],
+                1 if existing["sourceType"] == "cache" else 0,
+                existing["mtime"],
+            )
+            if new_score > old_score:
+                by_run_id[dedup_key] = entry
+
+    entries = list(by_run_id.values())
     entries.sort(key=lambda item: item["mtime"], reverse=True)
     return entries[:limit]
 
@@ -795,9 +961,8 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
         except Exception as exc:
             mode_page = f"error:{exc}"
 
-        npy_file = snap_file.with_suffix(".npy")
-        png_file = snap_file.with_suffix(".png")
-        has_frame = npy_file.is_file() or png_file.is_file()
+        frame_file = find_snapshot_frame(run_dir, snap_file.stem)
+        has_frame = frame_file is not None
 
         # Count lines by source
         source_counts: dict[str, int] = {}
@@ -834,7 +999,7 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
             "fields": fields,
             "extractedValues": extracted_field_Summary,
             "hasFrame": has_frame,
-            "frameType": "png" if png_file.is_file() else ("npy" if npy_file.is_file() else None),
+            "frameType": frame_file.suffix.lstrip(".").lower() if frame_file is not None else None,
             "previewTexts": [l.get("text", "").strip() for l in lines[:8] if l.get("text", "").strip()],
         }
         snapshot_summaries.append(snap_summary)
@@ -1033,8 +1198,7 @@ def get_snapshot_detail(
         hot_reload=hot_reload,
     )
 
-    npy_file = snap_path.with_suffix(".npy")
-    png_file = snap_path.with_suffix(".png")
+    frame_file = find_snapshot_frame(snap_path.parent, snap_path.stem)
 
     return {
         "filename": filename,
@@ -1047,7 +1211,8 @@ def get_snapshot_detail(
         "recordedFields": raw_data.get("fields") or {},
         "lines": lines,
         "visualLines": deduplicate_visual_lines(lines),
-        "hasFrame": npy_file.is_file() or png_file.is_file(),
+        "hasFrame": frame_file is not None,
+        "frameExt": frame_file.suffix.lower() if frame_file is not None else None,
         "authorHintUsed": author_hint,
         "keywordHintUsed": keyword_hint,
         "replay": replay,

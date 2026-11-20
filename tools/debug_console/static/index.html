@@ -16,7 +16,7 @@
     <div class="topbar-controls">
       <select id="deviceSelect" title="选择连接的手机"></select>
       <div id="installedAppsBadges" style="display:flex;align-items:center;gap:4px;"></div>
-      <select id="scopeSelect" title="切换正式版/Debug版/远端任务目录"></select>
+      <select id="scopeSelect" title="按任务启动来源筛选（后台下发 / App手动 / 开发调试）"></select>
 
       <button class="btn btn-primary btn-sm" id="btnLiveProbe">📸 抓取当前屏幕</button>
       <button class="btn btn-amber btn-sm" id="btnPushCode">🚀 推送代码</button>
@@ -36,10 +36,10 @@
 
       <div class="filter-bar">
         <div class="seg-tabs" id="sourceFilterTabs">
-          <button class="seg-tab active" data-source="all">全部记录</button>
-          <button class="seg-tab" data-source="adb">📱 手机端</button>
-          <button class="seg-tab" data-source="local">💻 已缓存</button>
+          <button class="seg-tab active" data-source="adb">📱 手机记录</button>
+          <button class="seg-tab" data-source="local">💻 本地离线</button>
         </div>
+        <div id="originExplainBox" class="origin-explain-box"></div>
         <div style="display:flex;gap:6px;">
           <input type="text" id="runSearchInput" placeholder="搜索任务名称 / 作者 / 结果..." style="flex:1;" />
           <select id="outcomeFilterSelect" style="width:92px;">
@@ -79,7 +79,8 @@
     <aside class="panel">
       <div class="panel-header">
         <span class="panel-title" id="rightScreenTitle">📱 3. 当前步骤手机画面</span>
-        <div style="display:flex;gap:4px;">
+        <div style="display:flex;gap:4px;align-items:center;">
+          <button class="btn btn-sm" id="btnToggleRealFrame" style="display:none;" title="在真实手机截图和控件模拟图之间切换">🖼️ 真实截图</button>
           <button class="btn btn-sm" id="btnPrevStep">◀ 上一步</button>
           <button class="btn btn-sm" id="btnNextStep">下一步 ▶</button>
         </div>

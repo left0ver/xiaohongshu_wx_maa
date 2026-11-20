@@ -1,9 +1,39 @@
 (() => {
+  const ORIGIN_OPTIONS = [
+    {
+      value: "all",
+      label: "全部来源",
+      explain:
+        "<b>来源说明：</b>汇总这台手机全部 3 类任务，按最新执行时间倒序。<br>" +
+        "• <b>📡 后台下发</b>：服务端 / 管理后台远程下发给 App 自动执行<br>" +
+        "• <b>👆 App手动</b>：在手机 App 界面手动点「开始」执行<br>" +
+        "• <b>🛠️ 开发调试</b>：电脑命令行或右上角「下发任务」经 USB 直接运行",
+    },
+    {
+      value: "remote",
+      label: "📡 后台下发 · 服务端远程",
+      explain:
+        "<b>📡 后台下发：</b>由服务端 / 管理后台远程下发给手机 App 自动执行的任务（已自动合并手机上所有授权和环境的远端目录，不再区分哈希目录）。",
+    },
+    {
+      value: "manual",
+      label: "👆 App手动 · 手机界面点击",
+      explain:
+        "<b>👆 App手动：</b>直接在手机 App 界面里手动点击「开始」运行的任务（手机目录：wechat-channels-data）。",
+    },
+    {
+      value: "cli",
+      label: "🛠️ 开发调试 · 命令行/调试台",
+      explain:
+        "<b>🛠️ 开发调试：</b>开发时通过电脑命令行或本页右上角「🛠️ 下发任务」，经 USB 直接在手机上跑的调试任务（手机目录：wechat-channels-dev/data）。",
+    },
+  ];
+
   const state = {
     devices: [],
     selectedSerial: "",
-    selectedScope: "/data/local/tmp/wechat-channels-data",
-    sourceFilter: "all",
+    selectedScope: "all",
+    sourceFilter: "adb",
     outcomeFilter: "all",
     searchQuery: "",
     runs: [],
@@ -15,6 +45,7 @@
     hoveredLineIndex: -1,
     frameImageCache: {},
     activeFrameImg: null,
+    showRealFrame: true,
     taskPollingTimer: null,
   };
 
@@ -137,6 +168,29 @@
     }
   }
 
+  function syncSourceTabsUI() {
+    document.querySelectorAll("#sourceFilterTabs .seg-tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.source === state.sourceFilter);
+    });
+    const scopeSel = $("scopeSelect");
+    if (scopeSel) {
+      scopeSel.style.display = state.sourceFilter === "adb" ? "" : "none";
+    }
+    updateOriginExplain();
+  }
+
+  function updateOriginExplain() {
+    const box = $("originExplainBox");
+    if (!box) return;
+    if (state.sourceFilter === "local") {
+      box.innerHTML =
+        "<b>💻 本地离线：</b>展示电脑项目 <code>data/</code> 下已拉取缓存或留档的任务，已按任务 ID 去重并按<b>真实执行时间</b>倒序。";
+      return;
+    }
+    const found = ORIGIN_OPTIONS.find((o) => o.value === state.selectedScope) || ORIGIN_OPTIONS[0];
+    box.innerHTML = found.explain;
+  }
+
   function updateScopeDropdown() {
     const scopeSel = $("scopeSelect");
     scopeSel.innerHTML = "";
@@ -155,50 +209,54 @@
         })
         .join("");
     }
-    const scopes = dev?.scopes?.length
-      ? dev.scopes
-      : [{ path: "/data/local/tmp/wechat-channels-data", label: "默认数据目录 (wechat-channels-data)", runCount: 0 }];
-    for (const s of scopes) {
+    const counts = dev?.originCounts || { all: 0, remote: 0, manual: 0, cli: 0 };
+    for (const item of ORIGIN_OPTIONS) {
       const opt = document.createElement("option");
-      opt.value = s.path;
-      opt.textContent = `${s.label} (${s.runCount}条)`;
+      opt.value = item.value;
+      const cnt = counts[item.value] ?? 0;
+      opt.textContent = `${item.label} (${cnt}条)`;
       scopeSel.appendChild(opt);
     }
-    // Prefer a scope with runs if default has none
-    if (scopes.some((s) => s.path === state.selectedScope)) {
-      scopeSel.value = state.selectedScope;
-    } else {
-      const best = scopes.find((s) => s.runCount > 0) || scopes[0];
-      state.selectedScope = best.path;
-      scopeSel.value = state.selectedScope;
+    if (!ORIGIN_OPTIONS.some((o) => o.value === state.selectedScope)) {
+      state.selectedScope = "all";
     }
+    scopeSel.value = state.selectedScope;
+    syncSourceTabsUI();
   }
 
   // --- 2. Left Panel: Task Run List ---
   async function loadRuns() {
     const container = $("runListContainer");
+    if (state.sourceFilter === "adb" && !state.selectedSerial) {
+      state.runs = [];
+      $("runCountBadge").textContent = "0 条";
+      container.innerHTML = `<div style="padding:24px;color:var(--text-muted);text-align:center;">当前未连接手机，请连接设备后点击刷新，或切换到「💻 本地离线」查看已保存记录。</div>`;
+      return;
+    }
     try {
       const params = new URLSearchParams({
         source: state.sourceFilter,
         serial: state.selectedSerial || "",
-        scope: state.selectedScope || "/data/local/tmp/wechat-channels-data",
-        limit: "70",
+        scope: state.selectedScope || "all",
+        limit: state.sourceFilter === "adb" ? "40" : "60",
       });
       const data = await apiGet(`/api/runs?${params.toString()}`);
       state.runs = data.runs || [];
       renderRunList();
-      if (!state.activeRunRef && state.runs.length > 0) {
-        const bestInitial =
-          state.runs.find((r) => r.synced && r.snapshotCount > 5) ||
-          state.runs.find((r) => r.synced) ||
-          state.runs[0];
-        if (bestInitial) {
-          selectRun(bestInitial);
-        }
+      if ((!state.activeRunRef || !state.runs.some((r) => r.id === state.activeRunRef)) && state.runs.length > 0) {
+        selectRun(state.runs[0]);
       }
     } catch (err) {
       container.innerHTML = `<div style="padding:16px;color:var(--red);">加载任务列表失败: ${escapeHtml(err.message)}</div>`;
     }
+  }
+
+  function updateActiveRunCard(activeId) {
+    const container = $("runListContainer");
+    if (!container) return;
+    container.querySelectorAll(".run-card").forEach((el) => {
+      el.classList.toggle("active", el.dataset.runId === activeId);
+    });
   }
 
   function renderRunList() {
@@ -207,7 +265,7 @@
     const filtered = state.runs.filter((r) => {
       if (state.outcomeFilter !== "all" && r.outcome !== state.outcomeFilter) return false;
       if (!q) return true;
-      const hay = `${r.runId} ${r.taskTypeCn || ""} ${r.taskType} ${r.summaryMessage || ""} ${r.serial || ""}`.toLowerCase();
+      const hay = `${r.runId} ${r.taskTypeCn || ""} ${r.taskType} ${r.summaryMessage || ""} ${r.originLabel || ""} ${r.serial || ""}`.toLowerCase();
       return hay.includes(q);
     });
 
@@ -222,6 +280,7 @@
     for (const r of filtered) {
       const card = document.createElement("div");
       const isFailed = r.outcome === "failed";
+      card.dataset.runId = r.id;
       card.className = `run-card ${state.activeRunRef === r.id ? "active" : ""} ${isFailed ? "failed-card" : ""}`;
 
       const statusBadge =
@@ -231,14 +290,16 @@
           ? `<span class="badge badge-failed">❌ 失败</span>`
           : `<span class="badge badge-warning">⏳ 执行中/未知</span>`;
 
-      const srcLabel =
-        r.sourceType === "adb"
-          ? `📱 手机 (${r.serial?.slice(-4) || "ADB"})`
-          : `💻 已同步缓存`;
+      const originTitle = r.scopePath
+        ? `${r.originDesc || ""}\n手机目录: ${r.scopePath}`
+        : `${r.originDesc || ""}\n本地路径: ${r.relPath || ""}`;
+      const originPill = `<span class="origin-pill" title="${escapeHtml(originTitle)}">${escapeHtml(
+        r.originLabel || (r.sourceType === "adb" ? "📱 手机任务" : "💻 本地留档")
+      )}</span>`;
 
-      const pullBtn =
-        r.sourceType === "adb" && !r.synced
-          ? `<button class="btn btn-sm btn-primary btn-pull-run" style="padding:2px 8px;">⬇️ 拉取查看</button>`
+      const syncTag =
+        r.sourceType === "adb"
+          ? `<span class="sync-tag ${r.synced ? "" : "unsynced"}">${r.synced ? "● 已缓存" : "○ 点选拉取"}</span>`
           : "";
 
       card.innerHTML = `
@@ -254,49 +315,38 @@
         <div class="run-card-foot">
           <span>${formatTime(r.mtime)} · <b>${r.snapshotCount || 0} 个画面</b></span>
           <div style="display:flex;align-items:center;gap:6px;">
-            <span>${escapeHtml(srcLabel)}</span>
-            ${pullBtn}
+            ${originPill}
+            ${syncTag}
           </div>
         </div>
       `;
 
-      card.addEventListener("click", (ev) => {
-        if (ev.target.closest(".btn-pull-run")) {
-          ev.stopPropagation();
-          pullAndOpenAdbRun(r);
-          return;
-        }
+      card.addEventListener("click", () => {
         selectRun(r);
       });
       container.appendChild(card);
     }
   }
 
-  async function pullAndOpenAdbRun(runItem) {
-    try {
-      showToast(`正在从手机拉取任务记录 (${runItem.runId.slice(0, 8)})...`);
-      const res = await apiPost("/api/runs/sync", {
-        serial: runItem.serial,
-        scopePath: runItem.scopePath,
-        runId: runItem.runId,
-        includeSqlite: true,
-      });
-      runItem.synced = true;
-      state.activeRunRef = res.runRef;
-      state.activeRun = res.run;
-      renderRunList();
-      onRunLoaded(res.run);
-      showToast("拉取完成！");
-    } catch (err) {
-      showToast(`拉取失败: ${err.message}`, 4500);
-    }
-  }
-
   async function selectRun(runItem) {
     try {
       state.activeRunRef = runItem.id;
-      renderRunList();
+      updateActiveRunCard(runItem.id);
+      const needsPull = runItem.sourceType === "adb" && !runItem.synced;
+      if (needsPull) {
+        showToast(`正在从手机拉取任务记录 (${runItem.runId.slice(0, 8)})...`, 2400);
+      }
       const data = await apiGet(`/api/runs/detail?runRef=${encodeURIComponent(runItem.id)}`);
+      if (state.activeRunRef !== runItem.id) return;
+      if (needsPull) {
+        runItem.synced = true;
+        const card = $("runListContainer")?.querySelector(`.run-card[data-run-id="${CSS.escape(runItem.id)}"]`);
+        const tag = card?.querySelector(".sync-tag");
+        if (tag) {
+          tag.classList.remove("unsynced");
+          tag.textContent = "● 已缓存";
+        }
+      }
       state.activeRun = data.run;
       onRunLoaded(data.run);
     } catch (err) {
@@ -570,6 +620,7 @@
     if (!hasSnapshot) {
       state.activeSnapshot = null;
       state.activeFrameImg = null;
+      updateRealFrameToggleButton();
       renderRawLinesTable();
       $("screenStepActionText").textContent = `${snapSummary.titleCn}。此步骤记录执行结果，没有手机画面。`;
       return;
@@ -589,6 +640,7 @@
       };
 
       state.activeFrameImg = null;
+      updateRealFrameToggleButton();
       if (data.snapshot.hasFrame) {
         const frameUrl = `/api/runs/frame?runRef=${encodeURIComponent(
           state.activeRun.runRef || state.activeRunRef
@@ -601,6 +653,14 @@
     } catch (err) {
       showToast(`加载步骤画面失败: ${err.message}`);
     }
+  }
+
+  function updateRealFrameToggleButton() {
+    const btn = $("btnToggleRealFrame");
+    if (!btn) return;
+    const hasFrame = Boolean(state.activeSnapshot?.hasFrame);
+    btn.style.display = hasFrame ? "" : "none";
+    btn.textContent = state.showRealFrame ? "🖼️ 真实截图" : "🧩 控件模拟";
   }
 
   function loadFrameImage(url) {
@@ -656,9 +716,10 @@
     ctx.scale(scale, scale);
 
     const theme = meta.uiTheme || "light";
+    const useRealFrame = Boolean(state.activeFrameImg && state.showRealFrame);
 
     // 1. Draw Realistic Phone Screen Background
-    if (state.activeFrameImg) {
+    if (useRealFrame) {
       ctx.drawImage(state.activeFrameImg, 0, 0, logicalW, logicalH);
     } else if (theme === "dark-video") {
       // Dark Video Player Theme
@@ -706,11 +767,13 @@
       ctx.fillRect(0, logicalH - 130, logicalW, 130);
     }
 
-    // Top Status Bar Mock (`9:41  5G 100%`)
-    ctx.fillStyle = theme === "light" ? "#475569" : "rgba(255,255,255,0.75)";
-    ctx.font = "bold 20px -apple-system, sans-serif";
-    ctx.fillText("9:41", 32, 42);
-    ctx.fillText("5G  100%", logicalW - 135, 42);
+    // Top Status Bar Mock (`9:41  5G 100%`) only on synthetic wireframe, never over real screenshots
+    if (!useRealFrame) {
+      ctx.fillStyle = theme === "light" ? "#475569" : "rgba(255,255,255,0.75)";
+      ctx.font = "bold 20px -apple-system, sans-serif";
+      ctx.fillText("9:41", 32, 42);
+      ctx.fillText("5G  100%", logicalW - 135, 42);
+    }
 
     if (!snap) {
       ctx.fillStyle = "#64748b";
@@ -775,7 +838,7 @@
 
       ctx.save();
       const cardH = Math.max(bh, 32);
-      if (!state.activeFrameImg) {
+      if (!useRealFrame) {
         if (hl) {
           ctx.fillStyle = isDarkBg ? "rgba(22, 163, 74, 0.35)" : "#dcfce7";
           ctx.strokeStyle = "#16a34a";
@@ -1072,9 +1135,8 @@
   function bindEvents() {
     document.querySelectorAll("#sourceFilterTabs .seg-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("#sourceFilterTabs .seg-tab").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
         state.sourceFilter = btn.dataset.source;
+        syncSourceTabsUI();
         loadRuns();
       });
     });
@@ -1087,6 +1149,7 @@
 
     $("scopeSelect").addEventListener("change", (e) => {
       state.selectedScope = e.target.value;
+      updateOriginExplain();
       loadRuns();
     });
 
@@ -1108,6 +1171,15 @@
 
     $("btnLiveProbe").addEventListener("click", handleLiveProbe);
     $("btnPushCode").addEventListener("click", handlePushCode);
+
+    const btnToggleFrame = $("btnToggleRealFrame");
+    if (btnToggleFrame) {
+      btnToggleFrame.addEventListener("click", () => {
+        state.showRealFrame = !state.showRealFrame;
+        updateRealFrameToggleButton();
+        drawCanvas();
+      });
+    }
 
     $("btnPrevStep").addEventListener("click", () => {
       if (state.activeSnapshotIndex > 0) selectSnapshotByIndex(state.activeSnapshotIndex - 1);
@@ -1196,23 +1268,13 @@
 
   async function init() {
     bindEvents();
-    // 1. Immediately render local cached runs in <100ms so the user never waits on ADB
-    try {
-      const fastData = await apiGet("/api/runs?source=local&limit=50");
-      if (fastData.runs?.length) {
-        state.runs = fastData.runs;
-        renderRunList();
-        const bestInitial =
-          state.runs.find((r) => r.synced && r.snapshotCount > 5) ||
-          state.runs[0];
-        if (bestInitial) {
-          selectRun(bestInitial);
-        }
-      }
-    } catch (_) {}
-
-    // 2. Then load connected ADB devices and merge phone runs in the background
+    // Wait for ADB device probe once so the left list renders directly with the true latest runs
+    // instead of flashing local cache and then replacing the entire list mid-click.
     await loadDevices();
+    if (!state.selectedSerial) {
+      state.sourceFilter = "local";
+    }
+    syncSourceTabsUI();
     await loadRuns();
   }
 

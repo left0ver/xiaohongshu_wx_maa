@@ -82,7 +82,7 @@ body {
   border-radius: 6px;
   padding: 5px 8px;
   font-size: 12px;
-  max-width: 210px;
+  max-width: 265px;
   text-overflow: ellipsis;
 }
 
@@ -286,6 +286,39 @@ select:focus, input[type="text"]:focus, textarea:focus {
   background: #ffffff;
   color: var(--primary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.origin-explain-box {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.origin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-page);
+  color: var(--text-secondary);
+}
+
+.sync-tag {
+  font-size: 10.5px;
+  color: var(--green);
+  font-weight: 600;
+}
+
+.sync-tag.unsynced {
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .run-list {

@@ -27,6 +27,7 @@ from tools.debug_console.engine import (  # noqa: E402
     analyze_run,
     capture_live_device_probe,
     discover_local_runs,
+    find_snapshot_frame,
     get_snapshot_detail,
     inspect_sqlite_and_uploads,
     list_adb_devices,
@@ -92,19 +93,28 @@ class DebugConsoleHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/runs":
-                source = q1("source", "all")
+                source = q1("source", "adb")
                 serial = q1("serial")
-                scope = q1("scope", "/data/local/tmp/wechat-channels-data")
-                limit = int(q1("limit", "60") or "60")
+                scope = q1("scope", "all") or "all"
+                limit = int(q1("limit", "40") or "40")
                 runs: list[dict[str, Any]] = []
                 if source in ("all", "adb") and serial:
                     try:
-                        runs.extend(list_device_runs(serial, scope or "/data/local/tmp/wechat-channels-data", limit=limit))
+                        runs.extend(list_device_runs(serial, scope, limit=limit))
                     except Exception as exc:
                         if source == "adb":
                             raise exc
                 if source in ("all", "local"):
-                    runs.extend(discover_local_runs(limit=limit))
+                    local_runs = discover_local_runs(limit=limit)
+                    if source == "all":
+                        seen_ids = {r.get("runId") for r in runs if r.get("runId")}
+                        for lr in local_runs:
+                            if lr.get("runId") not in seen_ids:
+                                runs.append(lr)
+                        runs.sort(key=lambda r: r.get("mtime") or 0, reverse=True)
+                        runs = runs[:limit]
+                    else:
+                        runs.extend(local_runs)
                 self._send_json({"ok": True, "runs": runs})
                 return
 
@@ -144,17 +154,28 @@ class DebugConsoleHandler(BaseHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "Missing runRef or filename"}, HTTPStatus.BAD_REQUEST)
                     return
                 run_dir = resolve_run_directory(run_ref)
-                stem = Path(filename).stem
-                png_path = (run_dir / f"{stem}.png").resolve()
-                npy_path = (run_dir / f"{stem}.npy").resolve()
-                if png_path.is_file():
-                    self._send_bytes(png_path.read_bytes(), "image/png")
+                frame_path = find_snapshot_frame(run_dir, Path(filename).stem)
+                if frame_path is None:
+                    self._send_json(
+                        {"ok": False, "error": "No frame (.jpg/.webp/.png/.npy) available for this snapshot"},
+                        HTTPStatus.NOT_FOUND,
+                    )
                     return
-                if npy_path.is_file():
-                    png_bytes = npy_file_to_png_bytes(npy_path)
+                ext = frame_path.suffix.lower()
+                if ext in (".jpg", ".jpeg"):
+                    self._send_bytes(frame_path.read_bytes(), "image/jpeg")
+                    return
+                if ext == ".webp":
+                    self._send_bytes(frame_path.read_bytes(), "image/webp")
+                    return
+                if ext == ".png":
+                    self._send_bytes(frame_path.read_bytes(), "image/png")
+                    return
+                if ext == ".npy":
+                    png_bytes = npy_file_to_png_bytes(frame_path)
                     self._send_bytes(png_bytes, "image/png")
                     return
-                self._send_json({"ok": False, "error": "No frame (.png or .npy) available for this snapshot"}, HTTPStatus.NOT_FOUND)
+                self._send_json({"ok": False, "error": f"Unsupported frame format: {ext}"}, HTTPStatus.NOT_FOUND)
                 return
 
             if path == "/api/runs/sqlite":
