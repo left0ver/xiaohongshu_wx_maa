@@ -30,7 +30,7 @@ from interactions import (
 LINK_RE = re.compile(r"https://(?:weixin\.qq\.com/sph/[A-Za-z0-9_-]{4,64}|channels\.weixin\.qq\.com/[^\s\"'<>]+)")
 FILE_HELPER = "文件传输助手"
 # Every comment is searched, as far as the drawer scrolls.
-ALL_COMMENT_PAGES = 300
+ALL_COMMENT_PAGES = 500
 TEXT_LIMIT = 500
 DM_SETTLE_SECONDS = 3.0
 DM_RESEND_ATTEMPTS = 3
@@ -602,7 +602,8 @@ def _open_author_profile(ui, lines):
 
 def _locate(ui, quota_store, work_key, nickname, lines):
     located = locate_target_comment(ui, target_spec={"nickname": nickname}, quota_store=quota_store,
-                                    work_key=work_key, exclude_self=True, max_pages=ALL_COMMENT_PAGES, lines=lines)
+                                    work_key=work_key, exclude_self=True, max_pages=ALL_COMMENT_PAGES,
+                                    lines=lines, expand_replies=True)
     if not located["found"]:
         reason = "只找到自己的评论" if located.get("rejectedSelf") else "翻完评论区也没找到"
         raise ValueError(f"评论者「{nickname}」的评论未找到：{reason}")
@@ -652,7 +653,7 @@ def run_link_task(ui, quota_store, ledger, config):
     elif action == "likeComment":
         located = _locate(ui, quota_store, work_key, nickname, lines)
         report["commentLike"] = like_comment(ui, quota_store, work_key, target_comment={"nickname": nickname},
-                                             lines=located["lines"])
+                                             lines=located["lines"], located=located, expand_replies=True)
         if report["commentLike"]["status"] == "target_not_found":
             raise ValueError(f"评论者「{nickname}」的评论未找到")
         report["status"] = "done"
@@ -664,7 +665,8 @@ def run_link_task(ui, quota_store, ledger, config):
             report["status"] = "already_replied"
         else:
             reply = reply_to_comment(ui, quota_store, work_key, text, target_comment={"nickname": nickname},
-                                     lines=located["lines"], max_comment_pages=ALL_COMMENT_PAGES)
+                                     lines=located["lines"], max_comment_pages=ALL_COMMENT_PAGES,
+                                     located=located, expand_replies=True)
             report["reply"] = reply
             if reply["status"] not in ("performed", "already_replied"):
                 raise ValueError(f"回复没有发出：{reply['status']}")

@@ -33,10 +33,12 @@ from collection import (
 )
 from comments import (
     LIKE_BADGE_RE,
+    REPLY_SETTLE_SECONDS,
     clean_comment_nickname,
     nickname_matches,
     parse_comment_drawer,
     parse_wechat_user_card,
+    same_comment,
 )
 from layout import (
     DATE,
@@ -459,6 +461,8 @@ def _confirm_comment_target_roi(
     max_pages=10,
     require_frame=False,
     max_relocates=TARGET_ROI_MAX_RELOCATES,
+    expand_replies=True,
+    parent_hint=None,
 ):
     """Verify the target comment row did not shift between snapshot and click; relocate if it did."""
     current_located = located
@@ -504,6 +508,8 @@ def _confirm_comment_target_roi(
             exclude_self=exclude_self,
             max_pages=max_pages,
             lines=fresh_lines,
+            expand_replies=expand_replies,
+            parent_hint=current_located.get("parentComment") or parent_hint,
         )
     return current_located, None
 
@@ -1031,10 +1037,22 @@ def _comment_matches_spec(comment, target_spec):
     return bool(nick_ok and content_ok and (want_nick or want_content))
 
 
-def _reread_if_scroll_skipped(ui, previous_drawer, lines, work_key, label):
+def _parent_resolver(located):
+    parent = located.get("parentComment") if isinstance(located, dict) else None
+    if not parent:
+        return None
+    return lambda _reply: parent
+
+
+def _reread_if_scroll_skipped(ui, previous_drawer, lines, work_key, label, resolve_parent=None):
     """A scroll that shares no comment with the previous page may have skipped some."""
     previous = [c["nickname"] for c in previous_drawer.get("comments", [])]
-    current = parse_comment_drawer(lines, ui.height, parent_event_id=work_key)
+    current = parse_comment_drawer(
+        lines,
+        ui.height,
+        parent_event_id=work_key,
+        resolve_parent=resolve_parent,
+    )
     # Compare nicknames, not keys: the same comment's body OCR varies between frames.
     if (not previous or not current["comments"] or current.get("empty")
             or any(nickname_matches(a, c["nickname"]) for a in previous for c in current["comments"])
@@ -1054,13 +1072,59 @@ def locate_target_comment(
     exclude_self=False,
     max_pages=10,
     lines=None,
+    expand_replies=True,
+    parent_hint=None,
 ):
-    """Locate a target comment in the comment drawer across up to max_pages."""
+    """Locate a target comment in the comment drawer across up to max_pages, expanding replies."""
     drawer_lines, _ = _open_comment_drawer_if_needed(ui, lines)
     detected_self = self_nickname or ""
     pages_searched = 0
     prev_header_sig = None
     stalled_pages = 0
+    reply_expansions_done = 0
+    stalled_reply_parents = set()
+    seen_comment_keys = set()
+    last_parent = dict(parent_hint) if isinstance(parent_hint, dict) else None
+    known_parents = {}
+    if last_parent and last_parent.get("key"):
+        known_parents[last_parent["key"]] = last_parent
+    known_replies = []
+
+    def _resolve_parent(reply):
+        for known in known_replies:
+            if known.get("parentCommentKey") and same_comment(known, {**reply, "commentLevel": 2}):
+                parent = known_parents.get(known["parentCommentKey"])
+                if parent:
+                    return parent
+        return last_parent
+
+    def _parse(page_lines):
+        return parse_comment_drawer(
+            page_lines,
+            ui.height,
+            parent_event_id=work_key,
+            resolve_parent=_resolve_parent,
+        )
+
+    def _remember_drawer(current_drawer):
+        nonlocal last_parent
+        for item in current_drawer.get("comments", ()):
+            seen_comment_keys.add(item["key"])
+            if item.get("commentLevel", 1) == 1:
+                known_parents[item["key"]] = item
+                last_parent = item
+            else:
+                parent_key = item.get("parentCommentKey")
+                if parent_key and parent_key in known_parents:
+                    last_parent = known_parents[parent_key]
+                if not any(r["key"] == item["key"] for r in known_replies):
+                    known_replies.append(item)
+
+    def _parent_for(comment):
+        if not comment or comment.get("commentLevel", 1) != 2:
+            return None
+        parent_key = comment.get("parentCommentKey")
+        return known_parents.get(parent_key) or last_parent
 
     def _match(current_drawer, current_lines):
         candidates = [
@@ -1078,30 +1142,82 @@ def locate_target_comment(
                 "found": False,
                 "rejectedSelf": True,
                 "comment": candidates[0],
+                "parentComment": _parent_for(candidates[0]),
                 "lines": current_lines,
                 "drawer": current_drawer,
                 "selfNickname": detected_self,
                 "pagesSearched": pages_searched,
+                "replyExpansions": reply_expansions_done,
             }
         chosen = non_self[0] if exclude_self else candidates[0]
         return {
             "found": True,
             "rejectedSelf": False,
             "comment": chosen,
+            "parentComment": _parent_for(chosen),
             "lines": current_lines,
             "drawer": current_drawer,
             "selfNickname": detected_self,
             "pagesSearched": pages_searched,
+            "replyExpansions": reply_expansions_done,
         }
+
+    def _expand_visible_replies(current_drawer, current_lines):
+        nonlocal detected_self, reply_expansions_done
+        drawer_state = current_drawer
+        lines_state = current_lines
+        expanded_here = False
+        while expand_replies:
+            pending = [
+                exp for exp in drawer_state.get("replyExpands", ())
+                if exp["parentKey"] not in stalled_reply_parents
+            ]
+            if not pending:
+                break
+            target_expand = pending[0]
+            parent_key = target_expand["parentKey"]
+            before_keys = {c["key"] for c in drawer_state.get("comments", ())}
+            before_headers = tuple(
+                (h["nickname"], h["date"], h["level"]) for h in drawer_state.get("headers", ())
+            )
+            check_stopped(ui)
+            ui.click(target_expand)
+            reply_expansions_done += 1
+            expanded_here = True
+            time.sleep(REPLY_SETTLE_SECONDS)
+            check_stopped(ui)
+            lines_state = ui.snapshot(f"comments-locate-replies-{reply_expansions_done}")
+            drawer_state = _parse(lines_state)
+            if drawer_state.get("selfNickname"):
+                detected_self = drawer_state["selfNickname"]
+            matched = _match(drawer_state, lines_state)
+            if matched is not None:
+                return drawer_state, lines_state, matched, expanded_here
+            after_headers = tuple(
+                (h["nickname"], h["date"], h["level"]) for h in drawer_state.get("headers", ())
+            )
+            has_new = any(
+                c["key"] not in seen_comment_keys and c["key"] not in before_keys
+                for c in drawer_state.get("comments", ())
+            )
+            _remember_drawer(drawer_state)
+            if not has_new and after_headers == before_headers:
+                stalled_reply_parents.add(parent_key)
+        return drawer_state, lines_state, None, expanded_here
 
     for page_index in range(max(1, max_pages)):
         check_stopped(ui)
         pages_searched = page_index + 1
-        drawer = parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key)
+        drawer = _parse(drawer_lines)
         if drawer.get("selfNickname"):
             detected_self = drawer["selfNickname"]
+        _remember_drawer(drawer)
 
         matched = _match(drawer, drawer_lines)
+        if matched is not None:
+            return matched
+
+        drawer, drawer_lines, matched, expanded_here = _expand_visible_replies(drawer, drawer_lines)
         if matched is not None:
             return matched
 
@@ -1117,17 +1233,24 @@ def locate_target_comment(
             check_stopped(ui)
             time.sleep(0.8)
             drawer_lines = ui.snapshot(f"comments-locate-bottom-{page_index + 1}")
-            drawer = parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key)
+            drawer = _parse(drawer_lines)
             if drawer.get("selfNickname"):
                 detected_self = drawer["selfNickname"]
+            _remember_drawer(drawer)
             matched = _match(drawer, drawer_lines)
             if matched is not None:
                 return matched
+            drawer, drawer_lines, matched, bottom_expanded = _expand_visible_replies(drawer, drawer_lines)
+            if matched is not None:
+                return matched
+            expanded_here = expanded_here or bottom_expanded
             if drawer.get("canScrollForward") is False or drawer.get("footerReached") or drawer.get("empty"):
                 break
 
         header_sig = tuple((h["nickname"], h["date"], h["level"]) for h in drawer.get("headers", []))
-        if drawer.get("canScrollForward") is None and header_sig and header_sig == prev_header_sig:
+        if expanded_here:
+            stalled_pages = 0
+        elif drawer.get("canScrollForward") is None and header_sig and header_sig == prev_header_sig:
             stalled_pages += 1
             if stalled_pages >= 2:
                 break
@@ -1138,16 +1261,25 @@ def locate_target_comment(
         check_stopped(ui)
         ui.scroll_comments(drawer_lines)
         drawer_lines = ui.snapshot(f"comments-locate-{page_index + 2}")
-        drawer_lines = _reread_if_scroll_skipped(ui, drawer, drawer_lines, work_key, f"comments-locate-{page_index + 2}-back")
+        drawer_lines = _reread_if_scroll_skipped(
+            ui,
+            drawer,
+            drawer_lines,
+            work_key,
+            f"comments-locate-{page_index + 2}-back",
+            resolve_parent=_resolve_parent,
+        )
 
     return {
         "found": False,
         "rejectedSelf": False,
         "comment": None,
+        "parentComment": None,
         "lines": drawer_lines,
-        "drawer": parse_comment_drawer(drawer_lines, ui.height, parent_event_id=work_key),
+        "drawer": _parse(drawer_lines),
         "selfNickname": detected_self,
         "pagesSearched": pages_searched,
+        "replyExpansions": reply_expansions_done,
     }
 
 
@@ -1169,18 +1301,28 @@ def comment_like_state(comment, frame, quota_store=None, work_key=""):
     }
 
 
-def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
+def like_comment(
+    ui,
+    quota_store,
+    work_key,
+    target_comment=None,
+    lines=None,
+    located=None,
+    expand_replies=True,
+):
     """Like a specific comment in the drawer with anti-unlike and red/badge verification."""
     check_stopped(ui)
     exclude_self = not bool(isinstance(target_comment, dict) and target_comment.get("allowSelf"))
-    located = locate_target_comment(
-        ui,
-        target_spec=target_comment,
-        quota_store=quota_store,
-        work_key=work_key,
-        exclude_self=exclude_self,
-        lines=lines,
-    )
+    if located is None:
+        located = locate_target_comment(
+            ui,
+            target_spec=target_comment,
+            quota_store=quota_store,
+            work_key=work_key,
+            exclude_self=exclude_self,
+            lines=lines,
+            expand_replies=expand_replies,
+        )
     if not located["found"] or not located["comment"]:
         return {
             "action": "comment_like",
@@ -1199,6 +1341,8 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
         exclude_self=exclude_self,
         box_fn=lambda c: c.get("_likeBox"),
         require_frame=True,
+        expand_replies=expand_replies,
+        parent_hint=located.get("parentComment"),
     )
     if not located["found"] or not located["comment"]:
         return {
@@ -1235,9 +1379,15 @@ def like_comment(ui, quota_store, work_key, target_comment=None, lines=None):
     # so the state is read where the fresh page puts them, not at the old box.
     updated = None
     after_frame = None
+    parent_resolver = _parent_resolver(located)
     for attempt in range(2):
         after_lines = ui.snapshot("comments-after-like")
-        after_drawer = parse_comment_drawer(after_lines, ui.height, parent_event_id=work_key)
+        after_drawer = parse_comment_drawer(
+            after_lines,
+            ui.height,
+            parent_event_id=work_key,
+            resolve_parent=parent_resolver,
+        )
         updated = next(
             (
                 c
@@ -1300,6 +1450,8 @@ def reply_to_comment(
     self_nickname="",
     lines=None,
     max_comment_pages=10,
+    located=None,
+    expand_replies=True,
 ):
     """Reply to a target comment with 3-layer self-comment protection."""
     check_stopped(ui)
@@ -1307,16 +1459,18 @@ def reply_to_comment(
     if not text:
         raise ValueError("reply_text must not be empty")
 
-    located = locate_target_comment(
-        ui,
-        target_spec=target_comment,
-        self_nickname=self_nickname,
-        quota_store=quota_store,
-        work_key=work_key,
-        exclude_self=True,
-        lines=lines,
-        max_pages=max_comment_pages,
-    )
+    if located is None:
+        located = locate_target_comment(
+            ui,
+            target_spec=target_comment,
+            self_nickname=self_nickname,
+            quota_store=quota_store,
+            work_key=work_key,
+            exclude_self=True,
+            lines=lines,
+            max_pages=max_comment_pages,
+            expand_replies=expand_replies,
+        )
     if located.get("rejectedSelf"):
         self_c = located.get("comment") or {}
         return {
@@ -1377,6 +1531,8 @@ def reply_to_comment(
         self_nickname=detected_self,
         max_pages=max_comment_pages,
         require_frame=False,
+        expand_replies=expand_replies,
+        parent_hint=located.get("parentComment"),
     )
     if located.get("rejectedSelf"):
         self_c = located.get("comment") or {}
@@ -1443,7 +1599,12 @@ def reply_to_comment(
     ui.click(send_btn)
 
     after_lines = ui.snapshot("comments-after-reply")
-    after_drawer = parse_comment_drawer(after_lines, ui.height, parent_event_id=work_key)
+    after_drawer = parse_comment_drawer(
+        after_lines,
+        ui.height,
+        parent_event_id=work_key,
+        resolve_parent=_parent_resolver(located),
+    )
     detected_self = after_drawer.get("selfNickname") or detected_self
 
     posted_reply = next(

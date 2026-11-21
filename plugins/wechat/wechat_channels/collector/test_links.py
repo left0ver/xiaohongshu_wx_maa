@@ -8,7 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from hierarchy import text_lines
 from links import (
+    ALL_COMMENT_PAGES,
     LinkLedger,
+    _locate,
     open_file_helper,
     private_message_state,
     require_private_message_available,
@@ -262,6 +264,18 @@ class OpenFileHelperRecoveryTests(unittest.TestCase):
         self.assertTrue(any(l["selector"]["class"].endswith("EditText") for l in chat))
         self.assertEqual(ui.backs, 1)
         self.assertEqual(ui.clicks, ["搜索", "搜索", "文件传输助手"])
+
+    def test_locate_uses_500_pages_and_expands_replies(self):
+        from unittest.mock import patch
+
+        self.assertEqual(ALL_COMMENT_PAGES, 500)
+        expected = {"found": True, "comment": {"nickname": "爱吃汉堡🍔的…"}, "lines": []}
+        with patch("links.locate_target_comment", return_value=expected) as mock_locate:
+            got = _locate(object(), None, "wxch-video:1", "爱吃汉堡🍔的…", [])
+        self.assertIs(got, expected)
+        _, kwargs = mock_locate.call_args
+        self.assertEqual(kwargs["max_pages"], 500)
+        self.assertTrue(kwargs["expand_replies"])
 
 
 if __name__ == "__main__":

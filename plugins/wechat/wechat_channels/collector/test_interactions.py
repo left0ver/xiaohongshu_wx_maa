@@ -1102,7 +1102,7 @@ class WechatInteractionsTests(unittest.TestCase):
             missing = locate_target_comment(
                 ui,
                 target_spec={"nickname": "不存在的评论者"},
-                max_pages=300,
+                max_pages=500,
                 lines=page(["林间微风", "星河长明"], can_scroll_forward=True),
             )
         self.assertFalse(missing["found"])
@@ -1118,7 +1118,7 @@ class WechatInteractionsTests(unittest.TestCase):
             found = locate_target_comment(
                 ui_lazy,
                 target_spec={"nickname": "目标评论者"},
-                max_pages=300,
+                max_pages=500,
                 lines=page(["林间微风", "星河长明"], can_scroll_forward=False),
             )
         self.assertTrue(found["found"])
@@ -1298,6 +1298,221 @@ class WechatInteractionsTests(unittest.TestCase):
                 ("snapshot", "personal-page"),
             ],
         )
+
+    def test_locate_target_comment_expands_collapsed_replies_to_find_level2_comment(self):
+        collapsed_page = [
+            {"text": "评论 3281", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "展开5条回复", "box": [155, 642, 160, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        expanded_page = [
+            {"text": "评论 3281", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "爱吃汉堡🍔的… 广东 10月26日", "box": [155, 650, 260, 28]},
+            {"text": "这咖啡机叫啥啊", "box": [155, 688, 200, 28]},
+            {"text": "1凸", "box": [645, 650, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        ui = FakeUi([expanded_page])
+        with mock.patch("interactions.time.sleep"):
+            found = locate_target_comment(
+                ui,
+                target_spec={"nickname": "爱吃汉堡🍔的…"},
+                work_key="wxch-video:coffee",
+                max_pages=500,
+                lines=collapsed_page,
+            )
+        self.assertTrue(found["found"])
+        self.assertEqual(found["comment"]["commentLevel"], 2)
+        self.assertEqual(found["comment"]["nickname"], "爱吃汉堡🍔的...")
+        self.assertEqual(found["parentComment"]["nickname"], "白日梦有多蓝")
+        self.assertEqual(found["replyExpansions"], 1)
+        self.assertEqual(ui.comment_scrolls, 0)
+        self.assertEqual(len(ui.clicks), 1)
+        self.assertEqual(ui.clicks[0]["box"], [155, 642, 160, 28])
+
+    def test_locate_and_like_level2_reply_after_parent_scrolls_off_screen(self):
+        store = DailyQuotaStore(self.quota_path)
+        page1_collapsed = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "展开8条回复", "box": [155, 642, 160, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        page1_expanded = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "大榕树 江苏 10月25日", "box": [155, 650, 240, 28]},
+            {"text": "讲究", "box": [155, 688, 120, 28]},
+            {"text": "1凸", "box": [645, 650, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        # Page 2 starts with level-2 replies whose parent 白日梦有多蓝 scrolled off the top.
+        page2_scrolled = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": False},
+            {"text": "大榕树 江苏 10月25日", "box": [155, 560, 240, 28]},
+            {"text": "讲究", "box": [155, 598, 120, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "爱吃汉堡🍔的… 广东 10月26日", "box": [155, 680, 260, 28]},
+            {"text": "这咖啡机叫啥啊", "box": [155, 718, 200, 28]},
+            {"text": "1凸", "box": [645, 680, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        page2_liked = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": False},
+            {"text": "大榕树 江苏 10月25日", "box": [155, 560, 240, 28]},
+            {"text": "讲究", "box": [155, 598, 120, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "爱吃汉堡🍔的… 广东 10月26日", "box": [155, 680, 260, 28]},
+            {"text": "这咖啡机叫啥啊", "box": [155, 718, 200, 28]},
+            {"text": "2凸", "box": [565, 680, 44, 28]},
+            {"text": "推荐♡", "box": [625, 680, 62, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        ui = FakeUi([page1_expanded, page2_scrolled, page2_liked])
+        with mock.patch("interactions.time.sleep"):
+            located = locate_target_comment(
+                ui,
+                target_spec={"nickname": "爱吃汉堡🍔的…"},
+                work_key="wxch-video:coffee",
+                max_pages=500,
+                lines=page1_collapsed,
+            )
+            self.assertTrue(located["found"])
+            self.assertEqual(located["pagesSearched"], 2)
+            self.assertEqual(located["parentComment"]["nickname"], "白日梦有多蓝")
+            liked = like_comment(
+                ui,
+                store,
+                "wxch-video:coffee",
+                target_comment={"nickname": "爱吃汉堡🍔的…"},
+                lines=located["lines"],
+                located=located,
+            )
+        self.assertEqual(liked["status"], "performed")
+        self.assertEqual(liked["afterCount"], 2)
+
+    def test_locate_target_comment_marks_stalled_reply_expand_and_keeps_scrolling(self):
+        page1 = [
+            {"text": "评论 10", "box": [100, 440, 100, 32], "canScrollForward": True},
+            {"text": "林间微风 广东 1小时前", "box": [98, 560, 220, 28]},
+            {"text": "第一条评论", "box": [98, 598, 180, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "展开3条回复", "box": [155, 642, 160, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        page2 = [
+            {"text": "评论 10", "box": [100, 440, 100, 32], "canScrollForward": False},
+            {"text": "林间微风 广东 1小时前", "box": [98, 560, 220, 28]},
+            {"text": "第一条评论", "box": [98, 598, 180, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "远山如黛 浙江 30分钟前", "box": [98, 690, 220, 28]},
+            {"text": "终于找到了", "box": [98, 728, 180, 28]},
+            {"text": "1凸", "box": [645, 690, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        # Clicking 展开3条回复 returns the identical page (stalled), so locate stops clicking it and scrolls to page2.
+        ui = FakeUi([page1, page2])
+        with mock.patch("interactions.time.sleep"):
+            found = locate_target_comment(
+                ui,
+                target_spec={"nickname": "远山如黛"},
+                max_pages=500,
+                lines=page1,
+            )
+        self.assertTrue(found["found"])
+        self.assertEqual(found["comment"]["nickname"], "远山如黛")
+        self.assertEqual(found["replyExpansions"], 1)
+        self.assertEqual(ui.comment_scrolls, 1)
+
+    def test_locate_target_comment_does_not_expand_when_target_already_visible(self):
+        page1 = [
+            {"text": "评论 10", "box": [100, 440, 100, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 1小时前", "box": [98, 560, 260, 28]},
+            {"text": "第一条评论", "box": [98, 598, 180, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "展开5条回复", "box": [155, 642, 160, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        ui = FakeUi([])
+        found = locate_target_comment(
+            ui,
+            target_spec={"nickname": "白日梦有多蓝"},
+            max_pages=500,
+            lines=page1,
+        )
+        self.assertTrue(found["found"])
+        self.assertEqual(found["replyExpansions"], 0)
+        self.assertEqual(ui.clicks, [])
+
+    def test_reply_to_level2_comment_after_parent_scrolls_off_screen(self):
+        store = DailyQuotaStore(self.quota_path)
+        page1_collapsed = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "展开8条回复", "box": [155, 642, 160, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        page1_expanded = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": True},
+            {"text": "白日梦有多蓝 广东 10月25日", "box": [98, 560, 260, 28]},
+            {"text": "看似随意的流水线", "box": [98, 598, 240, 28]},
+            {"text": "12凸", "box": [645, 560, 44, 28]},
+            {"text": "大榕树 江苏 10月25日", "box": [155, 650, 240, 28]},
+            {"text": "讲究", "box": [155, 688, 120, 28]},
+            {"text": "1凸", "box": [645, 650, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        page2_scrolled = [
+            {"text": "评论 100", "box": [100, 440, 120, 32], "canScrollForward": False},
+            {"text": "大榕树 江苏 10月25日", "box": [155, 560, 240, 28]},
+            {"text": "讲究", "box": [155, 598, 120, 28]},
+            {"text": "1凸", "box": [645, 560, 40, 28]},
+            {"text": "爱吃汉堡🍔的… 广东 10月26日", "box": [155, 680, 260, 28]},
+            {"text": "这咖啡机叫啥啊", "box": [155, 718, 200, 28]},
+            {"text": "1凸", "box": [645, 680, 40, 28]},
+            {"text": "AI吕哥说 发表评论：", "box": [95, 1525, 220, 32]},
+        ]
+        composer = [
+            {"text": "回复 爱吃汉堡🍔的…：", "box": [95, 980, 300, 36]},
+            {"text": "回复", "box": [600, 980, 90, 42]},
+        ]
+        after_reply = page2_scrolled + [
+            {"text": "AI吕哥说 我 刚刚", "box": [155, 780, 240, 28]},
+            {"text": "回复 爱吃汉堡🍔的…：同款很好用", "box": [155, 818, 360, 28]},
+        ]
+        ui = FakeUi([page1_expanded, page2_scrolled, composer, composer, after_reply])
+        with mock.patch("interactions.time.sleep"):
+            located = locate_target_comment(
+                ui,
+                target_spec={"nickname": "爱吃汉堡🍔的…"},
+                work_key="wxch-video:coffee",
+                max_pages=500,
+                lines=page1_collapsed,
+            )
+            replied = reply_to_comment(
+                ui,
+                store,
+                "wxch-video:coffee",
+                "同款很好用",
+                target_comment={"nickname": "爱吃汉堡🍔的…"},
+                lines=located["lines"],
+                max_comment_pages=500,
+                located=located,
+            )
+        self.assertEqual(replied["status"], "performed")
+        self.assertIsNotNone(replied["postedReplyKey"])
 
 
 if __name__ == "__main__":
