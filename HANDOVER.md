@@ -2,7 +2,8 @@
 
 > **交接更新日期**：2026-11-21  
 > **关联服务端仓库**：`laike-service`（Java 25 + Spring Boot 4.1 + MySQL + Redis）  
-> **说明**：本文档已整合项目架构、手机端核心机制、与 `laike-service` 的联动与数据库查询、完整任务下发与数据拉取接口规范、开发调试与打包签名、日常排障以及新机型适配指南，单文件即可覆盖全部维护所需信息。
+> **关联上游业务中台**：`middleplatform`（`middleplatform-backend`：Java 21 + Spring Boot 3.4.4 + MyBatis-Plus + MySQL + Redis；`middleplatform-frontend`：Vue 3 + Vite + Element Plus）  
+> **说明**：本文档已整合项目架构、手机端核心机制、与 `laike-service` 的联动与数据库查询、上游业务中台（`middleplatform`）的视频号接入与维护、完整任务下发与数据拉取接口规范、开发调试与打包签名、日常排障以及新机型适配指南，单文件即可覆盖全部维护所需信息。
 
 ---
 
@@ -12,13 +13,15 @@
 
 - **核心能力**：已完整实现 9 类云端任务（推荐/搜索采集、7 类指定链接互动、消息巡检）、三层无硬编码 ID 控件优先识别、实时流式上报、断网补传与 Release APK 自动签名发布。
 - **服务端集成**：通过 `patches/wechat-remote-host.patch` + `plugins/wechat/host/` 与 **`laike-service`** 深度联动（授权绑定、WebSocket 长连接任务下发与事件上报、状态回调、OTA 更新、诊断日志）。
+- **业务中台集成**：上游运营中台 **`middleplatform`**（「来客(企业版2.0)」，含前后端两仓）已完成视频号接入，支持多平台工作台切换（`X-Content-Platform: WECHAT`）、数据海视频库与公海资源池同步、采集/触达/消息巡检任务下发、30 秒状态轮询与 `STOP` 实时中止。
 
 ### 端到端系统架构
 
 ```mermaid
 flowchart LR
-    Caller["外部调用方 / 业务中台 / 管理后台"] -->|"HTTP X-API-Key\nPOST /api/v1/external/tasks\nGET /api/v1/external/content-events"| Server["laike-service\n(Java 25 / Spring Boot / MySQL / Redis)"]
-    Server -->|"HTTP POST 异步状态回调\n(callbackUrl)"| Caller
+    MiddleFE["业务中台前端\nmiddleplatform-frontend\n(Vue 3 / Element Plus)"] -->|"HTTPS + X-Content-Platform: WECHAT\n/api/operations/wechat-collections\n/api/operations/wechat-outreach"| MiddleBE["业务中台后端\nmiddleplatform-backend\n(Spring Boot 3.4 / MySQL / Redis)"]
+    MiddleBE -->|"HTTP X-API-Key\nPOST /api/v1/external/tasks\nGET /api/v1/external/tasks/{id}\nGET /api/v1/external/content-events/stream & /changes"| Server["laike-service\n(Java 25 / Spring Boot 4.1 / MySQL / Redis)"]
+    Server -->|"HTTP POST 异步状态回调\n(callbackUrl，可选)"| MiddleBE
 
     Server <-->|"WSS /ws/telemetry\n15s 心跳 + 任务推送 + 实时事件上报 + ACK"| AndroidSvc["Android 宿主 App\nWechatRemoteService.kt\n(前台服务 / Keystore 加密)"]
     AndroidSvc -->|"HTTPS\n/api/v1/licenses/verify\n/api/v1/client/status\n/api/v1/client/diagnostics"| Server
@@ -257,11 +260,143 @@ LIMIT 20;
 
 ---
 
-## 5. 任务下发、回调与数据采集完整接口规范（`laike-service`）
+## 5. 上游业务中台（`middleplatform`）视频号接入与维护
+
+`laike-service` 上游的运营业务中台（「**来客(企业版2.0)**」）位于同级目录 `/Users/leftover/Desktop/company-project/middleplatform`，由前后端两个独立仓库组成，已完整接入微信视频号的数据海同步、公海资源池、多平台工作台采集/触达任务下发与运行中任务中止。
+
+### 5.1 仓库组成、技术栈与环境配置
+
+- **后端仓库**：`middleplatform-backend`（`com.xinglian:operation-platform`，Java 21、Spring Boot 3.4.4、MyBatis-Plus 3.5.11、Dynamic-Datasource、MySQL、Redis）。
+- **前端仓库**：`middleplatform-frontend`（`operation-platform-web`，Vue 3、Vite、Vue Router、Element Plus、Axios）。
+- **双环境隔离**：后端未指定 `SPRING_PROFILES_ACTIVE` 时默认 `test`；正式环境必须显式指定 `prod`。
+
+| 环境 | 后端 Profile / 端口 | MySQL 主库 | Redis 库 / 前缀 | 前端访问前缀 & API 基址 | 后端重启脚本 / 前端构建命令 |
+| --- | --- | --- | --- | --- | --- |
+| 测试环境 | `test`（默认） / `10081` | `slogan_tzt` | DB `1` / `xl:tzt` | `/tzt/` → `https://api.joyfile.net/tzt/api` | `deploy/restart-tzt.sh`（默认 `/data/backend/test/zt`）<br>`npm run build:tzt`（输出 `dist-tzt/`） |
+| 正式环境 | `prod` / `10080` | `slogan` | DB `0` / `xl` | `/zt/` → `https://api.joyfile.net/mp/api` | `restart.sh`<br>`npm run build`（输出 `dist/`） |
+
+**与 `laike-service` 的两处关键联动配置**：
+1. **全局采集数据流同步**：在数据库 `t_xl_content_sync_config`（`source_code = 'laike-content-stream'`）或环境变量 `LAIKE_CONTENT_STREAM_URL` / `LAIKE_CONTENT_API_KEY` 中配置 `laike-service` 的 `GET /api/v1/external/content-events/stream` 地址与 `X-API-Key`；变更流地址由 `LaikeContentEventClient.changeStreamUrl()` 自动将末尾 `/stream` 推导为 `/changes`；默认每 `5000ms` 轮询一次（`LAIKE_CONTENT_SYNC_INTERVAL_MS`）。未配置时同步器自动停用。
+2. **设备与任务下发连接**：中台通过 `t_xl_reply_dispatch_config`（`status = 1`）维护指向 `laike-service` 的任务下发地址与 `X-API-Key`，并在 `t_xl_device` 中将设备授权码（`device_no` = `laike-service` 的 `licenseKey`）绑定到对应的 `dispatch_config_id` 与所属项目 `project_id`。
+
+### 5.2 视频号核心业务闭环
+
+1. **多平台上下文隔离（`PlatformContext`）**：
+   - 前端左侧平台切换器选择「视频号」后，请求头携带 `X-Content-Platform: WECHAT`（后端 `PlatformContext.normalize()` 会将 `WX`/`WEIXIN`/`WECHAT_CHANNELS`/`SHIPINHAO`/`视频号` 统一归一化为 `WECHAT`）。
+   - 调用 `/api/operations/wechat-collections/**` 与 `/api/operations/wechat-outreach/**` 时，后端强制校验当前平台上下文为 `WECHAT` 且账号具备相应菜单权限与写权限（`ADMIN`、`BASE_ADMIN`、`OPERATOR`）。
+2. **数据海同步与公海资源池入库（`ContentEventSyncService`）**：
+   - 定时从 `laike-service` 拉取 `/content-events/stream` 与 `/content-events/changes`，同步进度记录在 `t_xl_content_sync_cursor`。
+   - 对 `payload.platform == "wechat"` 的事件自动映射为中台平台 `WECHAT`：
+     - **`VIDEO`**：写入 `t_xl_content_video`、视频库 `t_xl_video_library`，并同步进入公海视频池 `t_xl_phone_resource_video`。
+     - **`COMMENT`**：写入 `t_xl_content_comment`，并同步进入公海评论池 `t_xl_phone_resource_comment`（前端视频库展示「手机端同步入公海 / 已入公海 N 条评论」）。
+     - **`USER`**：写入 `t_xl_content_user`，并自动将解析到的评论者视频号 ID（`authorWechatChannelsId` / `wechatChannelsId`）与画像快照回填到 `t_xl_content_comment` 和公海评论池 `t_xl_phone_resource_comment`。
+3. **视频号采集任务下发与中止（`WechatCollectionService`）**：
+   - 接口前缀：`/api/operations/wechat-collections`（`GET /devices`、`GET /`、`POST /submit`、`POST /{id}/retry`、`POST /{id}/refresh`、`POST /{id}/stop`）。
+   - 执行链路：前端携带幂等 `requestKey` 提交 → 校验参数（`entry`: `recommend`/`search`、`count`: `1~500`、`maxComments`: `1~1000`）并先落库草稿 `t_xl_wechat_collection_task` → 实时调用 `DeviceLicenseValidationClient` 校验设备在线及客户端为 `WECHAT_CHANNELS` 或具备 `WECHAT_CHANNELS_TASK` 能力 → 通过 `HttpLaikeAssistantClient.dispatchWechatTask()` 向 `laike-service` 下发 `WECHAT_CHANNELS_TASK`（`task = collect_channels`）。
+   - 状态轮询与中止：后台 `@Scheduled(fixedDelay = 30000)` 定时调用 `GET /api/v1/external/tasks/{taskId}` 刷新状态；对 `SUBMITTED`/`RUNNING` 状态任务点击「停止」会调用 `stopWechatTask()` 向 `laike-service` 下发 `commandType = STOP`。
+4. **视频号触达与消息巡检任务下发与中止（`WechatOutreachService`）**：
+   - 接口前缀：`/api/operations/wechat-outreach`（`GET /devices`、`GET /videos/{libraryId}/comments`、`GET /`、`POST /submit`、`POST /{id}/retry`、`POST /{id}/refresh`、`POST /{id}/stop`）。
+   - 支持 8 类动作（全部通过 `WECHAT_CHANNELS_TASK` 下发）：
+     - 作品互动：`link_like_video`、`link_follow_author`、`link_comment_video`
+     - 评论者触达：`link_like_comment`、`link_reply_comment`
+     - 私信触达：`link_message_author`、`link_message_commenter`
+     - 消息巡检：`inspect_messages`
+   - 链接类动作强制校验分享链接为 `https://weixin.qq.com/sph/...` 或 `https://channels.weixin.qq.com/...`；支持从数据海视频行一键加载已采集评论并点选目标评论者；支持 30 秒状态轮询、手动刷新、失败重试与 `STOP` 中止；任务记录存放在 `t_xl_wechat_outreach_task`。
+
+### 5.3 中台核心代码索引（涉及视频号改动时同步修改）
+
+#### 后端（`middleplatform-backend`，包前缀 `com.xinglian.platform`）
+
+| 文件 | 负责内容 |
+| --- | --- |
+| `controller.WechatCollectionController` | 视频号采集任务 API（`/api/operations/wechat-collections/**`）与平台/菜单权限校验 |
+| `controller.WechatOutreachController` | 视频号触达/私信/消息巡检 API（`/api/operations/wechat-outreach/**`）与已采评论查询 |
+| `service.WechatCollectionService` | 采集草稿幂等落库、设备在线与能力校验、下发 `collect_channels`、30s 状态轮询与 `STOP` 中止 |
+| `service.WechatOutreachService` | 8 类触达/巡检动作校验、分享链接合法性校验、下发/重试/轮询与 `STOP` 中止 |
+| `service.ContentEventSyncService` | 定时拉取 `laike-service` 增量流/变更流，将视频号 `VIDEO`/`COMMENT`/`USER` 同步至视频库与公海资源池 |
+| `service.PublicCommentPoolService` / `PhoneVideoResourceStore` | 数据海公海视频/评论池存储、视频号评论作者 ID 回填与查询 |
+| `integration.HttpLaikeAssistantClient` | 调用 `laike-service` 的 `dispatchWechatTask`（`WECHAT_CHANNELS_TASK`）、`stopWechatTask`（`STOP`）与 `queryTask` |
+| `integration.LaikeContentEventClient` | 拉取 `laike-service` 的 `/content-events/stream` 与自动推导 `/content-events/changes` |
+| `common.PlatformContext` | 多平台请求头 `X-Content-Platform` 解析与 `WECHAT` 平台归一化 |
+| `config.WechatCollectionInitializer` / `WechatOutreachInitializer` | 启动时自动建表/建索引并恢复异常中断的 `SUBMITTING` 记录 |
+| `mapper/schema/WechatCollectionMapper.xml` / `WechatOutreachMapper.xml` | `t_xl_wechat_collection_task` 与 `t_xl_wechat_outreach_task` 建表定义 |
+
+#### 前端（`middleplatform-frontend`）
+
+| 文件 | 负责内容 |
+| --- | --- |
+| `src/platform.js` | 左侧平台切换状态（`activePlatform`）、视频号允许路由放行规则 |
+| `src/components/PlatformTaskView.vue` & `src/router.js` | 当 `activePlatform === 'WECHAT'` 时，将 3 个菜单路由无缝切换到视频号工作台：<br>• `/video-discovery`（`category='search'`）→ 视频号采集工作台<br>• `/precision-outreach`（`category='outreach'`）→ 视频号精准触达工作台<br>• `/private-message-plans`（`category='messages'`）→ 视频号私信与消息巡检工作台 |
+| `src/components/WechatWorkbench.vue` | 视频号统一工作台（设备筛选、新建采集/触达/巡检弹窗、任务分页、手动刷新、失败重试、运行中/排队中任务「停止」） |
+| `src/views/VideoLibrary.vue` | 数据海视频库：展示视频号「手机端同步入公海 / 已入公海 N 条评论」，并提供快捷入口打开采集/触达抽屉 |
+| `src/components/WechatCollectionDrawer.vue` / `WechatOutreachDrawer.vue` | 视频库内嵌的视频号采集抽屉与触达抽屉（支持点选视频下已采评论直接发起回复/点赞/私信） |
+| `src/components/PublicVideoResources.vue` | 数据海公海资源池：监听 `activePlatform` 切换，适配视频号公海视频与评论展示 |
+
+### 5.4 中台关键数据库表与常用排查 SQL
+
+连接中台 MySQL（测试库 `slogan_tzt` / 正式库 `slogan`）可核对同步进度、任务状态与公海入库情况：
+
+| 表名 | 用途 |
+| --- | --- |
+| `t_xl_content_sync_config` | 来客内容流同步开关、拉取 URL（`source_code = 'laike-content-stream'`）、`api_key` 与轮询间隔 |
+| `t_xl_content_sync_cursor` | `/stream` 与 `/changes` 同步游标、最近成功时间 `last_success_at` 与报错 `last_error` |
+| `t_xl_reply_dispatch_config` | 指向 `laike-service` 的外部任务下发基址与 `X-API-Key` 配置（`status = 1` 启用） |
+| `t_xl_device` | 中台纳管设备表（`device_no` 即授权码、`dispatch_config_id`、`project_id`、`current_client_app`、`status`） |
+| `t_xl_wechat_collection_task` | 中台发起的视频号采集任务记录（`state`、`external_task_id`、`result_message` 等） |
+| `t_xl_wechat_outreach_task` | 中台发起的视频号触达与消息巡检任务记录（`task_type`、`target_link`、`state`、`external_task_id` 等） |
+| `t_xl_content_video` / `t_xl_content_comment` / `t_xl_content_user` | 从 `laike-service` 同步落库的内容原始明细表（视频号 `platform = 'WECHAT'`） |
+| `t_xl_video_library` | 数据海视频库主表（视频号 `platform = 'WECHAT'`） |
+| `t_xl_phone_resource_video` / `t_xl_phone_resource_comment` | 数据海公海视频与公海评论池（视频号视频与评论自动汇入） |
+
+```sql
+-- 1. 检查中台拉取 laike-service 内容流的游标与最近错误
+SELECT source_code, cursor_value, last_success_at, last_error, updated_at
+FROM t_xl_content_sync_cursor
+ORDER BY updated_at DESC;
+
+-- 2. 查看最近视频号采集与触达任务状态
+SELECT id, device_name, license_key, entry, keyword, video_count, state, external_task_id, result_message, submitted_at, completed_at
+FROM t_xl_wechat_collection_task
+ORDER BY id DESC
+LIMIT 20;
+
+SELECT id, device_name, license_key, task_type, target_nickname, state, external_task_id, result_message, submitted_at, completed_at
+FROM t_xl_wechat_outreach_task
+ORDER BY id DESC
+LIMIT 20;
+
+-- 3. 核对视频号同步到数据海视频库与公海池的数据量
+SELECT 'video_library' AS target, COUNT(*) AS cnt FROM t_xl_video_library WHERE platform = 'WECHAT'
+UNION ALL
+SELECT 'public_videos' AS target, COUNT(*) AS cnt FROM t_xl_phone_resource_video WHERE platform = 'WECHAT'
+UNION ALL
+SELECT 'public_comments' AS target, COUNT(*) AS cnt FROM t_xl_phone_resource_comment WHERE platform = 'WECHAT';
+```
+
+### 5.5 中台测试、构建与分支状态
+
+```bash
+# 1. 后端单元测试（含视频号采集/触达、内容流同步与公海入库单测）与打包
+cd /Users/leftover/Desktop/company-project/middleplatform/middleplatform-backend
+mvn test -Dtest=WechatCollectionServiceTest,WechatOutreachServiceTest,ContentEventSyncServiceTest,LaikeContentEventClientTest,PhoneVideoResourceTest,PublicCommentPoolTest
+mvn clean package -DskipTests
+
+# 2. 前端组件单测与多环境构建
+cd /Users/leftover/Desktop/company-project/middleplatform/middleplatform-frontend
+npm test
+npm run build:tzt   # 测试环境（/tzt/）
+npm run build       # 正式环境（/zt/）
+```
+
+> **分支提醒**：前后端视频号首期接入（`feat/wechat-channels-20261120`）与二期公海接入+中止任务（`feat/wechat-channels-stop-and-pool-20261121`）均已合并至远端 `origin/main`；接手维护前请先拉取两仓最新 `origin/main`。
+
+---
+
+## 6. 任务下发、回调与数据采集完整接口规范（`laike-service`）
 
 本节完整定义外部业务系统 / 中台通过 `laike-service` 调用微信视频号能力的所有接口，并附手机端内部通信协议。下文所有接口路径均相对于服务基址 `BASE_URL`（如 `https://api.joyfile.net/huoke`）。
 
-### 5.1 接入认证、限流与前置条件
+### 6.1 接入认证、限流与前置条件
 
 - **认证方式**：所有 `/api/v1/external/**` 接口均通过 HTTP 请求头认证：
   ```http
@@ -289,9 +424,9 @@ LIMIT 20;
 
 ---
 
-### 5.2 授权与设备状态前置接口
+### 6.2 授权与设备状态前置接口
 
-#### 5.2.1 创建视频号授权码
+#### 6.2.1 创建视频号授权码
 
 - **接口**：`POST /api/v1/external/licenses`
 - **响应**：HTTP `201 Created`，返回创建的 `licenses` 列表。
@@ -319,7 +454,7 @@ LIMIT 20;
 | `ownerPhone` | string | 否 | 归属手机号（11 位中国大陆手机号） |
 | `requestId` | string | 否 | 幂等请求编号（最长 100 字符）；重复成功使用返回 `409 Conflict` |
 
-#### 5.2.2 查询设备绑定与在线状态
+#### 6.2.2 查询设备绑定与在线状态
 
 - **接口**：`POST /api/v1/external/licenses/online`
 - **用途**：下发任务前检查授权码是否有效、是否绑定设备、手机客户端是否在线及权限是否就绪（`screenCaptureActive: true` 表示 App、资源、MaaFramework 与 Shizuku 均就绪）。
@@ -363,14 +498,14 @@ LIMIT 20;
 }
 ```
 
-#### 5.2.3 查询授权码详情与已保存采集配置
+#### 6.2.3 查询授权码详情与已保存采集配置
 
 - **接口**：`POST /api/v1/external/license-info`
 - **用途**：查询单个（`{"licenseKey": "KEY-1"}`）或批量（`{"licenseKeys": ["KEY-1", "KEY-2"]}`，最多 100 个）授权码的绑定信息、最近 20 条命令及后台已保存的默认采集配置（`taskConfig`、`taskConfigVersion`）。
 
 ---
 
-### 5.3 任务下发接口（核心）
+### 6.3 任务下发接口（核心）
 
 - **接口**：`POST /api/v1/external/tasks`
 - **成功状态码**：HTTP `202 Accepted`
@@ -699,7 +834,7 @@ LIMIT 20;
 
 ---
 
-### 5.4 任务状态查询接口与状态机枚举
+### 6.4 任务状态查询接口与状态机枚举
 
 - **查询单任务**：`GET /api/v1/external/tasks/{taskId}`（返回结构与 `POST /api/v1/external/tasks` 一致；不存在返回 `404 Not Found`）。
 - **查询授权码最近任务列表**：`GET /api/v1/external/tasks?licenseKey={licenseKey}`（返回该授权码最近 **50** 条顶层任务记录，包裹在 `{"success": true, "tasks": [...]}` 中）。
@@ -718,7 +853,7 @@ LIMIT 20;
 
 ---
 
-### 5.5 异步状态回调（Callback）协议
+### 6.5 异步状态回调（Callback）协议
 
 当创建任务传入了 `callbackUrl`，服务端每次在任务状态发生变化时（如 `SENT`、`QUEUED`、`RUNNING`、`SUCCESS`、`FAILED`、`EXPIRED`），均通过异步线程池向 `callbackUrl` 发送 HTTP `POST`（`Content-Type: application/json`，连接超时 10 秒，请求超时 15 秒；对方返回 `2xx` 记为成功，往返记录保存在 `remote_command_callback` 表）：
 
@@ -738,7 +873,7 @@ LIMIT 20;
 
 ---
 
-### 5.6 采集数据查询接口（Content Events）与事件结构
+### 6.6 采集数据查询接口（Content Events）与事件结构
 
 采集事件统一保存在 `content_discovery_event` 表（默认保留 30 天，由 `CONTENT_EVENT_RETENTION_DAYS` 控制）。
 
@@ -809,7 +944,7 @@ LIMIT 20;
 
 ---
 
-### 5.7 手机端与 `laike-service` 内部通信协议
+### 6.7 手机端与 `laike-service` 内部通信协议
 
 #### 手机端 HTTP 接口
 
@@ -874,7 +1009,7 @@ LIMIT 20;
 
 ---
 
-### 5.8 快速验证命令示例
+### 6.8 快速验证命令示例
 
 ```bash
 export BASE_URL="https://api.joyfile.net/huoke"
@@ -926,9 +1061,9 @@ python3 plugins/wechat/tools/dispatch-integration-task.py WECHAT_CHANNELS_TASK \
 
 ---
 
-## 6. 开发、调试、测试与打包发布指南
+## 7. 开发、调试、测试与打包发布指南
 
-### 6.1 单元测试（改动后必跑）
+### 7.1 单元测试（改动后必跑）
 
 ```bash
 # 安装测试/上报依赖
@@ -944,7 +1079,7 @@ python3 -m unittest discover -s plugins/wechat/wechat_channels/collector
 python3 -m unittest discover -s tools/debug_console
 ```
 
-### 6.2 Web 全流程可视化调试台（强烈推荐）
+### 7.2 Web 全流程可视化调试台（强烈推荐）
 
 项目内置了 Web 调试台（`tools/debug_console/`），可直接通过 ADB 列出手机、按真实执行时间倒序查看并去重任务列表、同步运行记录、可视化查看每一步中文时间线、还原 `540px` 真实截图与控件框/OCR 叠层、**热重载本地 Python 解析器重放历史截图**、查看 SQLite 草稿/ACK，并支持一键推送最新 `collector/` 代码到手机运行调试任务（无需重新打 APK）：
 
@@ -953,7 +1088,7 @@ python3 tools/debug_console/server.py --port 8765
 # 浏览器打开 http://127.0.0.1:8765
 ```
 
-### 6.3 真机免打包命令行调试（`phone.py`）
+### 7.3 真机免打包命令行调试（`phone.py`）
 
 当手机 `/data/local/tmp/wechat-channels-dev/` 已部署 runtime 与脚本时，可通过 ADB 直接推送改动后的 `.py` 文件并运行：
 
@@ -971,7 +1106,7 @@ adb shell /data/local/tmp/wechat-channels-dev/run-phone.sh --collect '{"entry":"
 adb shell /data/local/tmp/wechat-channels-dev/run-phone.sh --link '{"action":"likeVideo","link":"https://weixin.qq.com/sph/xxx"}'
 ```
 
-### 6.4 宿主补丁与本地 APK 构建
+### 7.4 宿主补丁与本地 APK 构建
 
 宿主 `host/MaaTauriAndroid` 固定在上游提交 `4da508b20e4d7be132621ca24ec32f2b5b5a5fa0`（MaaFramework `v5.14.2` / `agent-core-3.13.15-maafw5.14.2`）。
 
@@ -998,7 +1133,7 @@ python3 host/MaaTauriAndroid/scripts/build_apk.py \
 > **本地联调隔离包**：本地构建验收 Debug 包（避免覆盖手机上已安装的正式包）时，通过 Tauri 参数附加独立包名后缀：
 > `--config '{"bundle":{"android":{"debugApplicationIdSuffix":".integration"}}}'`
 
-### 6.5 GitHub Actions 自动打包与签名发布
+### 7.5 GitHub Actions 自动打包与签名发布
 
 每次推送任意分支或手动触发 `.github/workflows/android-release.yml` 时，CI 会自动：
 1. 构建 `arm64-v8a` Release APK（视频号产物为 `wechat-arm64-v8a-release-<SHORT_SHA>.apk`）。
@@ -1071,9 +1206,9 @@ keytool -list -keystore "$HOME/android-release.p12" -storetype PKCS12 -storepass
 
 ---
 
-## 7. 运维注意事项与常见排障
+## 8. 运维注意事项与常见排障
 
-### 7.1 手机部署必查清单
+### 8.1 手机部署必查清单
 
 1. **Shizuku**：必须处于运行状态且已对「微信视频号助手」永久授权；Shizuku 和视频号助手都需要关闭省电策略/允许后台运行与自启动。
 2. **Google 无障碍套件**：建议在手机上安装（用于临时启用「随选朗读」暴露微信控件树）；若未安装会退化为整页 OCR，耗时显著增加且准确率下降。
@@ -1081,7 +1216,7 @@ keytool -list -keystore "$HOME/android-release.p12" -storetype PKCS12 -storepass
 4. **Release 强制 HTTPS**：Release 构建只允许填写 `https://` 服务地址；仅 Debug 构建允许 `http://`（用于本地内网联调）。
 5. **Debug 切换 Release**：首次从 Debug 包切换至固定签名 Release 包时，需先备份数据并卸载旧 Debug 包，否则 Android 会因签名不一致拒绝覆盖安装。
 
-### 7.2 常见问题排障速查
+### 8.2 常见问题排障速查
 
 | 现象 / 报错 | 原因与排查方向 |
 | --- | --- |
@@ -1092,14 +1227,16 @@ keytool -list -keystore "$HOME/android-release.p12" -storetype PKCS12 -storepass
 | 私信任务返回 `FAILED` 且提示平台限制 / 无私信入口 | 属于微信风控或目标用户关闭私信/非创作者，App 会如实返回失败并不会写入 `link_actions.json` |
 | 微信升级后部分页面识别变慢或解析失败 | 先用 Web 调试台（`tools/debug_console/server.py`）拉取失败 `runId` 的控件 XML 与截图快照，核对 `hierarchy.py` / `layout.py` 中的语义文本或相对位置规则，并在 `collector/testdata/` 补充回归夹具与单测 |
 | 手机在线但长时间不执行或 `screenCaptureActive: false` | 检查手机 Shizuku 是否掉线、是否被系统杀后台，或在 App 首页查看权限准备提示；查看服务端 `diagnostic_report` 表获取异常摘要 |
+| 中台视频号工作台下拉框看不到设备，或下发提示 `未配置有效的下发连接` / `不支持视频号任务` | 检查中台 `t_xl_device` 是否已录入该授权码（`device_no`）、是否绑定启用中的 `t_xl_reply_dispatch_config`（`status = 1`），以及该账号是否具备对应 `project_id` 权限；同时确认手机端在线客户端为 `WECHAT_CHANNELS` 且具备 `WECHAT_CHANNELS_TASK` 能力 |
+| `laike-service` 已入库视频号数据，但中台视频库 / 公海看不到 | 检查中台 `t_xl_content_sync_config`（`source_code = 'laike-content-stream'`）是否启用且 `stream_url` / `api_key` 正确；查询 `t_xl_content_sync_cursor` 查看 `last_success_at` 与 `last_error`；前端确认左侧平台已切换为「视频号」（`X-Content-Platform: WECHAT`） |
 
 ---
 
-## 8. 适配新手机的注意事项与标准流程
+## 9. 适配新手机的注意事项与标准流程
 
 当前已完成真机验证的基准机型为 **华为 Hebe-BD00** 与 **vivo V2131A**。后续引入新品牌、新分辨率或新 Android 版本的手机时，请重点检查以下差异并按流程完成适配。
 
-### 8.1 硬件、显示与系统基线要求
+### 9.1 硬件、显示与系统基线要求
 
 1. **CPU 架构**：必须为 `arm64-v8a`（内置 Python 3.13 运行时与 MaaFramework 仅包含 `arm64-v8a`）。
 2. **屏幕方向与分辨率缩放**：
@@ -1111,7 +1248,7 @@ keytool -list -keystore "$HOME/android-release.p12" -storetype PKCS12 -storepass
    - 微信保持**浅色默认主题**（`resource/base/image/` 下大部分状态图标模板与点赞颜色判断基于浅色模式）。
    - 建议使用系统默认输入法，关闭第三方输入法的剪贴板悬浮条或 AI 浮窗，防止遮挡微信聊天/评论底部的「发送」按钮。
 
-### 8.2 厂商 ROM 与系统权限差异（最常见坑点）
+### 9.2 厂商 ROM 与系统权限差异（最常见坑点）
 
 | 检查项 | 不同厂商常见坑点 | 验证 / 处理方式 |
 | --- | --- | --- |
@@ -1121,7 +1258,7 @@ keytool -list -keystore "$HOME/android-release.p12" -storetype PKCS12 -storepass
 | **`UiDump` 控件与剪贴板耗时** | 不同芯片/系统抓取控件树耗时差异较大（如 vivo V2131A 常规 1.5~3.1 秒，复杂页面可达 4~5.8 秒）；部分高版本 Android 对 Shell 读剪贴板有额外限制 | 核对 `android_ui.py` 中的 `hierarchy(timeout=8)` 及基础信息 `wait_basic_info` 8 秒窗口是否足够；实测「转发 → 复制链接」能否通过 `ui-dump.dex` 正确读出剪贴板链接 |
 | **兄弟浮层节点顺序** | 不同机型/微信版本下，推荐流、评论抽屉和资料页在 XML 中的兄弟节点前后顺序可能相反 | `hierarchy.py::covered_layers` 已按语义层级判定，但若新机型出现厂商悬浮球或系统权限弹窗，需确认未被误判为顶层页面 |
 
-### 8.3 适配新手机的标准操作步骤（5 步闭环）
+### 9.3 适配新手机的标准操作步骤（5 步闭环）
 
 1. **第 1 步：底层能力自检**  
    装好 Shizuku、Google 无障碍套件、微信（已登录、浅色主题、默认字体）与视频号助手 APK。连上 ADB 后确认：
